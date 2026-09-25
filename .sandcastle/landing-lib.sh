@@ -28,6 +28,8 @@ __landing_lib_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$__landing_lib_here/forgejo-lib.sh"
 # shellcheck source=model-lib.sh
 . "$__landing_lib_here/model-lib.sh"   # SWARM_MODEL — swarm.config is the ONE model source (#448); before this the rebase-rescue claude call passed no --model and ran on the host user's CLI default
+# shellcheck source=policy-lib.sh
+. "$__landing_lib_here/policy-lib.sh"   # policy_ticket_landing / _merge_authority — the per-ticket override's allowlist (idss ADR 0267); safe to source twice
 
 landing_branch_for() { # landing_branch_for <N> -> the issue's agent branch name
   printf 'agent/issue-%s\n' "${1:?landing_branch_for: issue number required}"
@@ -84,16 +86,109 @@ landing_superseded_by_pr_for() {
   printf '%s\n' "$num"
 }
 
+# ── the per-ticket override (idss ADR 0267) ─────────────────────────────────
+# SWARM_POLICY_LANDING / _MERGE_AUTHORITY are the repo's DEFAULT. A ticket
+# carrying `landing-pr` lands as pr + human merge whatever the default. Every
+# seam below asks THESE functions, never the repo knob directly.
+
+# landing_ticket_label <N> -> the ticket's first `landing-*` label name on
+# stdout (empty when it carries none); rc 1, loud, when the tracker cannot be
+# read. Raw-capture then filter (never curl|jq). No cache on purpose: every
+# caller is a `$(…)` subshell, where a cache would be thrown away anyway.
+landing_ticket_label() {
+  local n="${1:?landing_ticket_label: issue number required}" resp
+  resp="$(forgejo_get "/issues/$n" 2>/dev/null)" \
+    || { echo "landing: could not read #$n's labels — refusing to guess how it lands" >&2; return 1; }
+  jq -r '[.labels[]?.name | select(startswith("landing-"))][0] // ""' <<<"$resp" 2>/dev/null
+}
+
+# landing_mode_for <N> -> push|pr. A LANDING=pr repo answers without a tracker
+# call (no override can loosen it). rc 1 when the ticket cannot be read or
+# carries a landing-* label off the allowlist — the caller must NOT land.
+landing_mode_for() {
+  local n="${1:?landing_mode_for: issue number required}" label
+  if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then printf 'pr\n'; return 0; fi
+  label="$(landing_ticket_label "$n")" || return 1
+  policy_ticket_landing "$label" push
+}
+
+# landing_merge_authority_for <N> -> human|agent-after-green. A human-authority
+# repo answers without a tracker call. An unreadable ticket fails CLOSED to
+# human: the dangerous action is an agent merging a PR a person was owed.
+landing_merge_authority_for() {
+  local n="${1:?landing_merge_authority_for: issue number required}" label
+  local repo="${SWARM_POLICY_MERGE_AUTHORITY:-human}"
+  if [ "$repo" = human ]; then printf 'human\n'; return 0; fi
+  label="$(landing_ticket_label "$n" 2>/dev/null)" || { printf 'human\n'; return 0; }
+  policy_ticket_merge_authority "$label" "$repo"
+}
+
+# landing_pr_tickets_cited <start-sha> -> the numbers (one per line) of tickets
+# named in this run's commit SUBJECTS that land by PR. Subjects only — the
+# `sandcastle: #N …` convention names the ticket worked; a body's "see #N" is a
+# reference. Fail-OPEN per ticket: an unreadable or foreign #N is skipped.
+landing_pr_tickets_cited() {
+  local start="${1:?landing_pr_tickets_cited: start sha required}" nums n mode
+  nums="$(git log --format=%s "$start"..HEAD 2>/dev/null | grep -oE '#[0-9]+' | tr -d '#' | sort -un || true)"
+  for n in $nums; do
+    mode="$(landing_mode_for "$n" 2>/dev/null)" || continue
+    [ "$mode" = pr ] && printf '%s\n' "$n"
+  done
+  return 0
+}
+
+# landing_evidence_gate <N> <pr> -> rc 0 when the PR carries its evidence:
+# at least ONE image asset attached to the PR, or a body line reading exactly
+#     **Screenshots:** none — <reason>
+# (em dash, non-empty reason — the waiver for a fix with no visible surface).
+# rc 1 = missing (one reason line on stdout); rc 2 = could not verify.
+landing_evidence_gate() {
+  local n="${1:?landing_evidence_gate: issue number required}" pr="${2:?landing_evidence_gate: pr number required}"
+  local prj assets nimg
+  prj="$(forgejo_get "/pulls/$pr" 2>/dev/null)" || return 2
+  if jq -r '.body // ""' <<<"$prj" 2>/dev/null | tr -d '\r' \
+       | grep -Eq '^\*\*Screenshots:\*\* none — [^[:space:]].*$'; then
+    return 0
+  fi
+  assets="$(forgejo_get "/issues/$pr/assets" 2>/dev/null)" || return 2
+  nimg="$(jq '[.[]? | select((.name // "") | test("\\.(png|jpe?g|webp|gif)$"; "i"))] | length' <<<"$assets" 2>/dev/null)"
+  [ "${nimg:-0}" -gt 0 ] && return 0
+  printf 'PR #%s for #%s carries no screenshot and no `**Screenshots:** none — <reason>` line\n' "$pr" "$n"
+  return 1
+}
+
+# landing_park_evidence_blocked <N> <pr> -> label #N agent-blocked and say why on
+# both threads. Best-effort (rc 0): the reconcile pass must not die on a label
+# write. Skips a ticket already parked, so a re-run does not stack comments.
+landing_park_evidence_blocked() {
+  local n="${1:?landing_park_evidence_blocked: issue number required}" pr="${2:?}" issue labels_json lid
+  issue="$(forgejo_get "/issues/$n" 2>/dev/null || true)"
+  if jq -e '[.labels[]?.name] | index("agent-blocked") != null' <<<"$issue" >/dev/null 2>&1; then return 0; fi
+  labels_json="$(forgejo_get '/labels?limit=100' 2>/dev/null || true)"
+  lid="$(forgejo_label_id "$labels_json" agent-blocked)"
+  [ -n "$lid" ] && forgejo_add_labels "$n" "$lid" >/dev/null 2>&1
+  local why="This ticket carries \`landing-pr\`: its PR (#$pr) must show after-fix screenshots, or the line \`**Screenshots:** none — <reason>\` when the fix has no visible surface. It has neither, so it is parked \`agent-blocked\` BEFORE anyone is asked to review it. Attach the evidence (\`bash .sandcastle/land-pr.sh $n … <screenshot.png>\`) and re-arm."
+  forgejo_comment "$n" "$why" 2>/dev/null || true
+  forgejo_comment "$pr" "$why" 2>/dev/null || true
+  return 0
+}
+
 # landing_push <N> [title] [extra-body] -> land HEAD for issue <N>.
-#   push mode: git push origin HEAD:refs/heads/main (today's behaviour; <N> is
-#              ignored). rc = git's.
-#   pr mode:   push HEAD to agent/issue-<N>, then open a PR (closes #<N>) unless
-#              one is already open; echo the PR number on stdout. rc non-zero if
-#              the branch push or the PR-open failed.
+#   a ticket that resolves to push: git push <remote> HEAD:refs/heads/main
+#              (today's behaviour). rc = git's.
+#   a ticket that resolves to pr:   push HEAD to agent/issue-<N>, then open a PR
+#              (closes #<N>) unless one is already open; echo the PR number on
+#              stdout. rc non-zero if the branch push or the PR-open failed.
+# <remote> is LANDING_PUSH_REMOTE (default origin) — land-pr.sh sets it to a
+# token URL inside the sandbox.
 landing_push() {
-  local n="${1:?landing_push: issue number required}"
-  if [ "${SWARM_POLICY_LANDING:-push}" != pr ]; then
-    git push origin "HEAD:refs/heads/main"
+  local n="${1:?landing_push: issue number required}" mode
+  local remote="${LANDING_PUSH_REMOTE:-origin}"
+  # Per ticket (idss ADR 0267): the repo knob is only the default. An unreadable
+  # ticket lands NOWHERE — better a loud failure than a PR ticket on main.
+  mode="$(landing_mode_for "$n")" || return 1
+  if [ "$mode" != pr ]; then
+    git push "$remote" "HEAD:refs/heads/main"
     return
   fi
   local branch num resp ahead
@@ -110,7 +205,7 @@ landing_push() {
     echo "landing_push: refusing $branch — HEAD has no commits beyond origin/main (empty-shell guard, matou-app#145)" >&2
     return 1
   fi
-  git push origin "HEAD:refs/heads/$branch" || return 1
+  git push "$remote" "HEAD:refs/heads/$branch" || return 1
   if num="$(landing_open_pr_for "$n")"; then
     printf '%s\n' "$num"   # refresh: branch pushed, its PR is already open
     return 0
@@ -174,7 +269,9 @@ landing_park_agent_blocked() {
 #                      the failing check(s) named
 landing_merge_if_green() {
   local n="${1:?landing_merge_if_green: issue number required}"
-  if [ "${SWARM_POLICY_MERGE_AUTHORITY:-human}" != agent-after-green ]; then
+  # Per ticket (idss ADR 0267): a landing-pr ticket is merged by a HUMAN even in
+  # an agent-after-green repo.
+  if [ "$(landing_merge_authority_for "$n")" != agent-after-green ]; then
     printf 'not-authorized\n'; return 0
   fi
   local pr
@@ -419,6 +516,34 @@ landing_push_main_with_rescue() {
 landing_stage() {
   local repo_slug="$1" ready="$2" start_sha="$3" nums
   LANDING_OPENED_PRS=""; LANDING_MERGED_PRS=""
+  # idss ADR 0267 — a push-default repo whose run was fixed to ONE landing-pr
+  # ticket (preflight_landing_gate). HEAD carries that ticket's commits, so this
+  # run NEVER pushes main: refresh the ticket's branch + PR (the worker's
+  # land-pr.sh normally did both already — idempotent), then look at the evidence
+  # host-side, because a worker killed before close-report never ran its gate.
+  case "${SWARM_RUN_LANDING:-}" in
+    "pr "[0-9]*)
+      local prn="${SWARM_RUN_LANDING#pr }" pr ev_rc
+      verdict_stage "reconcile landing (pr — #$prn carries landing-pr)"
+      LANDING_OPENED_PRS="$(landing_reconcile "$prn" || true)"
+      [ -n "$LANDING_OPENED_PRS" ] && landing_note_pr_opened "$repo_slug" "$prn"
+      if pr="$(landing_open_pr_for "$prn")" && [ -n "$pr" ]; then
+        ev_rc=0; landing_evidence_gate "$prn" "$pr" >/dev/null 2>&1 || ev_rc=$?
+        [ "$ev_rc" -eq 1 ] && landing_park_evidence_blocked "$prn" "$pr"
+      elif [ "$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)" != 0 ]; then
+        # Commits exist and no PR could be opened (the tracker was unreadable, or
+        # the branch push was refused). Never strand them, never push them to main.
+        local rescue; rescue="sandcastle/rescue-$(date -u +%Y%m%d-%H%M%S)"
+        if git push origin "HEAD:refs/heads/$rescue"; then
+          _landing_notify ":rotating_light: **A landing-pr ticket's work could not be opened as a PR** in \`$repo_slug\` (#$prn) — commits parked on \`$rescue\`. Open the PR from there; do NOT push them to main."
+        else
+          _landing_notify ":rotating_light: **A landing-pr ticket's work could not be opened as a PR AND the rescue branch could not be pushed** in \`$repo_slug\` (#$prn) — the commits live ONLY in the runner workdir \`$(pwd)\`; do NOT let it reset."
+        fi
+        SWARM_EXIT_REASON="pr-landing-parked-on-rescue"
+        return 1
+      fi
+      return 0 ;;
+  esac
   if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
     verdict_stage "reconcile landing (pr — branch + PR per issue)"
     # `|| true` on the scrape: a run whose commit subjects cite NO `#NN` makes
@@ -450,6 +575,24 @@ landing_stage() {
     return 0
   fi
   verdict_stage "reconcile push to main"
+  # The guard (idss ADR 0267): a push run should never hold a landing-pr ticket's
+  # commit (the lister hides such tickets from it), but "should never" is what a
+  # guard is for. Fail-OPEN on an unreadable tracker — see landing_pr_tickets_cited.
+  local cited cited_disp
+  cited="$(landing_pr_tickets_cited "$start_sha" | tr '\n' ' ')"
+  cited_disp="$(printf '%s' "$cited" | sed -E 's/ +$//; s/ /, #/g')"
+  if [ -n "$cited_disp" ]; then
+    git fetch origin main >/dev/null 2>&1 || true
+    if git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+      _landing_notify ":rotating_light: **A landing-pr ticket's commit is ALREADY on main** in \`$repo_slug\` — this push run's commits cite #$cited_disp and a worker pushed them. Review on main; revert if it should not stand."
+      return 0
+    fi
+    local rescue; rescue="sandcastle/rescue-$(date -u +%Y%m%d-%H%M%S)"
+    git push origin "HEAD:refs/heads/$rescue" || true
+    _landing_notify ":rotating_light: **Swarm did NOT push main** in \`$repo_slug\` — this run's commits cite #$cited_disp, which carries \`landing-pr\` and lands only by PR. HEAD is parked on \`$rescue\`: open the PR from there, and cherry-pick any other ticket's commits onto main."
+    SWARM_EXIT_REASON="pr-ticket-in-push-run"
+    return 1
+  fi
   landing_push_main_with_rescue "$repo_slug"
 }
 

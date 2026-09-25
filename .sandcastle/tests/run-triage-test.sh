@@ -664,6 +664,24 @@ run_triage HOST_CAPACITY_HELD_SLOT="$slot" HELD_HOLDER="$slot.holder" HOLDER_SEE
 [ ! -e "$slot.holder" ] || fail "triage_on_exit must clear the holder"
 pass=$((pass+1))
 
+# Per-repo triage doctrine: a consumer's prompt-enrichments/triage.md is spliced
+# VERBATIM into the /triage prompt; a repo without one gets today's prompt.
+# (Runs here because the argv-logging fake claude above is still in place.)
+db_reset
+argv="$tmp/claude-argv"; enrich="$tmp/triage-enrich.md"
+rm -f "$marker" "$verdict" "$argv"
+printf 'DOCTRINE-LINE-ONE\nDOCTRINE-LINE-TWO\n' > "$enrich"
+run_triage CLAUDE_EXIT=0 CLAUDE_OUTPUT=ok CLAUDE_ARGV_LOG="$argv" TRIAGE_ENRICH_FILE="$enrich" >/dev/null 2>&1 \
+  || fail "a triage run with a doctrine file must still exit 0"
+grep -qF 'DOCTRINE-LINE-ONE' "$argv" && grep -qF 'DOCTRINE-LINE-TWO' "$argv" \
+  || fail "the consumer's triage doctrine must reach the prompt, got: $(cat "$argv")"
+db_reset
+rm -f "$marker" "$verdict" "$argv"
+run_triage CLAUDE_EXIT=0 CLAUDE_OUTPUT=ok CLAUDE_ARGV_LOG="$argv" TRIAGE_ENRICH_FILE="$tmp/absent.md" >/dev/null 2>&1 \
+  || fail "a triage run with NO doctrine file must exit 0"
+if grep -qF 'DOCTRINE-LINE' "$argv"; then fail "an absent doctrine file must add nothing to the prompt"; fi
+pass=$((pass+1))
+
 # ── #1424: a 5xx from the chat front door does NOT red a triage tick ──────────
 # The "Triage needs you" digest post is best-effort like every other notify call
 # site; a `curl -sf` exit 22 from Mattermost must not throw away a tick that has

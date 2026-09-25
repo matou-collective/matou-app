@@ -96,4 +96,33 @@ preflight_model_gate() {
   schedule_model_note "$ready" "$SWARM_MODEL"
 }
 
+# preflight_landing_gate <repo-slug> <ready-json> — resolve THIS run's landing
+# (idss ADR 0267) and mirror it to the sandbox. An unknown `landing-*` label on
+# ANY ready ticket fails LOUD now, before a single worker spawns — the
+# swarm_resolve_model discipline. The signal file is what list-ready-tasks.sh
+# reads inside every sandbox (/run/host-signals/run-landing, the drive-yield
+# channel). rc 1 on refusal.
+preflight_landing_gate() {
+  local repo_slug="$1" ready="$2" bad named
+  bad="$(schedule_bad_landing_labels "$ready")"
+  if [ -n "$bad" ]; then
+    verdict_stage "ticket landing resolution (fail-fast)"
+    named="$(printf '%s\n' "$bad" | awk '{printf "%s#%s `%s`", (NR>1 ? ", " : ""), $1, $2}')"
+    _preflight_notify ":no_entry: **Swarm aborted — unknown landing label** in \`$repo_slug\`: $named. The only allowed override is \`landing-pr\`. Fix the label; no worker was spawned."
+    SWARM_EXIT_REASON="unknown-landing"
+    return 1
+  fi
+  SWARM_RUN_LANDING="$(schedule_run_landing "$ready")"
+  export SWARM_RUN_LANDING
+  if [ -n "${SWARM_HOST_SIGNALS_DIR:-}" ]; then
+    if ! { mkdir -p "$SWARM_HOST_SIGNALS_DIR" && printf '%s\n' "$SWARM_RUN_LANDING" > "$SWARM_HOST_SIGNALS_DIR/run-landing"; } 2>/dev/null; then
+      verdict_stage "ticket landing resolution (fail-fast)"
+      _preflight_notify ":no_entry: **Swarm aborted — could not write the run-landing signal** to \`$SWARM_HOST_SIGNALS_DIR\` in \`$repo_slug\`. Without it a sandbox hides every PR-landing ticket; no worker was spawned."
+      SWARM_EXIT_REASON="landing-signal-unwritable"
+      return 1
+    fi
+  fi
+  echo "run-swarm: landing for this run: $SWARM_RUN_LANDING$([ "${SWARM_RUN_LANDING%% *}" = pr ] && printf ' (the head ticket carries landing-pr — it is worked alone)')"
+}
+
 fi

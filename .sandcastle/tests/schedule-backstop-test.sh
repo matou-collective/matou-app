@@ -112,6 +112,47 @@ run_backstop "$tmp/matrix.json" >/dev/null
 dispatched && fail "a matrix-suffixed running swarm run ('swarm (1)') must SUPPRESS dispatch (#588)"
 pass=$((pass+1))
 
+# --- GOTCHAS 62: per-HOST legs — another host's leg never silences THIS host --
+# swarm.yml renders one leg per pool host, named "swarm (<host label>)". With
+# HOST_NAME set (the generated backstop-tick.sh exports the registry name), a
+# leg that belongs to ANOTHER host — mid-ticket for two hours — must not count
+# as "in flight" for this one, or the idle host's backstop sits silent for the
+# whole ticket: the exact starvation the per-host legs exist to end.
+cat > "$tmp/other-host.json" <<JSON
+{"workflow_runs":[{"name":"swarm (matou-workstation)","status":"running","run_started_at":"$old"}]}
+JSON
+HOST_NAME=bens-mac-04 run_backstop "$tmp/other-host.json" >/dev/null
+dispatched || fail "another host's running leg ('swarm (matou-workstation)') must NOT suppress this host's dispatch when HOST_NAME is set (GOTCHAS 62)"
+pass=$((pass+1))
+
+# this host's OWN leg in flight (waiting or running) still suppresses
+cat > "$tmp/own-host.json" <<JSON
+{"workflow_runs":[{"name":"swarm (bens-mac-04)","status":"waiting","run_started_at":""}]}
+JSON
+HOST_NAME=bens-mac-04 run_backstop "$tmp/own-host.json" >/dev/null
+dispatched && fail "this host's own waiting leg ('swarm (bens-mac-04)') must SUPPRESS dispatch"
+pass=$((pass+1))
+
+# a legacy numeric leg (a consumer not yet re-rendered) still suppresses with
+# HOST_NAME set — the old shape keeps the old guard.
+HOST_NAME=bens-mac-04 run_backstop "$tmp/matrix.json" >/dev/null
+dispatched && fail "a legacy numeric leg ('swarm (1)') must still SUPPRESS dispatch when HOST_NAME is set"
+pass=$((pass+1))
+
+# a host label is never a substring match: "swarm (bens-mac-04-lan)" is not us
+cat > "$tmp/near-host.json" <<JSON
+{"workflow_runs":[{"name":"swarm (bens-mac-04-lan)","status":"running","run_started_at":"$old"}]}
+JSON
+HOST_NAME=bens-mac-04 run_backstop "$tmp/near-host.json" >/dev/null
+dispatched || fail "a leg named for a host whose label merely CONTAINS ours must not suppress dispatch"
+pass=$((pass+1))
+
+# without HOST_NAME (a tick predating the export) the any-suffix guard holds:
+# another host's leg still suppresses — the pre-62 behaviour, never a storm.
+run_backstop "$tmp/other-host.json" >/dev/null
+dispatched && fail "with HOST_NAME unset, any suffixed running leg must still SUPPRESS dispatch (legacy guard)"
+pass=$((pass+1))
+
 # --- #45: order-repos lists repos STALEST-first, missing stamp first of all ----
 # The freed-slot fairness the generated host backstop-tick.sh dispatches in.
 # alpha evaluated 2m ago, beta 90m ago, gamma never (no stamp): the order must

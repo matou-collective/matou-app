@@ -99,14 +99,25 @@ fi
 # (`waiting` = queued behind the busy host, or `running`), OR one that STARTED
 # within the window (Forgejo's own scheduler is doing its job). The in-flight
 # clause is #238 AC3 — without it a queued dispatch is re-dispatched every tick.
-# Name match is `$name` OR `$name (N)` (#588, same drift as #541's
-# claim_alive_runs): swarm.yml's 2-wide worker matrix (44fe333) makes Forgejo
-# name each matrix job "swarm (1)"/"swarm (2)", never bare "swarm" — an
-# exact-match filter never sees a real swarm run as in-flight and can pile on
-# redundant dispatches while matrix workers are already running.
-inflight="$(printf '%s' "$runs" | jq -r --arg n "$name" --arg c "$cutoff" \
+# Name match is `$name` OR `$name (<suffix>)` (#588, same drift as #541's
+# claim_alive_runs): a matrix makes Forgejo suffix each job's name, never bare
+# "swarm" — an exact-match filter never sees a real swarm run as in-flight and
+# can pile on redundant dispatches while matrix workers are already running.
+#
+# Per-HOST when the tick knows its host (GOTCHAS 62): swarm.yml renders one leg
+# per pool host, named "swarm (<host label>)". Another host's leg being mid-
+# ticket for two hours says nothing about THIS host's capacity — under the old
+# any-leg guard an idle host's backstop sat silent for the whole ticket, which
+# is exactly the starvation the per-host legs exist to end. So with HOST_NAME
+# set (the generated backstop-tick.sh exports the registry name), only this
+# host's own leg, a bare "$name", or a legacy numeric leg "$name (N)" (a consumer
+# not yet re-rendered) counts. Unset HOST_NAME keeps the any-suffix guard.
+inflight="$(printf '%s' "$runs" | jq -r --arg n "$name" --arg c "$cutoff" --arg h "${HOST_NAME:-}" \
   '[.workflow_runs[]?
-     | select(.name == $n or (.name | test("^" + $n + " \\(")))
+     | select(.name == $n
+              or (.name | test("^" + $n + " \\([0-9]+\\)$"))
+              or (($h == "") and (.name | test("^" + $n + " \\(")))
+              or (($h != "") and (.name == ($n + " (" + $h + ")"))))
      | select((.status == "waiting") or (.status == "running") or ((.run_started_at // "") >= $c))
    ] | length')"
 

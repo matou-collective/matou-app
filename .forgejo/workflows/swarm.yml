@@ -1,48 +1,65 @@
 name: swarm
 on:
-  # `closed` only — never `labeled` (Matou/dev-factory#103, GOTCHAS 32). Forgejo
-  # delivers BOTH a label add and a label remove as one `issues` action,
-  # `label_updated`, with no `label` field in the payload, and its matcher maps
-  # that action onto `labeled`. So a label trigger cannot be narrowed to
-  # "ready-for-agent was added": every claim/release toggle of `agent-working`
-  # re-fired this workflow, and under the concurrency group below (which
-  # queues, never drops) a limit-parked host that claimed-and-released N ready
-  # tickets per run queued >=N successors per run — 2,700 waiting no-op runs
-  # across four repos on 2026-08-26. Newly readied tickets are picked up by the
-  # :15/:45 cron and by the D5 self-rearm dispatch instead.
+  # `closed` only — never `labeled` (#103). Forgejo delivers BOTH a label add
+  # and a label remove as one `issues` action, `label_updated`, with no `label`
+  # field in the payload, and its matcher maps that action onto `labeled`. So
+  # a label trigger cannot be narrowed to "ready-for-agent was added": every
+  # claim/release toggle of `agent-working` re-fired this workflow, and under
+  # the concurrency group below (which queues, never drops) a limit-parked
+  # host that claimed-and-released N ready tickets per run queued ≥N successors
+  # per run — 2,700 waiting no-op runs across four repos on 2026-08-26. Newly
+  # readied tickets are picked up by the :15/:45 cron and by the D5 self-rearm
+  # dispatch (report-lib.sh) instead.
   issues:
     types: [closed]
   schedule:
     - cron: "15,45 * * * *"
   workflow_dispatch: {}
 
-# One workflow-level concurrency group per repo (#26). A triage mass-label or a
-# burst of `closed` events otherwise fires this workflow once per event, and the
-# 2-wide matrix doubles each — 71 dev-factory + 73 idss no-op runs in one hour
-# were observed, each spinning a sandbox to conclude no-ready-tasks in ~6 s.
-# Forgejo Actions honours workflow-level concurrency, but NOT GitHub's "at most
-# one pending" collapse: with cancel-in-progress false it QUEUES every superseded
-# run and executes them strictly in sequence. A burst of three qualifying events
-# yields one running + TWO queued (N-1 for N events), not one queued — nothing is
-# cancelled, nothing is dropped. The success signal is therefore zero cross-run
-# overlap (serial execution), never a queue depth of 1 (verified live on
-# Forgejo v15.0.5, #38).
-# cancel-in-progress MUST stay false — a live worker's run is never cancelled by
-# a later event (the matrix comment's fail-fast reasoning applies here too).
+# Concurrency: `cancel-in-progress: false` with NO group. On Forgejo 15 that is
+# the ONE shape that means "never cancel, never queue" (services/actions/
+# workflows.go ConfigureActionRunConcurrency → UnlimitedConcurrency). Every
+# other shape serialises or cancels: a group + `false` is QueueBehind — the
+# scheduler (GetAvailableJobsForRunner) hands a run's jobs to NO runner while an
+# older run in the same group is still running; a group + `true` cancels the
+# live worker; and no block at all falls back to the legacy auto group
+# (ref+workflow+event), which cancels on push events.
+#
+# The per-RUN key this replaces (`swarm-<repo>-${{ github.run_number }}`, idss
+# #1732) never de-serialised anything: Forgejo evaluates the group BEFORE the
+# run is inserted, so run_number is 0 for every run and all of a repo's swarm
+# runs shared one group — idss run 30959 started 6 s after 30954 ended, and once
+# the per-host legs landed every new run sat `waiting` behind the previous run's
+# workers (GOTCHAS 64). The per-REPO group before it (#26) serialised by design.
+#
+# Why no queue is right here: the storm a group once collapsed (#26 — a burst of
+# events firing this workflow once per event) is held off by guards that are
+# now load-bearing: the `closed`-only trigger (#103), the host-capacity flocks
+# that yield a slot-less leg in seconds before any checkout, the ready-set-hash
+# debounce (schedule_debounce_decide) and per-ticket claiming. A live worker's
+# run is never cancelled by a later event (#38), and an idle host's leg is never
+# held behind a busy host's ticket.
 concurrency:
-  group: swarm-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   swarm:
-    runs-on: swarm
+    # ONE leg per pool host, each pinned to that host's own runner label (the
+    # registry `name`, rendered at `onboard.sh workflows`), instead of N legs on
+    # the pool label. Forgejo hands a pool-label job to whichever runner polls
+    # first, and a host already mid-ticket still polls (its second runner slot
+    # is free) — it took the leg, hit the per-repo workdir lock below, and threw
+    # it away in seconds while a genuinely idle host never saw a job (GOTCHAS
+    # 62: the 2-leg pool matrix let one host take BOTH legs of a run). With a
+    # leg per host the busy host's leg still yields cheaply, but it can no
+    # longer steal an idle host's turn. Per-ticket claiming keeps the legs from
+    # duplicating work; fail-fast off: one host's red must not cancel another's
+    # live work. A host leaves or joins this list by re-rendering, never by hand.
+    runs-on: ${{ matrix.host }}
     strategy:
-      # Two jobs per trigger: with per-ticket claiming, two hosts can safely
-      # gang up on one repo's backlog. fail-fast off: one host's red must not
-      # cancel the other's live work. Grow the matrix when the pool grows.
       fail-fast: false
       matrix:
-        worker: [1, 2]
+        host: [matou-workstation, elitebook-03, bens-mac-04]
     timeout-minutes: 180
     steps:
       - name: Swarm under global lock

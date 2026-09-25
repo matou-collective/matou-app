@@ -208,4 +208,39 @@ reject "$tmp/hl-near.sh" "one-way-door cannot-proceed missing-context product-de
 # onboarding/tests/onboard-lib-test.sh — this file sources ONLY policy-lib.sh +
 # forgejo-lib.sh, both vendored, so it passes standalone in a consumer's tree (#23).
 
+# ── per-ticket landing override (idss ADR 0267 / ADR 0002 amendment) ─────────
+[ "$(policy_ticket_landing "" push)" = push ]        || fail "an unlabelled ticket resolves to the repo default (push)"
+pass=$((pass+1))
+[ "$(policy_ticket_landing "" pr)" = pr ]            || fail "an unlabelled ticket resolves to the repo default (pr)"
+pass=$((pass+1))
+[ "$(policy_ticket_landing "")" = push ]             || fail "the repo default itself defaults to push"
+pass=$((pass+1))
+[ "$(policy_ticket_landing landing-pr push)" = pr ]  || fail "the tracker-label form landing-pr resolves to pr"
+pass=$((pass+1))
+[ "$(policy_ticket_landing pr push)" = pr ]          || fail "the bare suffix pr resolves to pr"
+pass=$((pass+1))
+# No label may LOOSEN a repo default: landing-push is not on the allowlist.
+out="$(policy_ticket_landing landing-push pr 2>"$tmp/tl.err")" && rc=0 || rc=$?
+[ "$rc" -ne 0 ] && [ -z "$out" ]                      || fail "landing-push must be refused with no output, got rc=$rc out='$out'"
+grep -q 'landing-push' "$tmp/tl.err"                  || fail "the refusal must name the offending label"
+grep -q 'landing-pr' "$tmp/tl.err"                    || fail "the refusal must list the allowed label"
+pass=$((pass+1))
+out="$(policy_ticket_landing landing-squash 2>/dev/null)" && rc=0 || rc=$?
+[ "$rc" -ne 0 ] && [ -z "$out" ]                      || fail "an unknown landing-* label never silently falls back to the default"
+pass=$((pass+1))
+# A ticket override only ever TIGHTENS merge authority.
+[ "$(policy_ticket_merge_authority landing-pr agent-after-green)" = human ] || fail "a landing-pr ticket is human-merged even in an agent-after-green repo"
+pass=$((pass+1))
+[ "$(policy_ticket_merge_authority "" agent-after-green)" = agent-after-green ] || fail "an unlabelled ticket keeps the repo's merge authority"
+pass=$((pass+1))
+[ "$(policy_ticket_merge_authority "")" = human ]    || fail "merge authority defaults to human"
+pass=$((pass+1))
+# The prose is declared ONCE here; the renderer and land-pr.sh must agree with it.
+g="$(policy_landing_guidance)"
+grep -q 'bash .sandcastle/land-pr.sh' <<<"$g"          || fail "the guidance must name the one landing command"
+grep -qF '**Screenshots:** none — <reason>' <<<"$g"    || fail "the guidance must quote the waiver line exactly"
+grep -q 'NEVER push' <<<"$g"                           || fail "the guidance must forbid pushing main"
+! grep -qi 'idss\|control panel\|matou' <<<"$g"        || fail "the guidance renders into EVERY consumer's prompt — no product names (blast-radius rule)"
+pass=$((pass+1))
+
 echo "policy-lib: $pass checks passed"

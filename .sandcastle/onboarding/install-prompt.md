@@ -327,7 +327,7 @@ Run them in any order.
 ```sh
 bash onboarding/onboard.sh labels     <owner/repo> <core|core+design>
 bash onboarding/onboard.sh workflows  <local-checkout>/.forgejo/workflows \
-                                      <pool-label> <e2e-host-label>
+                                      <pool-label> <e2e-host-label> <pool-host-label>...
 bash onboarding/onboard.sh dockerfile <local-checkout>/.sandcastle/Dockerfile \
                                       <stack>
 bash onboarding/onboard.sh secrets    <owner/repo> \
@@ -338,13 +338,17 @@ bash onboarding/onboard.sh secrets    <owner/repo> \
   `core+design` only if this repo is adopting the design-to-agent pipeline;
   otherwise `core`. Note that step 4's interview has already minted any
   hand-off label the tracker lacked.
-- **workflows** — the two arguments are **runner labels**, and they come
+- **workflows** — the arguments are **runner labels**, and they come
   from the host registry, not from a guess: the first is the pool label the
-  swarm's jobs schedule onto, the second is the pinned host label the e2e
-  smoke job needs. Read them out of each chosen machine's registry over its
-  door (`ssh <door> "cat <registry>"`) and repeat them back. With more than
-  one machine, the pool label is the one the machines share, and the pinned
-  label names the ONE machine that carries the repo's product stack. On a
+  harness-only jobs (triage, healer, ci) schedule onto, the second is the
+  pinned host label the e2e smoke job needs, and the rest are the registry
+  `name` of EVERY enrolled pool host — `swarm.yml` renders one matrix leg
+  per host, pinned to that host, so a busy host can never take an idle
+  host's leg (GOTCHAS 62). Read them out of each chosen machine's registry
+  over its door (`ssh <door> "cat <registry>"`) and repeat them back. With
+  more than one machine, the pool label is the one the machines share, the
+  pinned label names the ONE machine that carries the repo's product stack,
+  and the host list names them all (re-render when the pool changes). On a
   machine that has never been enrolled there is no registry to read yet:
   decide the labels with the human NOW, matching the declaration step 8
   will write — the schema in

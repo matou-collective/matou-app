@@ -46,6 +46,25 @@ HEAL_PROMPT_FILE="${HEAL_PROMPT_FILE:-$here/heal-prompt.md}"
 # regenerate command if a pin bump needs a newer identity layer than this
 # consumer regenerated, instead of dying later on `command not found`.
 identity_require || exit 2
+# shellcheck source=policy-lib.sh
+. "$here/policy-lib.sh"       # policy_load — the repo's LANDING knob (#13, ADR 0002); safe to source twice
+# Landing-mode gate (#167, idss ADR 0267 — the healer half of #164's known gap).
+# The healer is fault-driven and never claims a ticket, so no `landing-pr` TICKET
+# reaches it (#165 is vacuous here); the DISTINCT residual is that its claude
+# investigation can COMMIT a harness-infra repair and push it straight to `main`.
+# In a pr-DEFAULT repo every landing on main is meant to be reviewed, so that
+# push is an unattended agent bypassing the PR rail. heal.sh cannot mechanically
+# intercept a `git push` inside the agent's OWN claude session without also
+# killing the (read-only, valuable) diagnosis — so the gate is the strongest
+# lever it does own: the incident prompt. In a pr-default repo the agent is told
+# to diagnose + ESCALATE, never push a repair (a human opens the reviewed PR),
+# and the ledger never marks the fault repaired (nothing landed). Byte-identical
+# in a push repo (the default): no directive, the repair path unchanged.
+# SWARM_POLICY_FILE is the same TEST-only seam session-runner/list-ready-tasks
+# use; unset in production it reads the consumer's real swarm-policy.sh and
+# defaults LANDING=push.
+policy_load "${SWARM_POLICY_FILE:-}"
+HEAL_NO_LAND=""; [ "${SWARM_POLICY_LANDING:-push}" = pr ] && HEAL_NO_LAND=1
 # One runner serves TWO repos now (#238). Per-repo healer state must carry the
 # repo slug or one repo's healer makes the other's skip its incident (the
 # healer lock) and stomps its evidence dir. "Matou/idss" -> "Matou-idss"
@@ -85,6 +104,10 @@ SWARM_VERDICT="${SWARM_VERDICT_PATH:-/tmp/matou-$REPO_TAG-swarm-verdict.txt}"
 TRIAGE_VERDICT="${TRIAGE_VERDICT_PATH:-/tmp/matou-$REPO_TAG-triage-verdict.txt}"
 SMOKE_DRIVE_VERDICT="${SMOKE_DRIVE_VERDICT_PATH:-/tmp/matou-$REPO_TAG-smoke-drive-verdict.txt}"
 PR_E2E_VERDICT="${PR_E2E_VERDICT_PATH:-/tmp/matou-$REPO_TAG-pr-e2e-verdict.txt}"
+# `verify` via the consumer's run-verify.sh (#162 — the reader half of
+# matou-app#380; without it a red verify fell through to stale worker prose and
+# keyed run 12813's signature on an unrelated "Verified in sandbox" line).
+VERIFY_VERDICT="${VERIFY_VERDICT_PATH:-/tmp/matou-$REPO_TAG-verify-verdict.txt}"
 
 # How fresh a verdict or worker log must be to count as evidence for THIS
 # incident's run. Older artifacts (the stale 03:38 worker log that minted phantom
@@ -101,6 +124,7 @@ verdict_path() {
     triage) printf '%s' "$TRIAGE_VERDICT" ;;
     smoke-drive) printf '%s' "$SMOKE_DRIVE_VERDICT" ;;
     pr-e2e) printf '%s' "$PR_E2E_VERDICT" ;;
+    verify) printf '%s' "$VERIFY_VERDICT" ;;
   esac
 }
 
@@ -321,6 +345,10 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
     echo "- Evidence directory: $EVIDENCE (read every file)"
     echo "- Write your report to: $EVIDENCE/diagnosis.md"
     [ -n "${HEAL_DRY_RUN:-}" ] && echo "- DRY RUN: diagnose only. Make NO commits, NO pushes, file NO tickets."
+    # #167: a pr-default repo REVIEWS every landing on main — override the repairs
+    # enrichment's "push to main" for a code fix. Diagnosis and ticket-filing are
+    # unaffected (a ticket is not a push); only the direct-to-main repair is barred.
+    [ -n "$HEAL_NO_LAND" ] && echo "- LANDING=pr: this repo REVIEWS every landing on main (idss ADR 0267). Do NOT push or commit a repair to \`main\`, and do NOT open the PR yourself. Diagnose the fault and set ESCALATE: yes so a human lands the reviewed PR; file a ticket for a product-class fault as usual. (This overrides any 'push to main' in the repairs section above.)"
   } > "$ctx"
   rm -f "$EVIDENCE/diagnosis.md"
   local status=0 heal_attempt=1
@@ -476,6 +504,12 @@ $head_lines" "$thread")"
             # what routed the 2026-08-24 recurrences onto the repair
             # loop-breaker, whose latch this ticket also fixes.
             ledger_set "$sig" ticketed "$(( $(ledger_get "$sig" ticketed | grep -E '^[0-9]+$' || echo 0) + 1 ))"
+            [ -z "$(ledger_get "$sig" repaired)" ] && ledger_set "$sig" repaired 0
+          elif [ -n "$HEAL_NO_LAND" ]; then
+            # pr-default repo (#167): a non-ticket "repair" cannot have LANDED on
+            # main here — the agent was told to escalate, not push — so this is
+            # never a completed repair. Keep it on the reply-cap ladder (repaired=0)
+            # so the still-unlanded fault stays visible, exactly like a dry run.
             [ -z "$(ledger_get "$sig" repaired)" ] && ledger_set "$sig" repaired 0
           else
             ledger_set "$sig" repaired 1

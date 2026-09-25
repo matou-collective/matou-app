@@ -251,6 +251,18 @@ if [ -n "${SWARM_POLICY_TWO_WAY_DOOR_DOC:-}" ]; then
 else
   two_way_door="the factory's inherited two-way-door doctrine; this repo declares no local record of it (set TWO_WAY_DOOR_DOC in swarm-policy.sh), so the bar stated here is the whole test"
 fi
+# Per-repo triage doctrine: the consumer's own committed
+# prompt-enrichments/triage.md, spliced verbatim — the slot the worker, session
+# and healer prompts already have ({{ENRICH:<slot>}}), reached at RUN time here
+# because this prompt is a shell string. Content, never a path, so the #47 rule
+# above holds. The /triage skill lives in the runner user's home, outside every
+# repo; a rule that must hold for HEADLESS triage travels this way.
+# TRIAGE_ENRICH_FILE is a test-only seam.
+triage_enrich=""
+triage_enrich_file="${TRIAGE_ENRICH_FILE:-$here/prompt-enrichments/triage.md}"
+if [ -f "$triage_enrich_file" ]; then
+  triage_enrich=$'\n\n'"$(cat "$triage_enrich_file")"
+fi
 # Ride the host's active account (#510) — triage was the ONE claude caller
 # without select/failover: with only the primary token it refused on A's
 # exhausted window and its claude_limit_park below stamped the HOST-GLOBAL
@@ -261,7 +273,7 @@ fi
 claude_select_token
 triage_attempt=1
 while :; do
-  if ! timeout 2700 claude --model "$SWARM_MODEL" -p "/triage You are running headless in CI: no human can answer questions, so never ask any. Every untriaged issue must leave this run carrying a triage label. When you hit ambiguity or a judgement call you would normally ask a human about, first try to RULE it yourself under ADR 0174 ($two_way_door): if the call is revertible by a later commit or label change and provable by an existing test/drive/probe, and it is not on the one-way-door list (personal credentials, a security-posture widening, a member-facing trust accept, data destruction, non-routine spend), post the ruling to the issue — 'Ruled by agent under ADR 0174 — veto anytime', the ruling, why it is a two-way door, and what proves it — and apply the label your ruling calls for. Only label ready-for-human when the call is a genuine one-way door (state which in a '## Why human' line naming the human residue), or needs-info if the reporter must supply missing information." --dangerously-skip-permissions 2>&1 | tee "$triage_log"; then
+  if ! timeout 2700 claude --model "$SWARM_MODEL" -p "/triage You are running headless in CI: no human can answer questions, so never ask any. Every untriaged issue must leave this run carrying a triage label. When you hit ambiguity or a judgement call you would normally ask a human about, first try to RULE it yourself under ADR 0174 ($two_way_door): if the call is revertible by a later commit or label change and provable by an existing test/drive/probe, and it is not on the one-way-door list (personal credentials, a security-posture widening, a member-facing trust accept, data destruction, non-routine spend), post the ruling to the issue — 'Ruled by agent under ADR 0174 — veto anytime', the ruling, why it is a two-way door, and what proves it — and apply the label your ruling calls for. Only label ready-for-human when the call is a genuine one-way door (state which in a '## Why human' line naming the human residue), or needs-info if the reporter must supply missing information.$triage_enrich" --dangerously-skip-permissions 2>&1 | tee "$triage_log"; then
     # A limit refusal parks the host for every caller and exits CLEAN (never
     # red) — but only after the standby account was tried (#510); any other
     # failure still reddens honestly (the EXIT trap's verdict reads the log).

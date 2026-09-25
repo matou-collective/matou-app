@@ -44,6 +44,22 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
         run: |
           set -euo pipefail
+          # Yield-starvation signal (#110): a triage yield is `exit 0` — a green
+          # run — so N consecutive yields for a repo with untriaged issues look
+          # identical to N healthy no-op ticks (Matou/coa starved 12 tickets
+          # across 12 green yields, the only evidence the ABSENCE of a log). Each
+          # inline yield gate below calls this to bump a per-repo consecutive-
+          # yield counter and, at the threshold, comment on the oldest untriaged
+          # issue + post a Mattermost notice. Runs the VENDORED signal script
+          # from the persisted workdir — these gates fire before THIS tick's
+          # checkout, so a brand-new consumer's very first burst (no prior
+          # checkout) is not covered here; run-triage.sh's own gates and the next
+          # tick (once a checkout lands) close that. Best-effort: a missing script
+          # or a signal error never changes the yield's clean exit.
+          yield_signal() {
+            local sig="$HOME/swarm/$REPO_SLUG/.sandcastle/triage-yield-signal.sh"
+            [ -f "$sig" ] && bash "$sig" "$1" || true
+          }
           # Host capacity semaphore (idss #577, idss ADR 0184): TWO pooled
           # heavy slots shared by swarm AND triage across every repo on this
           # host — /tmp/matou-swarm.lock (slot 1, kept under its original
@@ -81,6 +97,7 @@ jobs:
             n="$(cat "$defer_count" 2>/dev/null || echo 0)"; case "$n" in ''|*[!0-9]*) n=0;; esac; n=$((n+1))
             echo "$n" >"$defer_count"
             echo "triage: a rehearsal drive has reserved host capacity (idss #663) — deferring to a ready drive — skipped $n consecutive tick(s); the cron re-fires"
+            yield_signal drive-reserved
             exit 0
           fi
           rm -f "$defer_count"
@@ -92,6 +109,7 @@ jobs:
             held_slot=/tmp/matou-host-slot-2.lock
             if ! flock -n 9; then
               echo "triage: both host capacity slots busy — yielding; the cron re-fires"
+              yield_signal slots-busy
               exit 0
             fi
           fi
@@ -114,6 +132,7 @@ jobs:
           exec 8>"$workdir_lock"
           if ! flock -n 8; then
             echo "triage: workdir $workdir busy with another job for this repo — yielding; the cron re-fires"
+            yield_signal workdir-busy
             exit 0
           fi
           cd "$workdir"

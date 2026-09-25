@@ -35,6 +35,7 @@ drive="$tmp/drive-wanted"
 defer="$tmp/swarm-defer-count"
 verdict="$tmp/swarm-verdict.txt"
 curl_log="$tmp/curl.log"
+runlog="$tmp/runlog.log"
 
 run_swarm() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
@@ -43,14 +44,14 @@ run_swarm() {
     FORGEJO_TOKEN=dummy FORGEJO_API=http://x/api/v1/repos/x/y \
     REPO_SLUG=Acme/widget SWARM_HOST=box1 \
     HOST_CAPACITY_DRIVE_WANTED="$drive" SWARM_DRIVE_DEFER_COUNT="$defer" \
-    SWARM_VERDICT_PATH="$verdict" \
+    SWARM_VERDICT_PATH="$verdict" SWARM_RUNLOG="$runlog" \
     CURL_LOG="$curl_log" \
     "$@" bash "$here/../run-swarm.sh"
 }
 
 # --- 1. a FRESH reservation makes run-swarm yield: exit 0, before any claim,
 #        leaving no verdict, and climbing its own consecutive-defer count. ---
-rm -f "$defer" "$verdict"; : > "$curl_log"; : > "$drive"
+rm -f "$defer" "$verdict" "$runlog"; : > "$curl_log"; : > "$drive"
 out="$(run_swarm 2>&1)" || fail "a drive-yield must exit 0 (got: $out)"
 grep -q "yielding this run to a ready drive" <<<"$out" || fail "a standing reservation must be reported (got: $out)"
 grep -q "reservation age" <<<"$out" || fail "the yield must log the reservation's age (got: $out)"
@@ -58,6 +59,18 @@ grep -q "skipped 1 consecutive tick(s)" <<<"$out" || fail "the first deferred ti
 [ -s "$curl_log" ] && fail "yielding to the drive must stop before ANY API call / claim (curl log: $(cat "$curl_log"))"
 [ ! -f "$verdict" ] || fail "a drive-yield is a clean exit — no verdict, got: $(cat "$verdict")"
 [ "$(cat "$defer")" = 1 ] || fail "the first deferred tick must leave a defer count of 1, got: $(cat "$defer" 2>/dev/null)"
+# #1733: the pre-work yield is now a traced exit path — it leaves EXACTLY ONE
+# always-on runlog line (#435) so a host that stood down for a drive is no longer
+# invisible on disk (the elitebook-03 blind spot that made #1732 hard to see). It
+# is a runlog line, NOT a verdict (asserted absent just above): the yield stays a
+# clean exit that keys no healer signature.
+[ -s "$runlog" ] || fail "the pre-work drive-yield must leave a runlog line (#1733); runlog is empty"
+[ "$(wc -l <"$runlog")" -eq 1 ] || fail "the yield must leave EXACTLY one runlog line, got: $(cat "$runlog")"
+grep -q "reason=yielded-to-drive" "$runlog" || fail "the yield runlog line must carry reason=yielded-to-drive, got: $(cat "$runlog")"
+grep -q "exit=0" "$runlog" || fail "the yield is a clean exit — the runlog line must read exit=0, got: $(cat "$runlog")"
+grep -qF "ready=[]" "$runlog" || fail "nothing is listed before the yield — the runlog line must read ready=[], got: $(cat "$runlog")"
+grep -q "repo=Acme/widget" "$runlog" || fail "the yield runlog line must name the run's repo, got: $(cat "$runlog")"
+grep -q "host=box1" "$runlog" || fail "the yield runlog line must name the yielding host, got: $(cat "$runlog")"
 pass=$((pass+1))
 
 # --- 2. the consecutive-defer count climbs on a second consecutive defer. ---
@@ -65,6 +78,10 @@ pass=$((pass+1))
 out2="$(run_swarm 2>&1)" || fail "a second drive-yield must exit 0 (got: $out2)"
 grep -q "skipped 2 consecutive tick(s)" <<<"$out2" || fail "the count must climb on a second consecutive defer (got: $out2)"
 [ "$(cat "$defer")" = 2 ] || fail "the second deferred tick must leave a defer count of 2, got: $(cat "$defer" 2>/dev/null)"
+# #1733: every yield is traced — the second consecutive yield APPENDS, so the
+# runlog now holds two yielded-to-drive lines (one recorded trace per stood-down tick).
+[ "$(wc -l <"$runlog")" -eq 2 ] || fail "the second yield must append a second runlog line, got: $(cat "$runlog")"
+[ "$(grep -c "reason=yielded-to-drive" "$runlog")" -eq 2 ] || fail "both stood-down ticks must record reason=yielded-to-drive, got: $(cat "$runlog")"
 pass=$((pass+1))
 
 # --- 3. an EXPIRED reservation (mtime older than the TTL) does NOT yield: the

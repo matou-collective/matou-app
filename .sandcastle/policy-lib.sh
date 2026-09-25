@@ -226,4 +226,90 @@ EOF
   esac
 }
 
+# ── per-ticket landing override (ADR 0002 amendment; idss ADR 0267) ─────────
+# LANDING / MERGE_AUTHORITY above are the repo's DEFAULT. A ticket may carry ONE
+# additive `landing-<suffix>` label that overrides them for that ticket alone —
+# the `model-<name>` precedent (model-lib.sh): a closed allowlist, and an unknown
+# label fails LOUD before a worker spawns, never a silent fall back.
+#
+# The allowlist is the single word `pr`, on purpose: an override only ever
+# TIGHTENS (pr + human merge). There is no `landing-push` — a label that could
+# loosen a LANDING=pr repo would let anyone with tracker write route around a
+# review the repo's owner chose.
+POLICY_TICKET_LANDING_LABELS="${POLICY_TICKET_LANDING_LABELS:-pr}"
+POLICY_LANDING_PR_LABEL="landing-pr"
+
+# policy_ticket_landing <selector> [repo-default] — echo the landing mode a
+# ticket resolves to, or fail LOUD (rc 1, stderr, NO stdout) on a selector that
+# names no allowed override.
+#   ""            -> the repo default (push if omitted) — an unlabelled ticket
+#   "landing-pr"  -> pr   (the tracker-label form)
+#   "pr"          -> pr   (the bare suffix, as list-ready-tasks.sh emits it)
+policy_ticket_landing() {
+  local sel="${1:-}" def="${2:-push}" key k
+  if [ -z "$sel" ]; then printf '%s\n' "$def"; return 0; fi
+  key="${sel#landing-}"
+  for k in $POLICY_TICKET_LANDING_LABELS; do
+    [ "$k" = "$key" ] && { printf '%s\n' "$k"; return 0; }
+  done
+  {
+    printf 'ticket landing resolution FAILED: %s is not an allowed landing override.\n' "$sel"
+    printf 'Allowed labels (landing-<name>):'
+    for k in $POLICY_TICKET_LANDING_LABELS; do printf ' landing-%s' "$k"; done
+    printf '\nFix the ticket'"'"'s landing-* label; a ticket never lands on an unlisted rail.\n'
+  } >&2
+  return 1
+}
+
+# policy_ticket_merge_authority <selector> [repo-default] — a ticket carrying ANY
+# allowed landing override is merged by a HUMAN, whatever the repo default; an
+# unlabelled ticket keeps the repo's authority.
+policy_ticket_merge_authority() {
+  if [ -n "${1:-}" ]; then printf 'human\n'; else printf '%s\n' "${2:-human}"; fi
+}
+
+# policy_landing_guidance — the prose a worker follows for a ticket whose
+# `landing` reads `pr` in a repo whose default is push. Declared ONCE, here,
+# beside the allowlist it explains (the policy_trigger_guidance discipline):
+# prompt-render-lib.sh renders it as {{LANDING_RULES}}; land-pr.sh is the command
+# it names. Free of any product's names or paths (CLAUDE.md's blast-radius rule)
+# — HOW to take screenshots is a consumer's own `workflow-verify` enrichment.
+policy_landing_guidance() {
+  cat <<'EOF'
+## Landing — read your ticket's `landing` field
+
+The claimed ticket's JSON (the ready-tasks block at the top) carries a
+`landing` field.
+
+- `"landing": "push"` — land exactly as the workflow above says.
+- `"landing": "pr"` — the ticket carries the `landing-pr` label. Its work
+  reaches main ONLY through a pull request that a HUMAN merges. For this
+  ticket the workflow's push step does NOT apply:
+
+  1. NEVER push to main — not once, not "just the docs part", not after a
+     rebase. Do not merge the pull request. Do not close the issue by hand.
+  2. Commit as usual, then land with ONE command:
+
+         bash .sandcastle/land-pr.sh <NUMBER> "<concise title> (#<NUMBER>)" <body-file> [screenshot.png ...]
+
+     It pushes `agent/issue-<NUMBER>` (never force), opens the pull request
+     with `closes #<NUMBER>` as its first line followed by your body file,
+     attaches each screenshot, and checks the evidence rule below. If the
+     branch already exists with commits that are not yours, STOP and follow
+     the blocked path — never force-push over unmerged work.
+  3. Evidence is mandatory. Either pass at least one screenshot taken AFTER
+     your fix (add a before-shot when you could reproduce the fault), or —
+     only when the fix has no visible surface — put this line in the body
+     file, on a line of its own, with a real reason:
+
+         **Screenshots:** none — <reason>
+
+     Your repo's workflow section says how to produce the screenshots.
+  4. Then run the close-report gate as usual. It verifies your commits
+     against the pull request's head, refuses if the evidence is missing,
+     and leaves the issue OPEN: the human's merge closes it.
+  5. Never remove the `landing-pr` label. Only a human lifts it.
+EOF
+}
+
 fi

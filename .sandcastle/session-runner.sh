@@ -72,6 +72,14 @@ if [ -z "${FORGEJO_TOKEN:-}" ] && [ -f "$here/.env" ]; then . "$here/.env"; fi
 . "$here/identity-lib.sh"     # identity_require — the contract seam (#31)
 # shellcheck source=swarm-identity.sh
 . "${SWARM_IDENTITY_FILE:-$here/swarm-identity.sh}"   # FORGEJO_API / REPO_SLUG — this repo's identity (ADR 0180 / #571)
+# shellcheck source=landing-lib.sh
+. "$here/landing-lib.sh"      # landing_mode_for (#164) — how a ticket lands: push or pr. Sources forgejo-lib.sh + policy-lib.sh (both guarded, safe beside the model-lib.sh source above). No side effects beyond defining functions.
+# Load the repo's LANDING policy so landing_mode_for below honours a pr-DEFAULT
+# repo, not just the per-ticket `landing-pr` label (idss ADR 0267). SWARM_POLICY_FILE
+# is the same TEST-only seam list-ready-tasks.sh uses; unset in production, so this
+# reads the consumer's real swarm-policy.sh and defaults LANDING=push (byte-identical
+# to before in a push repo, where only a labelled ticket resolves to pr).
+policy_load "${SWARM_POLICY_FILE:-}"
 # Host state is REPO-SCOPED (#35, ADR 0004 point 6). Two enrolled repos on one
 # host must not share a lock (a host-global lock let one repo's in-flight
 # session absorb every OTHER repo's tick for a whole SESSION_RUNNER_TIMEOUT with
@@ -375,6 +383,25 @@ for n in $candidates; do
   # already escalated? (belt to agent-blocked's braces)
   if [ -f "$SESSION_RUNNER_STATE/fail-$n" ] && [ "$(cat "$SESSION_RUNNER_STATE/fail-$n")" -ge 2 ]; then
     echo "session-runner: #$n failed twice — escalated, skipped"; continue
+  fi
+  # landing-pr skip (#165, idss ADR 0265/0267): a ticket that lands by PR must
+  # NOT be worked by an unattended session — this runner's prompt pushes straight
+  # to main, which would BYPASS the PR rail the idss tripwire only PAGES about,
+  # never prevents. Skip it with a one-line log for an interactive session to open
+  # the PR by hand. landing_mode_for (#164) resolves BOTH the per-ticket `landing-pr`
+  # label and a pr-DEFAULT repo. Like host affinity, this is "not this runner's
+  # ticket", NOT a failed attempt: skipped BEFORE the claim/attempt marker/fail-$n.
+  # rc 1 (unreadable ticket, or an off-allowlist landing-* label) → skip too: better
+  # a quiet retried tick than risk a landing-pr ticket walking onto main (the same
+  # fail-CLOSED posture landing_push takes — an unreadable ticket lands nowhere).
+  if sr_landing="$(landing_mode_for "$n" 2>/dev/null)"; then
+    if [ "$sr_landing" = pr ]; then
+      echo "session-runner: #$n lands by PR (landing-pr label or pr-default repo) — skipped for an interactive session to open the PR by hand (#165, not an attempt)"
+      continue
+    fi
+  else
+    echo "session-runner: #$n — cannot resolve how it lands; skipped rather than risk pushing a landing-pr ticket to main (#165, not an attempt)"
+    continue
   fi
   open_deps="$(api "$FORGEJO_API/issues/$n/dependencies?limit=50" \
     | jq '[.[] | select(.state == "open")] | length')" \

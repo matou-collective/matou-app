@@ -27,6 +27,13 @@ git init -q "$tmp/checkout"   # the runner only fetch/resets a REAL clone; stub 
 # test-owned prefix — SESSION_RUNNER_TMP — not real /tmp.
 # shellcheck source=test-env.sh
 . "$here/test-env.sh"; test_env_hermetic "$tmp"
+# #186: a test-controlled PUSH policy run_runner pins by default — an unset
+# SWARM_POLICY_FILE sources the HOST repo's real swarm-policy.sh, so a vendored
+# run from a LANDING=pr consumer flipped the pick loop into the #165 landing-pr
+# skip and RED'd the "picked #25" pick-order assertion. Group 25c passes its own
+# pr policy via "$@", which env applies over this default.
+printf 'LANDING=push\n' > "$tmp/push-policy.sh"
+export SWARM_POLICY_FILE="$tmp/push-policy.sh"
 
 # ── fake curl: routes on the URL, logs every call ────────────────────────────
 cat > "$tmp/bin/curl" <<'EOF'
@@ -224,6 +231,7 @@ run_runner() {
     HOST_CAPACITY_DRIVE_WANTED="$tmp/hc-drive-wanted-absent-by-default" \
     SESSION_RUNNER_DRIVE_DEFER_COUNT="$tmp/hc-drive-defer-count" \
     SWARM_DB="$tmp/swarm.db" \
+    SWARM_POLICY_FILE="$tmp/push-policy.sh" \
     "$@" bash "$here/../session-runner.sh" 2>&1
 }
 # swarm.db assertions (#81): the mirror is a plain SQLite file — read it back
@@ -1073,4 +1081,67 @@ grep -qi "proceeding unarbitrated" <<<"$out" || fail "24c: an unpostable claim m
 [ "$(wc -l < "$tmp/claude.calls")" = 1 ] || fail "24c: the unarbitrated fallback must still run one session (got: $(wc -l < "$tmp/claude.calls"))"
 echo "ok 24c a failed claim post falls back to running (never a wedge)"
 
-echo "session-runner: 24 groups passed"
+# 25: landing-pr skip (#165, idss ADR 0265/0267) — a ticket that lands by PR must
+#     NEVER be worked by an unattended session: this runner's prompt pushes straight
+#     to main, bypassing the PR rail the idss tripwire only PAGES about. It is
+#     skipped at pick time exactly like host affinity — no claim, no attempt marker,
+#     no fail counter, no session, no run row — left for an interactive session to
+#     open the PR by hand. landing_mode_for (#164) resolves BOTH the per-ticket
+#     `landing-pr` label and a pr-DEFAULT repo. Core resolution lives in
+#     tests/landing-lib-test.sh; these assert the session-runner WIRING.
+
+# 25a: a `landing-pr`-labelled ticket (push-default repo) is skipped, burning no
+#      attempt; being the only candidate, the tick finds nothing workable.
+reset_case
+mkissue 60 '{"id":200,"name":"landing-pr"}'
+jq -s '.' "$tmp/fixtures/issue-60.json" > "$tmp/fixtures/queue.json"
+out="$(run_runner)"
+grep -q "picked #60" <<<"$out" && fail "25a: a landing-pr ticket must NOT be picked (got: $out)"
+grep -qi "lands by PR" <<<"$out" || fail "25a: the skip must say the ticket lands by PR (got: $out)"
+grep -qi "nothing workable" <<<"$out" || fail "25a: a lone landing-pr ticket must leave nothing workable (got: $out)"
+grep -q "POST http://fake/api/v1/repos/x/y/issues/60/labels" "$tmp/curl.log" \
+  && fail "25a: a landing-pr skip must never claim the ticket"
+[ -s "$tmp/claude.calls" ] && fail "25a: a landing-pr skip must not start a session"
+[ -f "$tmp/state/attempt-60" ] && fail "25a: a landing-pr skip must not stamp an attempt marker"
+[ -f "$tmp/state/fail-60" ] && fail "25a: a landing-pr skip must NOT burn an attempt (#165)"
+[ -z "$(dbq "SELECT run_id FROM runs")" ] || fail "25a: a landing-pr skip starts no session, so records no run row"
+echo "ok 25a a landing-pr ticket is skipped at pick time, burning no attempt and starting no session"
+
+# 25b: a landing-pr ticket does not BLOCK the queue — a plain push ticket behind it
+#      is still picked and worked, and the stepped-over landing-pr ticket is charged
+#      no failed attempt.
+reset_case
+mkissue 60 '{"id":200,"name":"landing-pr"}'
+mkissue 61
+jq -s '.' "$tmp/fixtures/issue-60.json" "$tmp/fixtures/issue-61.json" > "$tmp/fixtures/queue.json"
+out="$(run_runner)"
+grep -q "picked #61" <<<"$out" || fail "25b: a plain push ticket behind a landing-pr one must still be picked (got: $out)"
+grep -q "outcome: advanced" <<<"$out" || fail "25b: the push ticket must be worked to completion (got: $out)"
+[ -f "$tmp/state/fail-60" ] && fail "25b: stepping over a landing-pr ticket must not count against it"
+echo "ok 25b a landing-pr ticket does not block a push ticket behind it, and is charged no attempt"
+
+# 25c: a pr-DEFAULT repo (SWARM_POLICY_FILE sets LANDING=pr) skips even an UNLABELLED
+#      ticket — the whole repo lands by PR, so no unattended session may push main.
+reset_case
+printf 'LANDING=pr\n' > "$tmp/pr-policy.sh"
+mkissue 62
+jq -s '.' "$tmp/fixtures/issue-62.json" > "$tmp/fixtures/queue.json"
+out="$(run_runner SWARM_POLICY_FILE="$tmp/pr-policy.sh")"
+grep -q "picked #62" <<<"$out" && fail "25c: a pr-default repo must skip even an unlabelled ticket (got: $out)"
+grep -qi "lands by PR" <<<"$out" || fail "25c: the pr-default skip must say the ticket lands by PR (got: $out)"
+[ -s "$tmp/claude.calls" ] && fail "25c: a pr-default skip must start no session"
+echo "ok 25c a pr-default repo skips even an unlabelled ticket"
+
+# 25d: a ticket with an OFF-ALLOWLIST landing-* label makes landing_mode_for return
+#      non-zero (it refuses to guess how the ticket lands) — the runner skips it
+#      fail-CLOSED rather than risk pushing a landing ticket to main.
+reset_case
+mkissue 63 '{"id":201,"name":"landing-bogus"}'
+jq -s '.' "$tmp/fixtures/issue-63.json" > "$tmp/fixtures/queue.json"
+out="$(run_runner)"
+grep -q "picked #63" <<<"$out" && fail "25d: an unresolvable landing label must not be picked (got: $out)"
+grep -qi "cannot resolve how it lands" <<<"$out" || fail "25d: the fail-closed skip must say it cannot resolve landing (got: $out)"
+[ -s "$tmp/claude.calls" ] && fail "25d: a fail-closed skip must start no session"
+echo "ok 25d a ticket with an off-allowlist landing-* label is skipped fail-closed"
+
+echo "session-runner: 25 groups passed"

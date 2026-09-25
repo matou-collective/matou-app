@@ -36,10 +36,16 @@ check "emits exactly one ticket" '[ "$(jq length <<<"$out")" = "1" ]'
 check "emits the head" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
 check "claim comment posted" 'grep -q "swarm-claim host=eb03 run=513" "$FAKE_DIR/comments-431.json"'
 check "agent-working added" 'grep -q "POST .*issues/431/labels" "$FAKE_DIR/calls.log"'
-# #13: the landing instruction line — default (no policy file) is push-to-main,
-# on stderr so the JSON stdout contract stays clean.
+# #13: the landing instruction line — a PUSH policy prints push-to-main, on
+# stderr so the JSON stdout contract stays clean. #186: pin SWARM_POLICY_FILE to
+# a test-controlled push policy here too — leaving the seam unset made this
+# scenario source the HOST repo's real swarm-policy.sh, so a vendored test run
+# from a LANDING=pr consumer read the PR-branch line and RED'd (pass=43 fail=1).
+# An empty file or an explicit LANDING=push both resolve to "landing: push to
+# main"; use the explicit form for legibility.
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
-bash "$script" >"$FAKE_DIR/lstdout" 2>"$FAKE_DIR/lstderr"
+printf '%s\n' 'LANDING=push' > "$FAKE_DIR/swarm-policy.sh"
+SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" bash "$script" >"$FAKE_DIR/lstdout" 2>"$FAKE_DIR/lstderr"
 check "push-mode landing line printed on stderr" 'grep -q "landing: push to main" "$FAKE_DIR/lstderr"'
 check "landing line does NOT pollute the JSON stdout" \
   '[ "$(jq -r ".[0].number" < "$FAKE_DIR/lstdout")" = "431" ]'
@@ -149,8 +155,15 @@ check "deadline too tight says so on stderr" 'grep -q "deadline" "$FAKE_DIR/derr
 # the outer 30s again. Assert the arithmetic on the real argv, not the intent.
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
 CLAIM_NEXT_DEADLINE=20 CLAIM_CANDIDATE_CALLS=5 bash "$script" >/dev/null 2>&1
-check "walk cap is deadline-derived (20/5 = 4s), not the old flat 10s" \
-  'grep -q -- "--max-time 4 " "$FAKE_DIR/argv.log" || grep -q -- "--max-time 4$" "$FAKE_DIR/argv.log"'
+# The derived per-call cap is the SMALLEST --max-time on the real argv (the
+# candidate walk; the prefetch leg is larger). Assert the invariant, not the
+# literal: pinning `--max-time 4` flaked ~1-in-8 because the derivation subtracts
+# elapsed SECONDS, so a run that crossed a one-second boundary derives a MORE
+# conservative cap 3 (from 19/5) and reds a green code path (#166). `cap < 10`
+# still catches a regression to the old flat 10s cap.
+cap="$(sed -n "s/.*--max-time \([0-9]*\).*/\1/p" "$FAKE_DIR/argv.log" | sort -n | head -1)"
+check "walk cap is deadline-derived (>= floor, calls x cap fits deadline, < old flat 10s)" \
+  '[ -n "$cap" ] && [ "$cap" -ge 2 ] && [ "$((cap * 5))" -le 20 ] && [ "$cap" -lt 10 ]'
 check "worst-case candidate (calls x cap) fits inside the deadline" \
   '[ "$(sed -n "s/.*issues\/431\/comments.*//;s/.*--max-time \([0-9]*\).*/\1/p" "$FAKE_DIR/argv.log" | sort -n | tail -1)" -le 20 ]'
 # The explicit override stays absolute — an operator/probe retune is eyes-open

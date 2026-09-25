@@ -100,10 +100,11 @@ claim_label_id() { # claim_label_id <name> -> id | rc 1 (LOUD on miss)
 claim_alive_runs() { # -> JSON array of in-progress swarm run numbers | rc 1 on API failure
   # &page=1 is mandatory: without it Forgejo ignores `limit` and dumps every
   # task ever (O(n), ~30s and growing — the 2026-07-30 healer blindness).
-  # Name match is `swarm` OR `swarm (N)` (#541): swarm.yml's 2-wide worker
-  # matrix (44fe333) makes Forgejo suffix each matrix job's name with its
-  # index — live-probed 2026-08-15, every real task is "swarm (1)"/"swarm
-  # (2)", never bare "swarm". An exact-match filter (the pre-matrix original)
+  # Name match is `swarm` OR `swarm (<suffix>)` (#541): swarm.yml's matrix
+  # makes Forgejo suffix each matrix job's name — the worker index under the
+  # 2-wide pool matrix (44fe333, live-probed 2026-08-15: "swarm (1)"/"swarm
+  # (2)"), the host label under the per-host matrix (GOTCHAS 62: "swarm
+  # (<host>)") — never bare "swarm". An exact-match filter (the pre-matrix original)
   # silently always returned [], so claim_won's arbitration only ever saw a
   # caller's OWN claim as alive and every racing host "won" — two hosts fully
   # implemented #536 before either noticed the other.
@@ -233,6 +234,33 @@ claim_won() { # claim_won <issue> <my_comment_id> <alive_runs_json> -> rc 0 if m
     fi
   done <<<"$comments"
   [ "$lowest" = "$2" ]
+}
+
+claim_owned_by_run() { # claim_owned_by_run <issue> <run> -> 0 owned; 1 reachable but NO claim for this run; 3 tracker unreachable
+  # The COMMIT-time counterpart to claim_won (git-hooks/commit-msg, #1717).
+  # claim_won answers "did I win the race for a claim I posted?"; this answers
+  # the blunter question a mechanical gate needs before any work lands: does a
+  # `swarm-claim host=... run=<run>` for THIS run exist on the issue at all? Its
+  # absence is exactly what let run 29782's elitebook worker implement #1713
+  # with no claim of its own — duplicate work whose orphan commit poisoned the
+  # shared workdir's local main and RED the merge-to-main sync, and which
+  # NOTHING mechanical refused (close-report's gates only run at CLOSE, and a
+  # lost push race never reaches them).
+  #
+  # The three return codes are the whole contract, so the caller picks its fail
+  # posture: rc 0 owned (allow); rc 1 the tracker was READ and holds no such
+  # claim (the real refusal — fail CLOSED); rc 3 the tracker could not be reached
+  # (_claim_comments's own curl failure — the caller FAILS OPEN, because a forge
+  # blip must never wedge an honestly-claimed worker mid-iteration, the same
+  # fail-open the pre-push drift gate takes on an unreachable factory).
+  local issue="$1" run="$2" comments cid r
+  [ -n "$run" ] && [ "$run" != 0 ] || return 1
+  comments="$(_claim_comments "$issue")" || return 3
+  while read -r cid r; do
+    [ -n "$cid" ] || continue
+    [ "$r" = "$run" ] && return 0
+  done <<<"$comments"
+  return 1
 }
 
 claim_mark_working() { # claim_mark_working <issue> -> rc 0 on a 2xx label write; LOUD + rc 1 on refusal (#20)

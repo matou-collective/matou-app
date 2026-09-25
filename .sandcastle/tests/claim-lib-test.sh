@@ -388,5 +388,30 @@ check "default absence threshold is 2 consecutive polls" '[ "$d" = 2 ]'
 dr="$(env -u CLAIM_ALIVE_RETRIES bash -c ". \"$here/../claim-lib.sh\"; printf %s \"\$CLAIM_ALIVE_RETRIES\"")"
 check "default alive-poll retries is 2" '[ "$dr" = 2 ]'
 
+# T24 (#1717): claim_owned_by_run — the COMMIT-time gate helper. Distinct from
+# claim_won (which arbitrates a race the caller entered); this asks the blunter
+# "does a swarm-claim for THIS run exist on the issue at all?", with three rc so
+# the commit-msg hook can fail OPEN on an unreachable tracker and CLOSED on a
+# read that shows no claim.
+setup
+c1="$(claim_post 700 hostA 900)"
+check "owned: rc 0 when a claim for this run exists" 'claim_owned_by_run 700 900'
+check "not owned: rc 1 when the issue has claims but none for this run" 'claim_owned_by_run 700 901; [ "$?" -eq 1 ]'
+# An issue this run never touched (no comments fixture) reads as an empty list —
+# reachable, no claim: the real refusal (rc 1), exactly run 29782's #1713 case.
+check "not owned: rc 1 on an issue with no claim comments at all" 'claim_owned_by_run 1713 29782; [ "$?" -eq 1 ]'
+# A second host's claim on the same issue does not count as ours.
+c2="$(claim_post 700 hostB 902)"
+check "not owned: another host's claim on the same issue is not this run's" 'claim_owned_by_run 700 903; [ "$?" -eq 1 ]'
+check "owned: still finds our own claim among several" 'claim_owned_by_run 700 900'
+# Tracker unreachable (curl -sf faults) -> rc 3, so the caller FAILS OPEN.
+setup
+c1="$(claim_post 700 hostA 900)"
+touch "$FAKE_DIR/api-timeout"
+check "unreachable: rc 3 when the comments read faults (fail-open signal)" 'claim_owned_by_run 700 900; [ "$?" -eq 3 ]'
+rm -f "$FAKE_DIR/api-timeout"
+# run 0 / empty is never "owned" — a run-0 claim protects nothing (#468).
+check "run 0 is never owned (rc 1)" 'claim_owned_by_run 700 0; [ "$?" -eq 1 ]'
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

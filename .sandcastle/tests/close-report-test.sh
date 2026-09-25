@@ -35,7 +35,12 @@ run_close() { # run_close <issue> <envelope-json> [close-fail-code]; sets rc + f
   # release must warn, never change the exit code.
   [ -n "${4:-}" ] && printf '%s' "$4" > "$FAKE_DIR/label-delete-fail"
   local ef="$FAKE_DIR/envelope.json"; printf '%s' "$2" > "$ef"
-  ( cd "$repo" && bash "$here/../close-report.sh" "$1" "$ef" ) >"$FAKE_DIR/stdout.log" 2>&1
+  # #186: pin the push policy per-scenario — an unset SWARM_POLICY_FILE sources the
+  # HOST repo's real swarm-policy.sh, so T1-T6 (which assert push-mode close: gate
+  # against main + a direct PATCH-closed) RED when this vendored test runs from a
+  # LANDING=pr consumer. The pr/landing-pr scenarios below pin their own file.
+  printf 'LANDING=push\n' > "$FAKE_DIR/swarm-policy.sh"
+  ( cd "$repo" && SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" bash "$here/../close-report.sh" "$1" "$ef" ) >"$FAKE_DIR/stdout.log" 2>&1
 }
 
 posted_comment() { grep -q '"body"' "$FAKE_DIR/forgejo.log" 2>/dev/null; }
@@ -319,6 +324,58 @@ run_close_pr_superseded 444 "$pr_env" "sandcastle/worker/xyz" no no; rc=$?
 ! posted_superseded || fail "an open issue must NOT get a superseded verdict (#151)"; ok
 grep -q 'no open agent PR' "$FAKE_DIR/forgejo.log" \
   || fail "the genuine no-landing refusal must still fire for an open issue (#13/#151)"; ok
+
+# ── per-ticket landing (idss ADR 0267) ───────────────────────────────────────
+# A PUSH-default repo (no LANDING=pr in the policy file) whose ticket carries
+# `landing-pr`: close-report must take the PR path for THAT ticket.
+run_close_ticket_pr() { # run_close_ticket_pr <issue> <envelope> <pr-body> <assets-json> [repo-merge-authority]
+  FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
+  printf 'LANDING=push\nMERGE_AUTHORITY=%s\n' "${5:-human}" > "$FAKE_DIR/swarm-policy.sh"
+  export SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh"
+  printf '{"number":%s,"state":"open","labels":[{"name":"ready-for-agent"},{"name":"landing-pr"}]}\n' "$1" > "$FAKE_DIR/issue-$1.json"
+  printf '[{"number":88,"head":{"ref":"agent/issue-%s"}}]\n' "$1" > "$FAKE_DIR/open-pulls.json"
+  jq -n --arg ref "agent/issue-$1" --arg sha "$c1" --arg body "$3" \
+    '{number:88, head:{ref:$ref, sha:$sha}, html_url:"u/pr/88", body:$body}' > "$FAKE_DIR/pr-88.json"
+  printf '%s\n' "$4" > "$FAKE_DIR/assets.json"
+  printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"},{"id":48,"name":"agent-blocked"}]\n' > "$FAKE_DIR/labels.json"
+  printf '{"state":"success","statuses":[{"status":"success","context":"ci/build"}]}\n' > "$FAKE_DIR/commit-status.json"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$1" >> "%s/notify.log"\n' "$FAKE_DIR" > "$FAKE_DIR/notify.sh"
+  export CLOSE_REPORT_NOTIFY="$FAKE_DIR/notify.sh"
+  local ef="$FAKE_DIR/envelope.json"; printf '%s' "$2" > "$ef"
+  ( cd "$repo" && bash "$here/../close-report.sh" "$1" "$ef" ) >"$FAKE_DIR/stdout.log" 2>&1
+}
+
+# TL-1 — evidence attached: the PR path, issue left OPEN, Ben paged once.
+run_close_ticket_pr 444 "$pr_env" "closes #444" '[{"name":"after-rail-foot.png"}]'; rc=$?
+[ "$rc" -eq 0 ] || fail "TL-1: a landing-pr close with a screenshot should exit 0, got $rc: $(cat "$FAKE_DIR/stdout.log")"; ok
+! close_stuck 444 || fail "TL-1: a landing-pr ticket must NOT be closed by the worker (the human's merge closes it)"; ok
+! merged_pr || fail "TL-1: a landing-pr PR must NOT be merged by the harness"; ok
+grep -q 'awaiting human merge' "$FAKE_DIR/stdout.log" || fail "TL-1: must say the issue awaits a human merge"; ok
+grep -q 'ready for your review' "$FAKE_DIR/notify.log" 2>/dev/null || fail "TL-1: a verified landing-pr close must page that the PR is ready for review"; ok
+
+# TL-2 — the waiver line stands in for a screenshot.
+run_close_ticket_pr 444 "$pr_env" $'closes #444\n\n**Screenshots:** none — Go-side fix, nothing renders' '[]'; rc=$?
+[ "$rc" -eq 0 ] || fail "TL-2: the waiver line must satisfy the evidence rule, got $rc"; ok
+
+# TL-3 — neither: REFUSED, violation names the evidence, nobody is paged.
+run_close_ticket_pr 444 "$pr_env" "closes #444" '[]'; rc=$?
+[ "$rc" -eq 1 ] || fail "TL-3: a bare landing-pr PR must be refused, got $rc"; ok
+grep -q 'no screenshot' "$FAKE_DIR/stdout.log" || fail "TL-3: the violation must name the missing evidence"; ok
+[ ! -s "$FAKE_DIR/notify.log" ] || fail "TL-3: no review page for a PR without evidence"; ok
+grep -qE '^SANDCASTLE_ATTEMPT issue=444 outcome=refused ' "$FAKE_DIR/stdout.log" || fail "TL-3: outcome must read refused"; ok
+
+# TL-4 — an agent-after-green repo still leaves a landing-pr PR for a human.
+run_close_ticket_pr 444 "$pr_env" "closes #444" '[{"name":"after.png"}]' agent-after-green; rc=$?
+[ "$rc" -eq 0 ] || fail "TL-4: should exit 0, got $rc"; ok
+! merged_pr || fail "TL-4: agent-after-green must NOT merge a landing-pr ticket's PR"; ok
+
+# TL-5 — the same push repo, an UNLABELLED ticket: today's direct close, untouched.
+FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
+printf 'LANDING=push\n' > "$FAKE_DIR/swarm-policy.sh"; export SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh"
+printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"}]\n' > "$FAKE_DIR/labels.json"
+printf '%s' "$pr_env" > "$FAKE_DIR/envelope.json"
+( cd "$repo" && bash "$here/../close-report.sh" 444 "$FAKE_DIR/envelope.json" ) >"$FAKE_DIR/stdout.log" 2>&1; rc=$?
+[ "$rc" -eq 0 ] && close_stuck 444 || fail "TL-5: an unlabelled ticket in a push repo must still close directly, got rc=$rc"; ok
 
 unset SWARM_POLICY_FILE
 
