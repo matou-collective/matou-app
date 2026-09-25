@@ -2,7 +2,7 @@
   <div class="link-qr-screen h-full flex flex-col bg-background">
     <OnboardingHeader
       title="Sign in with your phone"
-      subtitle="Link this computer to your existing Matou identity"
+      :subtitle="`Link this computer to your existing ${KIT.brand.name} identity`"
       :show-back-button="true"
       @back="onBack"
     />
@@ -29,9 +29,9 @@
             <div v-else class="w-56 h-56 flex items-center justify-center">
               <div class="w-10 h-10 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
             </div>
-            <h3 class="text-base font-semibold mt-5">Scan this with the Matou app on your phone</h3>
+            <h3 class="text-base font-semibold mt-5">Scan this with the {{ KIT.brand.name }} app on your phone</h3>
             <p class="text-sm text-muted-foreground mt-1">
-              Open Matou on your phone and choose "Sign in with your computer".
+              Open {{ KIT.brand.name }} on your phone and choose "Sign in with your computer".
             </p>
             <p v-if="countdown" class="text-xs text-muted-foreground mt-3">
               This code expires in {{ countdown }}
@@ -92,7 +92,7 @@
           <CheckCircle2 class="w-10 h-10 text-accent mx-auto mb-3" />
           <h3 class="text-base font-semibold mb-1">Linked</h3>
           <p class="text-sm text-muted-foreground mb-4">
-            Your phone now has your identity. You can keep using Matou on this computer.
+            Your phone now has your identity. You can keep using {{ KIT.brand.name }} on this computer.
           </p>
           <MBtn class="w-full h-11 rounded-xl" @click="onBack">Done</MBtn>
         </div>
@@ -142,6 +142,7 @@ import {
   type SessionStatus,
 } from 'src/composables/usePairing';
 import { useRecoverIdentity } from 'src/composables/useRecoverIdentity';
+import { KIT } from 'src/generated/kit';
 
 type Phase =
   | 'loading'
@@ -232,7 +233,7 @@ function describeError(err: unknown, fallback: string): string {
       );
     }
     if (err.code === 'config-server-mismatch') {
-      return 'Your phone is set up for a different Matou server than this computer. Both devices must use the same server.';
+      return `Your phone is set up for a different ${KIT.brand.name} server than this computer. Both devices must use the same server.`;
     }
     if (err.status === 410) return 'This code expired before your phone finished. Start over to show a new one.';
     if (err.status === 404) {

@@ -16,7 +16,9 @@ import { join, relative } from 'node:path';
  * and are still caught.
  */
 const ROOT = join(__dirname, '../../src');
-const LEAK = /Mātou|matou\.nz/g;
+// The name is caught with or without the macron: the linked-device QR screen
+// shipped "Matou" five times past a macron-only pattern.
+const LEAK = /\bM[āa]tou\b|matou\.nz/g;
 
 // file -> number of literals still allowed. Mātou's own product content
 // (about/guidelines pages) and genuinely Mātou-specific chrome.
