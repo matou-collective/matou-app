@@ -15,6 +15,13 @@ export interface DesktopEntryParams {
   appImagePath: string;
   /** Deep-link scheme this build claims (e.g. `matou`). */
   scheme: string;
+  /**
+   * Absolute path to the installed icon png. An absolute `Icon=` rather than the
+   * theme name: GNOME Shell only reads the hicolor dirs that existed when it
+   * started, and a first install creates them later, so a theme name shows the
+   * gear until the next login (#651).
+   */
+  iconPath: string;
 }
 
 /**
@@ -33,13 +40,13 @@ export interface DesktopEntryParams {
  * Per-community schemes would be a separate ruling, since the IDSS bridge mints
  * the links.
  */
-export function buildDesktopEntry({ name, executableName, appImagePath, scheme }: DesktopEntryParams): string {
+export function buildDesktopEntry({ name, executableName, appImagePath, scheme, iconPath }: DesktopEntryParams): string {
   return `[Desktop Entry]
 Name=${name}
 Exec="${appImagePath}" %U
 Terminal=false
 Type=Application
-Icon=${executableName}
+Icon=${iconPath}
 StartupWMClass=${executableName}
 Categories=Network;
 MimeType=x-scheme-handler/${scheme};
