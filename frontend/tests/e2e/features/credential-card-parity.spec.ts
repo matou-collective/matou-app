@@ -1,21 +1,19 @@
 import { test, expect, Page } from './fixtures';
 
 /**
- * Issue #622 — the wallet's Credentials tab draws each credential like the IDSS
- * control panel's credential card (mark tile top-left, status pill top-right,
- * bold name, a Received/Issued tag, description, date footer; a `display`
- * credential paints the whole card with its background and contrast ink). In a
- * Coa build the Cards/Graph toggle and the relationship graph are hidden.
+ * Credential-card parity (issue #633, follow-up to #622) — the wallet's
+ * credential card is drawn to the IDSS control panel's card anatomy so the two
+ * read as the same card. This spec pins that anatomy by STRUCTURE (tile / chip /
+ * name / tag / body / OPEN) for a painted and an unpainted credential, and
+ * carries a screenshot of the pair into the PR for the side-by-side comparison
+ * with the panel's Members → Credentials.
  *
- * The Coa-vs-Mātou gate is a build-time constant (KIT.slug, baked at build), so
- * the no-toggle Coa case cannot be exercised in this stock-Mātou e2e harness —
- * it is covered by tests/scripts/issue-622-wallet-card.test.ts. What this spec
- * demonstrates is the card shape itself (section 2), which applies to every
- * build, plus that stock Mātou still offers both the toggle and the graph.
+ * The design source is named in WalletCredentialCard.vue's header comment; when
+ * the IDSS panel card changes, this spec is its named counterpart to re-pin.
  *
- * As in issue-597.spec.ts, a styled credential only exists once an IDSS
- * community issues one, so we seed the wallet store's already-mapped
- * credentials directly through the app's own store module.
+ * A styled credential only exists once an IDSS community issues one, so — as in
+ * issue-597/issue-622 — we seed the wallet store's already-mapped credentials
+ * directly through the app's own store module.
  */
 
 function credFixtures() {
@@ -42,14 +40,14 @@ function credFixtures() {
       said: 'ECREDPAINTED00000000000000000000000000000000',
       schemaTitle: 'Committee Membership',
       committee: 'finance-komiti',
-      // Painted: whole card takes this background with contrast ink.
+      // Painted: the whole card takes this background with contrast ink.
       display: { name: 'Finance komiti', icon: 'landmark', background: '#0a5c6b' },
     },
     {
       ...base,
       said: 'ECREDPLAIN0000000000000000000000000000000000',
       schemaTitle: 'Mātou Membership',
-      // No display → the same card shape, unpainted, with the seal/legacy mark.
+      // No display → the same card anatomy, unpainted, with the seal/legacy mark.
       display: undefined,
     },
   ];
@@ -79,8 +77,8 @@ async function seedCredentials(page: Page, creds: unknown[]): Promise<void> {
   }, creds);
 }
 
-test.describe('#622 wallet credential cards like the IDSS control panel', () => {
-  test('painted + unpainted cards, and stock Mātou keeps the toggle + graph', async ({
+test.describe('credential-card parity with the IDSS control panel (#633)', () => {
+  test('pins the panel card anatomy for a painted and an unpainted card', async ({
     memberPage,
     snap,
   }) => {
@@ -90,30 +88,32 @@ test.describe('#622 wallet credential cards like the IDSS control panel', () => 
     const cards = memberPage.locator('.wallet-cred-card');
     await expect(cards).toHaveCount(2);
 
-    // Card shape: mark tile, status pill, bold name and a Received/Issued tag.
+    // --- Painted card: every element of the panel anatomy is present. ---
     const painted = cards.filter({ hasText: 'Finance komiti' });
-    await expect(painted.locator('.cred-tile .cred-mark')).toBeVisible();
-    await expect(painted.locator('.cred-chip')).toBeVisible();
-    await expect(painted.locator('.cred-name')).toHaveText('Finance komiti');
-    await expect(painted.locator('.cred-tag')).toBeVisible();
-    await expect(painted.locator('.cred-open')).toHaveText('OPEN');
-
-    // The painted card carries the display background inline and is .painted.
     await expect(painted).toHaveClass(/painted/);
-    await expect(painted).toHaveAttribute('style', /background/);
+    await expect(painted).toHaveAttribute('style', /background/); // whole card painted
+    await expect(painted.locator('.cred-tile .cred-mark')).toBeVisible(); // square mark tile
+    await expect(painted.locator('.cred-chip')).toBeVisible(); // status chip
+    await expect(painted.locator('.cred-name')).toHaveText('Finance komiti'); // monospace name
+    await expect(painted.locator('.cred-tag')).toBeVisible(); // outlined tag
+    await expect(painted.locator('.cred-line').first()).toBeVisible(); // muted body line
+    await expect(painted.locator('.cred-open')).toHaveText('OPEN'); // OPEN button
 
-    // The plain credential is the same card shape, unpainted.
+    // --- Unpainted card: the same anatomy, no paint. ---
     const plain = cards.filter({ hasText: 'Mātou Membership' });
     await expect(plain).not.toHaveClass(/painted/);
+    await expect(plain.locator('.cred-tile .cred-mark')).toBeVisible();
     await expect(plain.locator('.cred-chip')).toBeVisible();
+    await expect(plain.locator('.cred-name')).toHaveText('Mātou Membership');
+    await expect(plain.locator('.cred-tag')).toBeVisible();
+    await expect(plain.locator('.cred-open')).toHaveText('OPEN');
 
-    await snap(memberPage, 'wallet-credential-cards');
+    // The pair — for the side-by-side with the panel's Members → Credentials.
+    await snap(memberPage, 'credential-card-parity');
 
-    // Stock Mātou still offers the Cards/Graph toggle and the graph view.
-    const graphBtn = memberPage.getByRole('button', { name: /graph/i });
-    await expect(graphBtn).toBeVisible();
-    await graphBtn.click();
-    await expect(memberPage.locator('.graph-view')).toBeVisible();
-    await snap(memberPage, 'wallet-graph-still-available-on-matou');
+    // OPEN opens the detail dialog (the card's only click affordance now).
+    await plain.locator('.cred-open').click();
+    await expect(memberPage.locator('.credential-dialog')).toBeVisible();
+    await snap(memberPage, 'credential-card-parity-open-dialog');
   });
 });
