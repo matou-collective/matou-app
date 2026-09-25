@@ -362,6 +362,15 @@ export async function getMembershipSchemaSaid(): Promise<string> {
 }
 
 /**
+ * The community group AID the descriptor names (`community.aid`), the issuer of
+ * every credential on an IDSS community; empty when the document names none.
+ */
+export async function getCommunityAid(): Promise<string> {
+  const config = await fetchClientConfig();
+  return parseDescriptor(config).community?.aid ?? '';
+}
+
+/**
  * The Membership schema OOBI from the descriptor's `schemas` block, or
  * undefined when the document names none (a coa-shared backend).
  */
