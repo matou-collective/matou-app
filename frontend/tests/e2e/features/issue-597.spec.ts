@@ -145,8 +145,8 @@ test.describe('#597 wallet renders IDSS a.display credentials', () => {
 
     await snap(memberPage, 'credential-cards-by-display');
 
-    // Open the styled committee credential's detail dialog.
-    await cards.filter({ hasText: 'Finance komiti' }).click();
+    // Open the styled committee credential's detail dialog via its OPEN button.
+    await cards.filter({ hasText: 'Finance komiti' }).locator('.cred-open').click();
     await expect(memberPage.locator('.credential-dialog')).toBeVisible();
     await expect(memberPage.locator('.cred-title')).toHaveText('Finance komiti');
     await expect(memberPage.locator('.credential-dialog .cred-mark')).toHaveClass(/has-bg/);

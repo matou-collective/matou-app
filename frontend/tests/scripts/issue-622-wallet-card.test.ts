@@ -4,10 +4,11 @@
  *
  * 1. In a Coa build (kit slug ≠ `matou`) the Cards/Graph toggle and the
  *    relationship graph are hidden; stock Mātou keeps both.
- * 2. Each credential renders as the IDSS control panel's card: a mark tile, a
- *    status pill, a bold name and a Received/Issued tag. A credential with a
- *    `display.background` paints the whole card (with contrast ink); one
- *    without renders the same shape unpainted.
+ * 2. Each credential renders as the IDSS control panel's card: a square mark
+ *    tile, a square white status chip, a bold monospace name, an outlined
+ *    Received/Issued tag and an OPEN button (redrawn to the panel anatomy in
+ *    #633). A credential with a `display.background` paints the whole card
+ *    (with contrast ink); one without renders the same shape unpainted.
  *
  * Runs under happy-dom. The stores, generated kit and heavy api/keri modules
  * are stubbed so the mounts stay template tests.
@@ -157,12 +158,13 @@ describe('WalletCredentialCard — control-panel shape (#622)', () => {
     const style = card.attributes('style') || '';
     expect(style).toMatch(/background/);
     expect(style).toMatch(/color/);
-    // The pill echoes the contrast ink rather than a fixed tone.
-    expect(wrapper.find('.cred-pill').classes()).toContain('pill-painted');
-    // Shape: tile, pill, bold name, tag.
+    // The white status chip stays white on a painted card (#633).
+    expect(wrapper.find('.cred-chip').classes()).toContain('chip-painted');
+    // Anatomy: tile, chip, bold name, outlined tag, OPEN button.
     expect(wrapper.find('.cred-tile').exists()).toBe(true);
     expect(wrapper.find('.cred-name').text()).toBe('Finance komiti');
     expect(wrapper.find('.cred-tag').text()).toBe('Received');
+    expect(wrapper.find('.cred-open').text()).toBe('OPEN');
 
     wrapper.unmount();
   });
@@ -181,15 +183,16 @@ describe('WalletCredentialCard — control-panel shape (#622)', () => {
     const card = wrapper.find('.wallet-cred-card');
     expect(card.classes()).not.toContain('painted');
     expect(card.attributes('style')).toBeFalsy();
-    // Tone falls to the fixed warning pill, not the painted one.
-    const pill = wrapper.find('.cred-pill');
-    expect(pill.classes()).toContain('warning');
-    expect(pill.classes()).not.toContain('pill-painted');
-    // Same shape: tile, name, tag, and the recipient footer.
+    // Tone falls to the fixed warning chip, not the painted (white) one.
+    const chip = wrapper.find('.cred-chip');
+    expect(chip.classes()).toContain('warning');
+    expect(chip.classes()).not.toContain('chip-painted');
+    // Same anatomy: tile, name, outlined tag, recipient line, OPEN button.
     expect(wrapper.find('.cred-tile').exists()).toBe(true);
     expect(wrapper.find('.cred-name').text()).toBe('Mātou Membership');
     expect(wrapper.find('.cred-tag').text()).toBe('Issued');
     expect(wrapper.find('.cred-recipient').text()).toBe('To: MĀTOU');
+    expect(wrapper.find('.cred-open').text()).toBe('OPEN');
 
     wrapper.unmount();
   });
