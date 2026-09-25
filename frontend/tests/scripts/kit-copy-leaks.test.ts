@@ -15,7 +15,7 @@ const LEAK = /Mātou|matou\.nz/g;
 // resources cards + Mātou's own guidelines/information content).
 const ALLOWED: Record<string, number> = {
   'components/onboarding/MatouInformationContent.vue': Infinity, // Mātou's about/expectations block (claim path, guidelines page)
-  'components/onboarding/PendingApprovalScreen.vue': 3, // "Learn more about Mātou" + two docs.matou.nz resource links
+  'components/onboarding/PendingApprovalScreen.vue': 3, // "Learn more about Mātou" + two docs.matou.nz resource links — rendered only in the stock build (gated on !isCoa, asserted below)
   'pages/CommunityGuidelinesPage.vue': Infinity, // Mātou's guidelines verbatim, pending a kit field
 };
 
@@ -48,5 +48,16 @@ describe('kit builds do not leak Mātou copy into onboarding', () => {
     for (const [rel, allowed] of Object.entries(ALLOWED)) {
       if (allowed !== Infinity) expect(count(rel), rel).toBe(allowed);
     }
+  });
+});
+
+// The "Explore while you wait" block is the stock build's own docs: a Coa build
+// must never render it (Ben, 2026-09-25), so its v-if carries the isCoa gate.
+describe('PendingApprovalScreen hides the stock docs block in a Coa build', () => {
+  it('gates the Explore-while-you-wait section on !isCoa', () => {
+    const src = readFileSync(join(ROOT, 'components/onboarding/PendingApprovalScreen.vue'), 'utf8');
+    const block = src.slice(src.indexOf('<!-- Resources'), src.indexOf('Explore while you wait'));
+    expect(block).toMatch(/v-if="[^"]*!isCoa[^"]*"/);
+    expect(src).toContain('const isCoa = isCoaBuild();');
   });
 });

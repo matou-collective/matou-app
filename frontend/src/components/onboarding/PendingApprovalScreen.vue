@@ -302,8 +302,8 @@
           </div>
         </div>
 
-        <!-- Resources -->
-        <div v-if="currentStatus !== 'rejected'" v-motion="fadeSlideUp(700)">
+        <!-- Resources — the stock build's own docs links; a Coa build has none to show. -->
+        <div v-if="currentStatus !== 'rejected' && !isCoa" v-motion="fadeSlideUp(700)">
           <h3 class="mb-4">Explore while you wait</h3>
           <p class="text-muted-foreground mb-4">
             Learn more about Mātou by browsing our documentation and resources
@@ -370,6 +370,7 @@ import { sendBookingEmail } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { KIT } from 'src/generated/kit';
 import { isOpen, needsSession, requiredEndorsements, requirementsFor } from 'src/kit/approval';
+import { isCoaBuild } from 'src/kit/build';
 
 const { fadeSlideUp, slideInLeft, rotate } = useAnimationPresets();
 const identityStore = useIdentityStore();
@@ -927,6 +928,9 @@ watch(
   }
 );
 
+// "Explore while you wait" links the stock build's own documentation: shown in the
+// stock build only, never in a Coa-built community app.
+const isCoa = isCoaBuild();
 const resources = [
   {
     icon: FileText,
