@@ -175,6 +175,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { getMembershipSchemaSaid } from 'src/lib/clientConfig';
 import { hasMembershipCredential } from 'src/lib/membership';
 import { setBackendIdentity, getSyncStatus, getProfiles } from 'src/lib/api/client';
+import { resolveConfiguredSpaces } from 'src/lib/spaces/configuredSpaces';
 import { secureStorage } from 'src/lib/secureStorage';
 import { version as appVersion } from '../../../package.json';
 import { KIT } from 'src/generated/kit';
@@ -452,6 +453,13 @@ async function runRecoveryChecks() {
     return;
   }
 
+  // Resolve the three community space IDs. On an IDSS backend they live in the
+  // descriptor's `anysync` block, not in orgConfig (#645), so read them from the
+  // descriptor and pass them to set-identity/join exactly as the boot restore
+  // path does — otherwise a fresh recovery dead-ends at "No community space
+  // found" until a restart. On any other backend orgConfig stays the source.
+  const spaces = await resolveConfiguredSpaces(appStore.orgConfig, appStore.isIdssBackend);
+
   // Check 2: Backend identity configured
   const backendCheck = findCheck('backend');
   backendCheck.status = 'checking';
@@ -467,9 +475,9 @@ async function runRecoveryChecks() {
       aid,
       mnemonic,
       orgAid: appStore.orgAid ?? undefined,
-      communitySpaceId: appStore.orgConfig?.communitySpaceId ?? undefined,
-      readOnlySpaceId: appStore.orgConfig?.readOnlySpaceId ?? undefined,
-      adminSpaceId: appStore.orgConfig?.adminSpaceId ?? undefined,
+      communitySpaceId: spaces.communitySpaceId,
+      readOnlySpaceId: spaces.readOnlySpaceId,
+      adminSpaceId: spaces.adminSpaceId,
       // Linked-device receiver adopts the existing private space, never forks
       // a new one (spec §3.2).
       ...(isLinkFlow.value ? { mode: 'link' } : {}),
@@ -515,7 +523,12 @@ async function runRecoveryChecks() {
       communityCheck.status = 'passed';
     } else {
       communityCheck.status = 'failed';
-      communityCheck.error = 'No community space found — your backend may need reconfiguration';
+      // An IDSS descriptor that records no spaces yet is the founding-ceremony
+      // state (idss #1867) — the stewards have not created the content layer —
+      // not a backend fault, so don't tell the member to reconfigure it (#645).
+      communityCheck.error = spaces.idssAwaitingSpaces
+        ? 'This community is still being set up by its stewards — check back soon.'
+        : 'No community space found — your backend may need reconfiguration';
       return;
     }
   } catch {

@@ -9,6 +9,7 @@ import { useKERIClient, KERIClient } from 'src/lib/keri/client';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useAppStore } from 'stores/app';
 import { setBackendIdentity, createOrUpdateProfile } from 'src/lib/api/client';
+import { resolveConfiguredSpaces } from 'src/lib/spaces/configuredSpaces';
 import { useIdentityStore } from 'stores/identity';
 import { secureStorage } from 'src/lib/secureStorage';
 import { toKeriAlias } from 'src/lib/keri/alias';
@@ -264,12 +265,17 @@ export function useClaimIdentity() {
       await secureStorage.setItem('matou_mnemonic', mnemonicStr);
 
       const appStore = useAppStore();
+      // On an IDSS backend the three community space IDs live in the
+      // descriptor's `anysync` block, not in orgConfig (#645); read them from
+      // there so the invitee joins the community space instead of dead-ending.
+      const spaces = await resolveConfiguredSpaces(appStore.orgConfig, appStore.isIdssBackend);
       const identityResult = await setBackendIdentity({
         aid: aid.prefix,
         mnemonic: mnemonicStr,
         orgAid: appStore.orgAid ?? undefined,
-        communitySpaceId: appStore.orgConfig?.communitySpaceId ?? undefined,
-        readOnlySpaceId: appStore.orgConfig?.readOnlySpaceId ?? undefined,
+        communitySpaceId: spaces.communitySpaceId,
+        readOnlySpaceId: spaces.readOnlySpaceId,
+        adminSpaceId: spaces.adminSpaceId,
         mode: 'claim',
       });
       if (!identityResult.success) {
