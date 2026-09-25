@@ -18,6 +18,7 @@ export function validateKit(kit) {
   assert(typeof kit.slug === 'string' && SLUG_RE.test(kit.slug), `invalid slug ${JSON.stringify(kit.slug)}`);
   assert(kit.brand && typeof kit.brand.name === 'string' && kit.brand.name.trim(), 'brand.name required');
   assert(HEX_RE.test(kit.brand.primaryColour) && HEX_RE.test(kit.brand.secondaryColour), 'brand colours must be #rrggbb');
+  assert(kit.brand.logoBackground == null || HEX_RE.test(kit.brand.logoBackground), 'brand.logoBackground must be #rrggbb when set');
   assert(kit.logoFile === 'logo.svg' || kit.logoFile === 'logo.png', 'logoFile must be logo.svg or logo.png');
   assert(kit.onboarding && Array.isArray(kit.onboarding.infoPages) && kit.onboarding.infoPages.length <= 3, 'onboarding.infoPages ≤ 3');
   assert(kit.onboarding.profile && Array.isArray(kit.onboarding.profile.interestOptions), 'onboarding.profile.interestOptions required');
@@ -186,7 +187,7 @@ export async function applyKit(kitDir, root = FRONTEND, opts = { icons: true }) 
 
   if (opts.icons !== false) {
     const { renderIcons } = await import('./icons.mjs');
-    written.push(...(await renderIcons({ logo, primary: kit.brand.primaryColour, root })));
+    written.push(...(await renderIcons({ logo, primary: kit.brand.primaryColour, root, brandBackground: kit.brand.logoBackground ?? null })));
   }
   return { written };
 }

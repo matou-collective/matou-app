@@ -29,10 +29,52 @@ async function logoPng(logo, size, background) {
   return sharp(logo, { density: 384 }).resize(size, size, { ...pad, withoutEnlargement: false }).png().toBuffer();
 }
 
+const TOL = 8;
+// The dominant flat colour of a set of pixels, as #rrggbb, or null when no one
+// colour holds at least `min` of them (a photo or gradient has no such bucket).
+const dominantColour = (pixels, min) => {
+  const buckets = [];
+  for (const p of pixels) {
+    const hit = buckets.find((b) => Math.abs(b.r - p[0]) <= TOL && Math.abs(b.g - p[1]) <= TOL && Math.abs(b.b - p[2]) <= TOL);
+    if (hit) hit.n++; else buckets.push({ r: p[0], g: p[1], b: p[2], n: 1 });
+  }
+  if (!buckets.length) return null;
+  const top = buckets.reduce((a, b) => (b.n > a.n ? b : a));
+  if (top.n < min) return null;
+  return '#' + [top.r, top.g, top.b].map((v) => v.toString(16).padStart(2, '0')).join('');
+};
+
+// A round logo is an opaque disc inscribed in the square with transparent
+// corners (Coa's kit logo: a 512×512 PNG, opaque disc, transparent corners).
+// The founder chose the disc's fill as the colour behind the crop, so return
+// the disc's rim colour: the dominant opaque colour on a ring just inside the
+// inscribed circle. Returns null when the shape is not a filled disc.
+function discRimColour(px, w, h) {
+  const cx = w / 2, cy = h / 2, r = Math.min(w, h) / 2;
+  // Transparent corners are what makes this a round crop rather than a plate.
+  const corners = [px(0, 0), px(w - 1, 0), px(0, h - 1), px(w - 1, h - 1)];
+  if (corners.some((p) => p[3] === 255)) return null;
+  const rim = [];
+  const N = 360;
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * 2 * Math.PI;
+    const x = Math.round(cx + Math.cos(a) * r * 0.9);
+    const y = Math.round(cy + Math.sin(a) * r * 0.9);
+    if (x < 0 || y < 0 || x >= w || y >= h) continue;
+    rim.push(px(x, y));
+  }
+  // The disc must actually fill the inscribed circle — a small floating mark
+  // leaves this rim transparent, so it stays on the brand primary.
+  const opaque = rim.filter((p) => p[3] === 255);
+  if (opaque.length < rim.length * 0.9) return null;
+  return dominantColour(opaque, opaque.length * 0.75);
+}
+
 // The logo's own background colour, or null. An opaque raster whose border is
 // dominated by one flat colour (a wordmark exported on white, say) carries its
-// background with it; a logo with any transparency along its edge does not, and
-// takes the brand primary.
+// background with it. A round logo — a disc on transparent corners — carries the
+// disc's rim colour, the fill the founder chose behind the crop. Anything else
+// (a floating mark, a photo, a gradient edge) takes the brand primary.
 export async function logoBackground(logo) {
   const { data, info } = await sharp(logo, { density: 384 }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const { width: w, height: h, channels: c } = info;
@@ -40,31 +82,25 @@ export async function logoBackground(logo) {
   const ring = [];
   for (let x = 0; x < w; x++) ring.push(px(x, 0), px(x, h - 1));
   for (let y = 1; y < h - 1; y++) ring.push(px(0, y), px(w - 1, y));
-  const TOL = 8;
-  // Any transparency along the edge means the logo floats: it keeps the primary.
-  for (const p of ring) if (p[3] < 255) return null;
-  // Otherwise take the border's dominant flat colour by a majority vote, so a
-  // wordmark whose glyphs reach the plate edge (or a little anti-aliasing) does
-  // not hide the background the rest of the ring agrees on. A border with no
-  // single colour (a photo, a gradient) has no dominant bucket and returns null.
-  const buckets = [];
-  for (const p of ring) {
-    const hit = buckets.find((b) => Math.abs(b.r - p[0]) <= TOL && Math.abs(b.g - p[1]) <= TOL && Math.abs(b.b - p[2]) <= TOL);
-    if (hit) hit.n++; else buckets.push({ r: p[0], g: p[1], b: p[2], n: 1 });
-  }
-  const top = buckets.reduce((a, b) => (b.n > a.n ? b : a));
-  if (top.n < ring.length * 0.75) return null;
-  return '#' + [top.r, top.g, top.b].map((v) => v.toString(16).padStart(2, '0')).join('');
+  // Any transparency along the edge means the logo is not a solid plate: it may
+  // be a round crop, otherwise it floats on the primary.
+  if (ring.some((p) => p[3] < 255)) return discRimColour(px, w, h);
+  // An opaque plate: take the border's dominant flat colour by a majority vote,
+  // so a wordmark whose glyphs reach the plate edge (or a little anti-aliasing)
+  // does not hide the background the rest of the ring agrees on.
+  return dominantColour(ring, ring.length * 0.75);
 }
 
-// Tile shapes. `background` is the logo's own colour when it has one: the logo
-// then fills the whole tile (its padding is already in the file) and the shape is
-// cut from it; otherwise the mark floats at `logoScale` on the brand primary.
+// Tile shapes. `background` is the plate colour when the kit or logo carries one:
+// the whole tile fills with it and the logo (an opaque plate that already fills,
+// or a round disc, or a mark) sits on top before the shape is cut. Otherwise the
+// mark floats at `logoScale` on the brand primary.
 async function tile(logo, primary, size, { shape = 'rounded', logoScale = 0.7, background = null } = {}) {
   const mask = shape === 'circle' ? circle(size, '#000') : roundedRect(size, '#000', Math.round(size * 0.22));
   if (background) {
+    const bg = shape === 'circle' ? circle(size, background) : roundedRect(size, background, Math.round(size * 0.22));
     const plate = await logoPng(logo, size, background);
-    return sharp(plate).composite([{ input: mask, blend: 'dest-in' }]).png().toBuffer();
+    return sharp(bg).composite([{ input: plate, gravity: 'centre' }, { input: mask, blend: 'dest-in' }]).png().toBuffer();
   }
   const inner = Math.round(size * logoScale);
   const mark = await logoPng(logo, inner);
@@ -94,10 +130,14 @@ async function splash(logo, primary, w, h, background) {
   return sharp({ create: { width: w, height: h, channels: 3, background: '#ffffff' } }).composite([{ input: t, gravity: 'centre' }]).png().toBuffer();
 }
 
-export async function renderIcons({ logo, primary, root }) {
+const HEX_RE = /^#[0-9a-fA-F]{6}$/;
+
+export async function renderIcons({ logo, primary, root, brandBackground = null }) {
   const written = [];
   const out = async (rel, buf) => { const p = join(root, rel); await mkdir(dirname(p), { recursive: true }); await writeFile(p, buf); written.push(p); };
-  const background = await logoBackground(logo);
+  // The founder's chosen plate colour wins when the kit carries it; otherwise
+  // detect it from the logo (round-disc rim or opaque-plate border).
+  const background = (typeof brandBackground === 'string' && HEX_RE.test(brandBackground)) ? brandBackground : await logoBackground(logo);
   const opts = { background };
   // Adaptive-icon foreground: the outer 18dp of the 108dp canvas is masked, so
   // the mark must sit inside the central 66dp. A transparent mark is scaled to
