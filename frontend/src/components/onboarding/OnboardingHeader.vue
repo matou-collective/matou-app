@@ -61,12 +61,7 @@ const handleBack = () => {
 
 <style lang="scss" scoped>
 .header-gradient {
-  background: linear-gradient(
-    135deg,
-    var(--matou-primary) 0%,
-    rgba(30, 95, 116, 0.95) 50%,
-    var(--matou-accent) 100%
-  );
+  background: var(--matou-brand-gradient);
 }
 
 .back-btn {

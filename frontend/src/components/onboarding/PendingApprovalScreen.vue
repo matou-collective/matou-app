@@ -991,7 +991,7 @@ const resources = [
 }
 
 .requirement-met {
-  background-color: var(--matou-accent, #4a9d9c);
+  background-color: var(--matou-accent);
   color: white;
 }
 
@@ -1093,7 +1093,7 @@ const resources = [
 
   &:hover {
     border-color: var(--matou-primary);
-    background-color: rgba(30, 95, 116, 0.05);
+    background-color: color-mix(in srgb, var(--matou-primary) 5%, transparent);
   }
 
   &:active {
