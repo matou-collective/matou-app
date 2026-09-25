@@ -42,11 +42,15 @@ process.stderr?.on('error', () => {});
 
 // Force the X11 WM_CLASS to the kit executable name so X11 DEs can match the
 // window to the .desktop file (StartupWMClass, written in
-// installDesktopIntegration). On native Wayland this switch does NOT set the
-// xdg app_id — GNOME matches a Wayland window to its .desktop by app_id, which
-// Chromium derives from the packaged package.json `name`. That name is pinned
-// to executableName via electron-builder `extraMetadata` (kit-builder-config.ts)
-// so both the X11 WM_CLASS and the Wayland app_id equal executableName (#617).
+// installDesktopIntegration). On native Wayland neither this switch nor
+// app.setDesktopName() below sets the xdg app_id — GNOME matches a Wayland
+// window to its .desktop by app_id, which Chromium fixes at startup (before
+// this main-process code runs) from CHROME_DESKTOP, derived from the packaged
+// package.json `desktopName`. That desktopName is pinned to
+// <executableName>.desktop via electron-builder `extraMetadata`
+// (kit-builder-config.ts) so the Wayland app_id equals the installed
+// .desktop and the community icon resolves (#617, #634). The calls below
+// remain the belt-and-braces X11 path.
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('class', KIT_BUILD.executableName);
   app.setDesktopName(`${KIT_BUILD.executableName}.desktop`);

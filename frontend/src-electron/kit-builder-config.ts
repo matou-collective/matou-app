@@ -16,17 +16,29 @@ export function electronBuilderConfig(kit: KitBuild) {
   return {
     appId: kit.appId,
     productName: kit.productName,
-    // Force the packaged app.asar package.json `name` to the kit's
-    // executableName. Chromium/Electron derives the window class from this
-    // `name`: on X11 it is the WM_CLASS, and on native Wayland it is the xdg
-    // `app_id` — the only thing GNOME can match a Wayland window to its
-    // .desktop file by (StartupWMClass is X11-only and never applies). Without
-    // this the packaged `name` stays "matou-frontend", so the app_id never
-    // equals the installed <executableName>.desktop and the launcher falls back
-    // to the generic gear icon instead of the community icon (#617). productName
-    // must NOT be used here — it stays "Matou" for the userData path (see
-    // kit-paths.ts) and is diacritic-folded, not a valid lowercase class.
-    extraMetadata: { name: kit.executableName },
+    // Pin three fields into the packaged app.asar package.json so the running
+    // window resolves to the installed <executableName>.desktop and shows the
+    // community icon instead of the generic gear (#617, #634):
+    //   • name → executableName. On X11 Chromium derives WM_CLASS from this,
+    //     which StartupWMClass in the .desktop matches.
+    //   • desktopName → <executableName>.desktop. On native Wayland GNOME
+    //     matches a window to its .desktop by the xdg app_id, NOT WM_CLASS
+    //     (StartupWMClass is X11-only). Chromium sets the Wayland app_id at
+    //     startup from CHROME_DESKTOP, which it derives from this desktopName;
+    //     app.setDesktopName() in electron-main runs too late to change the
+    //     already-created toplevel's app_id. Without it Chromium falls back to
+    //     the app name (productName, "Matou" on a Coa build) and the app_id
+    //     never equals <executableName>, so GNOME finds no .desktop (#634).
+    //   • productName → the kit's product name. electron-builder's top-level
+    //     productName only lands in bundle metadata, not the asar package.json,
+    //     which otherwise keeps the source "Matou"; align it so the Wayland
+    //     fallback name is the kit's too. userData isolation does NOT depend on
+    //     this — it is forced from KIT_BUILD.productName in kit-paths.ts.
+    extraMetadata: {
+      name: kit.executableName,
+      desktopName: `${kit.executableName}.desktop`,
+      productName: kit.productName,
+    },
     artifactName: `${kit.artifactBase}-${v}-${p}.${e}`,
     afterPack: './build/afterPack.cjs',
     extraResources: [
