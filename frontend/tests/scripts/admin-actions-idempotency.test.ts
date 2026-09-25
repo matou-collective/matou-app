@@ -181,6 +181,17 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
     );
   });
 
+  it('issues the unchanged Mātou body on a legacy backend (no IDSS descriptor)', async () => {
+    const ok = await useAdminActions().approveRegistration(registration);
+    expect(ok).toBe(true);
+    const calls = issueCredential.mock.calls as unknown as unknown[][];
+    expect(calls[0]![4]).toEqual({
+      communityName: 'MATOU',
+      role: 'Member',
+      joinedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    });
+  });
+
   it('still issues when a DIFFERENT applicant already holds a credential', async () => {
     wallet.push({
       sad: { d: 'EOTHER', s: 'ESCHEMA_membership_other', a: { i: 'DSOMEONEELSE' } },
