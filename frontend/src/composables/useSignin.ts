@@ -14,7 +14,7 @@
  * signify-ts or a live door.
  */
 
-import { ref, shallowRef } from 'vue';
+import { ref, shallowRef, watch } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { getCommunityDescriptor } from 'src/lib/clientConfig';
 import { useIdentityStore } from 'src/stores/identity';
@@ -28,11 +28,16 @@ import { presentToDoor, type PresentBody, type PresentVerdict } from 'src/lib/si
 import { refusalCopy, type RefusalCopy } from 'src/lib/signin/refusal';
 
 /**
- * The card's faces. `first-contact` (WS-A1) comes *before* the card when the ask
- * names a sign-in site the wallet has never met (#535); the rest are the approve
- * card and its follow-ons (WS-A2/A2p/A2d/A2r).
+ * The card's faces. `loading` holds until the wallet is ready and the card is
+ * built; `unavailable` is the try-again fallback when it could not be.
+ * `first-contact` (WS-A1) comes *before* the card when the ask names a sign-in
+ * site the wallet has never met (#535); the rest are the approve card and its
+ * follow-ons (WS-A2/A2p/A2d/A2r).
  */
-export type SigninPhase = 'first-contact' | 'card' | 'proving' | 'done' | 'refused';
+export type SigninPhase = 'loading' | 'unavailable' | 'first-contact' | 'card' | 'proving' | 'done' | 'refused';
+
+/** How long a sign-in waits for the wallet's session restore before giving up. */
+const READY_TIMEOUT_MS = 45_000;
 
 /** Injectable side-effects; production defaults resolve the real client/stores. */
 export interface SigninDeps {
@@ -46,11 +51,47 @@ export interface SigninDeps {
   present(presentUrl: string, body: PresentBody): Promise<PresentVerdict>;
   /** schema SAID → descriptor kind key (e.g. "membership"), for the label. */
   schemaKinds(): Promise<Record<string, string>>;
+  /**
+   * Resolve once the wallet can answer: its session restored and its agent
+   * connected. A code opened from the camera cold-starts the app, and boot
+   * restores the session without blocking navigation, so the card can mount
+   * before there is an identity or a connected agent to read credentials from.
+   */
+  ready(): Promise<void>;
+}
+
+/** Wait for the identity store to finish restoring, then refresh the agent session. */
+export async function walletReady(
+  identity: { readonly isReady: boolean; readonly aidPrefix: string | null },
+  keri: { ensureSession(): Promise<void> },
+  timeoutMs: number = READY_TIMEOUT_MS,
+): Promise<void> {
+  if (!identity.isReady) {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        stop();
+        reject(new Error('wallet did not finish restoring'));
+      }, timeoutMs);
+      const stop = watch(
+        () => identity.isReady,
+        (ready) => {
+          if (!ready) return;
+          clearTimeout(timer);
+          stop();
+          resolve();
+        },
+      );
+    });
+  }
+  if (!identity.aidPrefix) throw new Error('no identity in this wallet');
+  await keri.ensureSession();
 }
 
 function defaultDeps(): SigninDeps {
   const keri = useKERIClient();
+  const identity = useIdentityStore();
   return {
+    ready: () => walletReady(identity, keri),
     async listCredentials() {
       const client = keri.getSignifyClient();
       if (!client) return [];
@@ -83,7 +124,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
 
   const ask = shallowRef<SigninAsk | null>(null);
   const view = shallowRef<ApproveCardView | null>(null);
-  const phase = ref<SigninPhase>('card');
+  const phase = ref<SigninPhase>('loading');
   const refusal = ref<RefusalCopy | null>(null);
   /** The credential the wallet will present (null → nothing matches; no Approve). */
   const chosen = shallowRef<HeldCredential | null>(null);
@@ -100,26 +141,45 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     return true;
   }
 
-  /** Prepare the card from an already-parsed ask. */
+  /**
+   * Prepare the card from an already-parsed ask. Holds on `loading` until the
+   * wallet is ready; any failure lands on `unavailable` (the try-again face),
+   * never a card without its details.
+   */
   async function prepare(parsed: SigninAsk): Promise<void> {
     ask.value = parsed;
-    phase.value = 'card';
+    phase.value = 'loading';
     refusal.value = null;
-    await knownDoors.load();
+    view.value = null;
+    chosen.value = null;
 
-    const aid = identity.aidPrefix ?? '';
-    const creds = await deps.listCredentials();
-    const cred = chooseCredential(creds, parsed.schemas, aid) ?? null;
-    chosen.value = cred;
+    try {
+      await deps.ready();
+      await knownDoors.load();
 
-    const kinds = await deps.schemaKinds();
-    const toShow = cred ? describeCredential(cred, kinds) : null;
-    view.value = buildCardView(parsed, toShow, aid, knownDoors.isHome(parsed.door));
+      const aid = identity.aidPrefix ?? '';
+      const creds = await deps.listCredentials();
+      const cred = chooseCredential(creds, parsed.schemas, aid) ?? null;
+
+      const kinds = await deps.schemaKinds();
+      const toShow = cred ? describeCredential(cred, kinds) : null;
+      chosen.value = cred;
+      view.value = buildCardView(parsed, toShow, aid, knownDoors.isHome(parsed.door));
+    } catch (err) {
+      console.warn('[Signin] Could not prepare the sign-in:', err);
+      phase.value = 'unavailable';
+      return;
+    }
 
     // A sign-in site the wallet has never met stops at the first-contact prompt
     // before any card (#535, story 11); the home site and any already-trusted
     // site skip straight to the approve card (story 12).
     phase.value = knownDoors.isKnown(parsed.door) ? 'card' : 'first-contact';
+  }
+
+  /** Try again from the `unavailable` face: prepare the same sign-in afresh. */
+  async function retry(): Promise<void> {
+    if (ask.value) await prepare(ask.value);
   }
 
   /**
@@ -188,5 +248,5 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     refusal.value = null;
   }
 
-  return { ask, view, phase, refusal, chosen, prepareFromLink, prepare, trust, approve, notNow, tryAgain };
+  return { ask, view, phase, refusal, chosen, prepareFromLink, prepare, retry, trust, approve, notNow, tryAgain };
 }

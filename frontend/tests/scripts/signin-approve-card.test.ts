@@ -110,3 +110,29 @@ describe('ApproveCard — the follow-on faces', () => {
     expect(w.find('[data-field="contact-line"]').exists()).toBe(false);
   });
 });
+
+describe('ApproveCard — before the sign-in is loaded', () => {
+  it('loading: a quiet line and no Approve or Not now', () => {
+    const w = mountCard({ view: null, phase: 'loading', canApprove: false });
+    expect(w.find('[data-status="loading"]').exists()).toBe(true);
+    expect(w.find('[data-action="approve"]').exists()).toBe(false);
+    expect(w.find('[data-action="not-now"]').exists()).toBe(false);
+  });
+
+  it('never shows the actions without the service details, even on the card face', () => {
+    const w = mountCard({ view: null, phase: 'card', canApprove: false });
+    expect(w.find('[data-action="approve"]').exists()).toBe(false);
+    expect(w.find('[data-action="not-now"]').exists()).toBe(false);
+  });
+
+  it('unavailable: the try-again message, Try again emits retry, Not now closes', async () => {
+    const w = mountCard({ view: null, phase: 'unavailable', canApprove: false });
+    const msg = w.find('[data-status="unavailable"]');
+    expect(msg.text()).toContain("Couldn't load this sign-in");
+    expect(w.find('[data-action="approve"]').exists()).toBe(false);
+    await w.find('[data-action="retry"]').trigger('click');
+    await w.find('[data-action="not-now"]').trigger('click');
+    expect(w.emitted('retry')).toHaveLength(1);
+    expect(w.emitted('not-now')).toHaveLength(1);
+  });
+});

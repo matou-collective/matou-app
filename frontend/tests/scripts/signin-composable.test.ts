@@ -25,7 +25,8 @@ vi.mock('src/lib/clientConfig', () => ({ getCommunityDescriptor: async () => ({ 
 vi.mock('stores/identity', () => ({ useIdentityStore: () => ({ aidPrefix: 'EHa' }) }));
 vi.mock('src/stores/knownDoors', () => ({ useKnownDoorsStore: () => knownDoors }));
 
-import { useSignin, type SigninDeps } from 'src/composables/useSignin';
+import { useSignin, walletReady, type SigninDeps } from 'src/composables/useSignin';
+import { reactive } from 'vue';
 import type { HeldCredential } from 'src/lib/signin/credential';
 
 const cred: HeldCredential = {
@@ -42,6 +43,7 @@ function deps(overrides: Partial<SigninDeps> = {}): SigninDeps {
     sign: async (_aid, m) => `sig(${m})`,
     present: async () => ({ outcome: 'verified' }),
     schemaKinds: async () => ({ EMe: 'membership' }),
+    ready: async () => undefined,
     ...overrides,
   };
 }
@@ -137,5 +139,77 @@ describe('useSignin', () => {
     s.notNow();
     expect(present).not.toHaveBeenCalled();
     expect(s.phase.value).toBe('card');
+  });
+});
+
+// A sign-in code opened before the wallet has finished restoring its session
+// (a cold start from the camera: session restore runs non-blocking in boot)
+// used to leave the card blank with a disabled Approve until a second scan.
+describe('useSignin — preparing before the wallet is ready', () => {
+  it('starts on loading, waits for the wallet, and only then reads credentials', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const listCredentials = vi.fn(async () => [cred]);
+    const s = useSignin(deps({ ready: () => gate, listCredentials }));
+    expect(s.phase.value).toBe('loading');
+    const pending = s.prepareFromLink(LINK);
+    await Promise.resolve();
+    expect(s.phase.value).toBe('loading');
+    expect(s.view.value).toBeNull();
+    expect(listCredentials).not.toHaveBeenCalled();
+    release();
+    await pending;
+    expect(s.phase.value).toBe('card');
+    expect(s.view.value?.service).toBe('Files');
+  });
+
+  it('lands on unavailable, never a half-built card, when the wallet never gets ready', async () => {
+    const s = useSignin(deps({ ready: async () => { throw new Error('wallet not ready'); } }));
+    await expect(s.prepareFromLink(LINK)).resolves.toBe(true);
+    expect(s.phase.value).toBe('unavailable');
+    expect(s.view.value).toBeNull();
+  });
+
+  it('lands on unavailable when reading the credentials fails', async () => {
+    const s = useSignin(deps({ listCredentials: async () => { throw new Error('agent not connected'); } }));
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('unavailable');
+    expect(s.view.value).toBeNull();
+  });
+
+  it('retry re-runs the same sign-in and reaches the card once the wallet answers', async () => {
+    let fail = true;
+    const s = useSignin(deps({ listCredentials: async () => { if (fail) throw new Error('not yet'); return [cred]; } }));
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('unavailable');
+    fail = false;
+    await s.retry();
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(cred);
+  });
+});
+
+describe('walletReady — the default readiness gate', () => {
+  it('waits for the session restore to finish, then refreshes the agent session', async () => {
+    const identity = reactive({ isReady: false, aidPrefix: null as string | null });
+    const ensureSession = vi.fn(async () => undefined);
+    let settled = false;
+    const p = walletReady(identity, { ensureSession }).then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    identity.aidPrefix = 'EHa';
+    identity.isReady = true;
+    await p;
+    expect(ensureSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails when the restore finishes with no identity', async () => {
+    const identity = reactive({ isReady: true, aidPrefix: null as string | null });
+    await expect(walletReady(identity, { ensureSession: async () => undefined })).rejects.toThrow(/no identity/);
+  });
+
+  it('gives up after the timeout', async () => {
+    const identity = reactive({ isReady: false, aidPrefix: null as string | null });
+    await expect(walletReady(identity, { ensureSession: async () => undefined }, 10)).rejects.toThrow(/did not finish/);
   });
 });
