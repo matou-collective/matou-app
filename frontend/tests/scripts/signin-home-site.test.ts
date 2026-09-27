@@ -53,6 +53,7 @@ function deps(): SigninDeps {
     sign: async (_aid, m) => `sig(${m})`,
     present: async () => ({ outcome: 'verified' }),
     schemaKinds: async () => ({ EMe: 'membership' }),
+    ready: async () => undefined,
   };
 }
 

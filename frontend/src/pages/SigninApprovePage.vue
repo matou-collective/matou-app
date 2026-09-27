@@ -18,6 +18,7 @@
         @approve="signin.approve"
         @not-now="onNotNow"
         @try-again="signin.tryAgain"
+        @retry="signin.retry"
         @close="onClose"
       />
       <p v-if="notALink" class="text-center text-sm text-muted-foreground mt-6">
@@ -43,7 +44,7 @@ const signin = useSignin();
 const knownDoors = useKnownDoorsStore();
 
 const notALink = ref(false);
-const canApprove = computed(() => !!signin.chosen.value?.sad?.d);
+const canApprove = computed(() => !!signin.view.value && !!signin.chosen.value?.sad?.d);
 
 /** Close the card after a beat once the door answers VERIFIED (WS-A2d). */
 watch(signin.phase, (p) => {

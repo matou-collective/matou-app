@@ -5,6 +5,35 @@
        which service, which site, what is disclosed. No AID, SAID, nonce or
        words on the face; those live only in the details disclosure. -->
   <div class="approve-card max-w-md mx-auto p-6 space-y-5 text-center">
+    <!-- Loading: the wallet is still restoring its session or reading the
+         credentials. No actions until the card has its details. -->
+    <div
+      v-if="phase === 'loading'"
+      class="status border border-dashed border-border rounded-md px-3 py-2 text-sm text-left flex items-center gap-2"
+      data-status="loading"
+      role="status"
+      aria-live="polite"
+    >
+      <span class="spin inline-block w-3 h-3 border-2 border-primary/30 border-t-transparent rounded-full animate-spin"></span>
+      Getting this sign-in ready…
+    </div>
+
+    <!-- Unavailable: the card could not be built. The try-again fallback;
+         Not now leaves, and the browser page keeps waiting. -->
+    <div v-if="phase === 'unavailable'" class="space-y-3">
+      <div
+        class="status border border-border bg-card rounded-md px-3 py-2 text-sm text-left"
+        data-status="unavailable"
+        role="alert"
+      >
+        <b>Couldn't load this sign-in.</b> Your app may still be connecting. Try again.
+      </div>
+      <div class="space-y-2">
+        <MBtn class="w-full" data-action="retry" @click="$emit('retry')">Try again</MBtn>
+        <MBtn variant="ghost" class="w-full" data-action="not-now" @click="$emit('not-now')">Not now</MBtn>
+      </div>
+    </div>
+
     <!-- Headline: the service first — that is what the person is trying to do. -->
     <p v-if="view" class="text-lg font-medium" data-field="ask">
       Sign in to <b data-field="service">{{ view.service }}</b> at
@@ -127,8 +156,9 @@
       </div>
     </div>
 
-    <!-- The two primary actions (WS-A2). Present only on the card face. -->
-    <div v-if="phase === 'card'" class="space-y-2">
+    <!-- The two primary actions (WS-A2). Present only on the card face, and only
+         once the card has its service details. -->
+    <div v-if="phase === 'card' && view" class="space-y-2">
       <MBtn class="w-full" :disabled="!canApprove" data-action="approve" @click="$emit('approve')">
         Approve
       </MBtn>
@@ -157,6 +187,7 @@ defineEmits<{
   approve: [];
   'not-now': [];
   'try-again': [];
+  retry: [];
   close: [];
 }>();
 
