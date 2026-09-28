@@ -28,6 +28,7 @@ vi.mock('src/stores/knownDoors', () => ({ useKnownDoorsStore: () => knownDoors }
 import { useSignin, walletReady, type SigninDeps } from 'src/composables/useSignin';
 import { reactive } from 'vue';
 import type { HeldCredential } from 'src/lib/signin/credential';
+import type { PresentVerdict } from 'src/lib/signin/present';
 
 const cred: HeldCredential = {
   sad: { d: 'ECred', s: 'EMe', a: { i: 'EHa', role: 'Member', dt: '2026-08-12T00:00:00Z' } },
@@ -139,6 +140,87 @@ describe('useSignin', () => {
     expect(s.phase.value).toBe('first-contact');
     await s.trust();
     expect(trust).toHaveBeenCalledWith('https://id.example.nz/login', 'Home');
+    expect(s.phase.value).toBe('card');
+  });
+
+  // #675: the newest sign-in code must always win, and a code the door has
+  // already spent/expired must never be re-presented on "try again".
+  const OTHER_LINK =
+    'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_fresh&s=EMe&name=Home&service=Files';
+
+  it('a second prepare with a fresh code supersedes the held ask (#675)', async () => {
+    const s = useSignin(deps());
+    await s.prepareFromLink(LINK);
+    expect(s.ask.value?.challenge).toBe('c_3f9');
+    // A fresh code arrives (a new deep link / re-scan) while the card is held.
+    await s.prepareFromLink(OTHER_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.ask.value?.challenge).toBe('c_fresh');
+  });
+
+  it('approve presents the newest challenge after a fresh code supersedes it (#675)', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const s = useSignin(deps({ present }));
+    await s.prepareFromLink(LINK);
+    await s.prepareFromLink(OTHER_LINK);
+    await s.approve();
+    expect(present).toHaveBeenCalledTimes(1);
+    // The bound message carries the fresh challenge, never the first one.
+    const body = present.mock.calls[0]?.[1] as { challenge_id?: string } | undefined;
+    expect(body?.challenge_id).toBe('c_fresh');
+  });
+
+  it('a spent refusal holds the card and try again does not re-present it (#675)', async () => {
+    const present = vi.fn(async () => ({ outcome: 'refused' as const, refusal: 'spent' }));
+    const s = useSignin(deps({ present }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(s.refusal.value?.kind).toBe('spent');
+    expect(s.staleCode.value).toBe(true);
+    // Try again must not re-arm Approve with the dead code: it stays on the
+    // refusal (whose copy asks for a fresh code) and posts nothing more.
+    s.tryAgain();
+    expect(s.phase.value).toBe('refused');
+    await s.approve();
+    expect(present).toHaveBeenCalledTimes(1);
+  });
+
+  it('an expired refusal is held the same way (#675)', async () => {
+    const present = vi.fn(async () => ({ outcome: 'refused' as const, refusal: 'expired' }));
+    const s = useSignin(deps({ present }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.staleCode.value).toBe(true);
+    s.tryAgain();
+    await s.approve();
+    expect(present).toHaveBeenCalledTimes(1);
+  });
+
+  it('a fresh code after a spent refusal clears the hold and can approve (#675)', async () => {
+    let outcome: PresentVerdict = { outcome: 'refused', refusal: 'spent' };
+    const present = vi.fn(async () => outcome);
+    const s = useSignin(deps({ present }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.staleCode.value).toBe(true);
+    // A freshly minted code supersedes the spent one; the hold lifts.
+    outcome = { outcome: 'verified' };
+    await s.prepareFromLink(OTHER_LINK);
+    expect(s.staleCode.value).toBe(false);
+    expect(s.phase.value).toBe('card');
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(present).toHaveBeenCalledTimes(2);
+  });
+
+  it('a non-stale refusal still lets try again return to the card (#675)', async () => {
+    const s = useSignin(deps({ present: async () => ({ outcome: 'refused', refusal: 'revoked' }) }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(s.staleCode.value).toBe(false);
+    s.tryAgain();
     expect(s.phase.value).toBe('card');
   });
 

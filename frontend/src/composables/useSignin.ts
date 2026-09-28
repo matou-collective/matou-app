@@ -14,7 +14,7 @@
  * signify-ts or a live door.
  */
 
-import { ref, shallowRef, watch } from 'vue';
+import { computed, ref, shallowRef, watch } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { getCommunityDescriptor } from 'src/lib/clientConfig';
 import { useIdentityStore } from 'src/stores/identity';
@@ -158,6 +158,23 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
   const view = shallowRef<ApproveCardView | null>(null);
   const phase = ref<SigninPhase>('loading');
   const refusal = ref<RefusalCopy | null>(null);
+  /**
+   * The challenge id the door answered as a stale code (`spent`, `expired` or
+   * `unknown`, #675). A sign-in code is single-use, so once the door has spent
+   * or expired one, re-presenting it can only be refused again. We remember it
+   * so the card waits for a freshly-minted code rather than re-posting the dead
+   * one on "try again" — the newest challenge always wins.
+   */
+  const spentChallenge = shallowRef<string | null>(null);
+  /**
+   * Whether the challenge the wallet is currently holding is that dead code.
+   * Derived, so a fresh `prepare` carrying a *different* challenge clears it
+   * automatically (the newest code wins) while a re-navigation to the same
+   * spent code keeps Approve held (#675).
+   */
+  const staleCode = computed(
+    () => spentChallenge.value !== null && ask.value?.challenge === spentChallenge.value,
+  );
   /** The credential the wallet will present (null → nothing matches; no Approve). */
   const chosen = shallowRef<HeldCredential | null>(null);
   /**
@@ -258,6 +275,10 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     const a = ask.value;
     const cred = chosen.value;
     if (!a || !cred?.sad?.d) return;
+    // Never re-present a code the door has already spent or expired — it can
+    // only be refused again. The card waits for a freshly-minted challenge
+    // instead (#675).
+    if (staleCode.value) return;
     const aid = identity.aidPrefix ?? '';
 
     phase.value = 'proving';
@@ -313,6 +334,16 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     }
     if (verdict.outcome === 'refused') {
       refusal.value = refusalCopy(verdict.refusal);
+      // A stale-code refusal (the door said this challenge is spent/expired/
+      // unknown) means the held code is dead: remember it so "try again" waits
+      // for a fresh one rather than re-posting it (#675).
+      if (
+        refusal.value.kind === 'spent' ||
+        refusal.value.kind === 'expired' ||
+        refusal.value.kind === 'unknown'
+      ) {
+        spentChallenge.value = a.challenge;
+      }
     } else {
       refusal.value = refusalCopy('site-unreachable');
     }
@@ -332,8 +363,13 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
   }
 
   /** Try again after a refusal: back to the card for the page's fresh code
-   * (WS-A2r). The try count lives on the page, never the wallet. */
+   * (WS-A2r). The try count lives on the page, never the wallet. When the held
+   * code is one the door already spent or expired, there is nothing to go back
+   * to — re-presenting it can only be refused again — so we hold the stale-code
+   * refusal (its copy asks the member to start the sign-in again) until a fresh
+   * challenge arrives and supersedes it (#675). */
   function tryAgain(): void {
+    if (staleCode.value) return;
     phase.value = 'card';
     refusal.value = null;
   }
@@ -344,6 +380,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     phase,
     refusal,
     chosen,
+    staleCode,
     unlockAvailable,
     unlockOn,
     setUnlock,
