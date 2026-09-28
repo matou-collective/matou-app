@@ -122,3 +122,100 @@ export function parseSigninLink(text: string): SigninAsk | null {
 export function isPanelSignin(ask: SigninAsk): boolean {
   return !!ask.sealingKey;
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * The control-panel UNLOCK code (idss #1929 story 13–16, ADR 0282 d.3, wireframe
+ * PU-M0q/PU-A4; matou-app #664).
+ *
+ * A panel that is signed in but LOCKED (a reload, a tab close, an explicit Lock,
+ * or the unlock line switched off at sign-in) shows an *unlock code*, not a
+ * sign-in code. It is a DIFFERENT scheme, `matou://unlock?…`, because scanning it
+ * unlocks the seat and nothing else — no session is minted, no credential is
+ * presented, and a reload must never look like being signed out (PU-A4). The
+ * panel mints a FRESH sealing keypair for every unlock (the old one died with the
+ * page), so the key carried here differs from the one at sign-in by construction.
+ *
+ * The code carries (PU-M0q's QR + the #664 wire ruling on this ticket):
+ *
+ *   matou://unlock?panel=<url>&present=<relay>&u=<challenge>&ek=<key>&name=<community>&t=<time>&exp=<expiry>
+ *
+ *  - `panel`    the panel site's address (`admin.<apex>`), for the WHERE line.
+ *  - `present`  the bridge relay URL the sealed box is POSTed to, verbatim —
+ *              never derived from `panel` (the #574 principle the sign-in link
+ *              already holds). A code with no `present` cannot be answered, so it
+ *              is refused rather than guessed at.
+ *  - `u`        the unlock challenge id (the nonce the sealed box is bound to).
+ *  - `ek`       the tab's FRESH Ed25519 sealing verkey (qb64). A public key by
+ *              design — it rides the URL; the passcode never does. Without it
+ *              there is nothing to seal to, so the code is refused.
+ *  - `name`     the community name, for "‹community›'s control panel".
+ *  - `t`        the time the steward signed in on this computer, for the
+ *              "You signed in on this computer at ‹time›" line. Tolerated absent.
+ *  - `exp`      the challenge's expiry as unix epoch seconds. When present and
+ *              already past, the card refuses cleanly at read time rather than
+ *              sealing to a dead challenge (the door's 410 is handled too).
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** The `matou://unlock?…` scheme + host the wallet answers for a panel unlock. */
+const UNLOCK_PREFIX = 'matou://unlock?';
+
+/** One parsed unlock ask — everything the unlock-only card (PU-A4) needs. */
+export interface UnlockAsk {
+  /** The panel site's address, for the WHERE line (`admin.<apex>`). */
+  panel: string;
+  /** The exact relay URL the sealed box is POSTed to (verbatim, never derived). */
+  present: string;
+  /** The unlock challenge id / nonce the sealed box is bound to. */
+  challenge: string;
+  /** The tab's FRESH sealing-key verkey (qb64) the passcode is sealed to. */
+  sealingKey: string;
+  /** The community name for "‹community›'s control panel" (may be empty). */
+  community: string;
+  /** The time the steward signed in on this computer (empty when absent). */
+  signedInAt: string;
+  /** The challenge expiry as unix epoch **milliseconds**, or null when the code
+   *  carried no `exp`. Parsed from `exp` (unix seconds) so the card can refuse a
+   *  dead challenge at read time. */
+  expiresAt: number | null;
+}
+
+/**
+ * Cheap client-side shape check before the wallet acts on an unlock code: a
+ * `matou://unlock` link must at least carry a `panel`, a challenge `u` and the
+ * sealing key `ek`. A random string gets a plain "not an unlock code" rather
+ * than a half-built card. Mirrors {@link isSigninLink}.
+ */
+export function isUnlockLink(text: string): boolean {
+  if (!text.startsWith(UNLOCK_PREFIX)) return false;
+  const params = new URLSearchParams(text.slice(UNLOCK_PREFIX.length));
+  return !!(params.get('panel') && params.get('u') && params.get('ek'));
+}
+
+/**
+ * Parse a `matou://unlock?…` link into an {@link UnlockAsk}, or `null` when the
+ * text is not a well-formed unlock link (wrong scheme, or missing the panel,
+ * challenge, sealing key or `present` URL). Like the sign-in link, a code with no
+ * `present` is refused rather than answered by guessing a path (#574). Never
+ * throws on member input.
+ */
+export function parseUnlockLink(text: string): UnlockAsk | null {
+  if (!isUnlockLink(text)) return null;
+  const params = new URLSearchParams(text.slice(UNLOCK_PREFIX.length));
+
+  const panel = (params.get('panel') ?? '').trim();
+  const challenge = (params.get('u') ?? '').trim();
+  const sealingKey = (params.get('ek') ?? '').trim();
+  const present = (params.get('present') ?? '').trim();
+  if (!panel || !challenge || !sealingKey || !present) return null;
+
+  const community = (params.get('name') ?? '').trim();
+  const signedInAt = (params.get('t') ?? '').trim();
+
+  // `exp` is unix seconds (JWT convention); carry it as millis for a direct
+  // compare with Date.now(), and drop a blank or non-numeric value to null so a
+  // malformed exp never reads as "already expired".
+  const expRaw = Number.parseInt((params.get('exp') ?? '').trim(), 10);
+  const expiresAt = Number.isFinite(expRaw) && expRaw > 0 ? expRaw * 1000 : null;
+
+  return { panel, present, challenge, sealingKey, community, signedInAt, expiresAt };
+}

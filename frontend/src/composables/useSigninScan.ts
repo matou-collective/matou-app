@@ -14,7 +14,7 @@
 
 import type { RouteLocationRaw, Router } from 'vue-router';
 import { scanPairingQr, ScanUnavailableError } from 'src/lib/barcode';
-import { parseSigninLink } from 'src/lib/signin/link';
+import { parseSigninLink, parseUnlockLink } from 'src/lib/signin/link';
 
 /**
  * Turn a `matou://signin?…` link into the approve-card route location, carrying
@@ -33,6 +33,28 @@ export function signinLinkToLocation(text: string): RouteLocationRaw | null {
       ...(ask.schemas.length ? { s: ask.schemas.join(',') } : {}),
       ...(ask.community ? { name: ask.community } : {}),
       ...(ask.service ? { service: ask.service } : {}),
+    },
+  };
+}
+
+/**
+ * Turn a `matou://unlock?…` link into the unlock-only card route location,
+ * carrying the link's fields as query params, or `null` when the text is not an
+ * unlock link (#664). `exp` is re-encoded as unix seconds, the shape it rode in.
+ */
+export function unlockLinkToLocation(text: string): RouteLocationRaw | null {
+  const ask = parseUnlockLink(text);
+  if (!ask) return null;
+  return {
+    name: 'signin-unlock',
+    query: {
+      panel: ask.panel,
+      present: ask.present,
+      u: ask.challenge,
+      ek: ask.sealingKey,
+      ...(ask.community ? { name: ask.community } : {}),
+      ...(ask.signedInAt ? { t: ask.signedInAt } : {}),
+      ...(ask.expiresAt !== null ? { exp: String(Math.floor(ask.expiresAt / 1000)) } : {}),
     },
   };
 }
@@ -63,9 +85,11 @@ export async function scanSigninCode(router: Router): Promise<ScanOutcome> {
   }
 }
 
-/** Route a scanned/pasted sign-in link, or report it is not a code. */
+/** Route a scanned/pasted sign-in OR unlock link, or report it is not a code. A
+ *  locked control panel shows an unlock code, which the same scanner reads (#664). */
 export async function routeSigninText(router: Router, text: string): Promise<ScanOutcome> {
-  const location = signinLinkToLocation(text.trim());
+  const trimmed = text.trim();
+  const location = signinLinkToLocation(trimmed) ?? unlockLinkToLocation(trimmed);
   if (!location) return { status: 'not-a-code' };
   await router.push(location);
   return { status: 'navigated' };

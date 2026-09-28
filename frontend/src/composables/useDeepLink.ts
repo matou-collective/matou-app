@@ -7,6 +7,8 @@
  *
  *  - a sign-in link opens the approve card (`signin-approve`), reusing the same
  *    link → route mapping the in-app scanner uses (useSigninScan);
+ *  - an unlock link opens the unlock-only card (`signin-unlock`, #664) — a
+ *    locked-but-signed-in control panel shows it; scanning it unlocks the seat;
  *  - a pairing link lands on the onboarding link-device screen with the payload
  *    stashed so the screen can pre-fill it (consumePendingPairLink), the way a
  *    cold-start push tap is replayed (usePush.consumePushDeepLinkTarget);
@@ -26,7 +28,7 @@
 
 import type { Router, RouteLocationRaw } from 'vue-router';
 import { classifyDeepLink } from 'src/lib/deepLink';
-import { signinLinkToLocation } from 'src/composables/useSigninScan';
+import { signinLinkToLocation, unlockLinkToLocation } from 'src/composables/useSigninScan';
 import { getAppPlugin } from 'src/lib/capacitor';
 import { useOnboardingStore } from 'src/stores/onboarding';
 
@@ -69,6 +71,14 @@ export async function handleDeepLink(url: string): Promise<void> {
 
   if (kind === 'signin') {
     const location = signinLinkToLocation(url.trim());
+    if (location && router) await router.push(location);
+    return;
+  }
+
+  if (kind === 'unlock') {
+    // A locked-but-signed-in control panel's unlock code opens the unlock-only
+    // card (`signin-unlock`), reusing the link → route mapping the scanner uses.
+    const location = unlockLinkToLocation(url.trim());
     if (location && router) await router.push(location);
     return;
   }

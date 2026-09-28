@@ -86,3 +86,62 @@ export function siteAddress(door: string): string {
     return door;
   }
 }
+
+/**
+ * The unlock-only card's view model (idss #1929 story 14, wireframe PU-A4;
+ * matou-app #664). Distinct from {@link ApproveCardView} by design: no service,
+ * no credential, no bound message — nothing is presented and no session is
+ * minted. The card carries the unlock and only the unlock. The FRESH sealing-key
+ * fingerprint rides the details disclosure so a careful steward can compare it
+ * with the panel's; it differs from the one at sign-in by construction.
+ */
+export interface UnlockCardView {
+  /** The community name for the WHERE line ("your community" when absent). */
+  community: string;
+  /** "‹community›'s control panel" — the WHERE line's name half. */
+  panelName: string;
+  /** The panel site's host ("admin.example.nz") — the WHERE line's address. */
+  panelAddress: string;
+  /** The "ALREADY SIGNED IN" note, naming the sign-in time when the code carried
+   *  one, and always saying this only unlocks steward actions. */
+  signedInNote: string;
+  /** The details disclosure — never on the face. */
+  details: {
+    aid: string;
+    challengeId: string;
+    /** The FRESH sealing-key fingerprint (`xxxx·xxxx`), for a careful compare. */
+    sealingKeyFingerprint: string;
+  };
+}
+
+/**
+ * Build the unlock-only card view model. `aid` is the steward's own AID; `panel`,
+ * `community`, `challenge` and `signedInAt` come off the unlock ask, and
+ * `sealingKeyFingerprint` is the precomputed fingerprint of the fresh `ek`
+ * (computed by the composable, which owns libsodium). A blank `signedInAt`
+ * degrades the note to a timeless sentence rather than dropping a blank time in.
+ */
+export function buildUnlockView(
+  panel: string,
+  community: string,
+  challenge: string,
+  aid: string,
+  signedInAt: string,
+  sealingKeyFingerprint: string,
+): UnlockCardView {
+  const name = community || 'your community';
+  const signedInNote = signedInAt
+    ? `You signed in on this computer at ${signedInAt}. This only unlocks steward actions.`
+    : "You're already signed in on this computer. This only unlocks steward actions.";
+  return {
+    community: name,
+    panelName: `${name}'s control panel`,
+    panelAddress: siteAddress(panel),
+    signedInNote,
+    details: {
+      aid,
+      challengeId: challenge,
+      sealingKeyFingerprint,
+    },
+  };
+}
