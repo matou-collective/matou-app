@@ -49,7 +49,18 @@
               <option value="Contributor">Contributor</option>
               <option value="Community Steward">Community Steward</option>
               <option value="Operations Steward">Operations Steward</option>
-              <option value="Founding Member">Founding Member</option>
+              <!--
+                Founding Member is an org-AID signer, not a role string
+                (idss#1948, ADR 0286 d.13, matou-app#669). On an IDSS backend
+                that fact is conferred by the promotion rail (a group-identity
+                rotation), never by picking a role here: an invite assigns an
+                initial role-history value and runs no rotation, so offering
+                Founding Member would mint a "founding member" with no signing
+                power — the very second source of truth deleting `role` exists to
+                end. A Coa community keeps its own role model, so the option
+                stays there.
+              -->
+              <option v-if="!isIdssBackend" value="Founding Member">Founding Member</option>
               <option value="Financial Steward">Financial Steward</option>
               <option value="Governance Steward">Governance Steward</option>
               <option value="Treasury Steward">Treasury Steward</option>
@@ -201,7 +212,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import {
   UserPlus,
   Loader2,
@@ -211,11 +222,17 @@ import {
 } from 'lucide-vue-next';
 import { usePreCreatedInvite } from 'src/composables/usePreCreatedInvite';
 import { sendInviteEmail } from 'src/lib/api/client';
+import { useAppStore } from 'stores/app';
 
 defineProps<{
   modelValue: boolean;
   isSteward?: boolean;
 }>();
+
+// On an IDSS backend the founding-member fact is the signer set, conferred by
+// the promotion rail — not an assignable role-history value (matou-app#669).
+const appStore = useAppStore();
+const isIdssBackend = computed(() => appStore.isIdssBackend);
 
 defineEmits<{
   (e: 'update:modelValue', value: boolean): void;
