@@ -15,10 +15,12 @@
         :phase="signin.phase.value"
         :refusal="signin.refusal.value"
         :can-approve="canApprove"
+        :unlock-on="signin.unlockOn.value"
         @approve="signin.approve"
         @not-now="onNotNow"
         @try-again="signin.tryAgain"
         @retry="signin.retry"
+        @toggle-unlock="signin.setUnlock"
         @close="onClose"
       />
       <p v-if="notALink" class="text-center text-sm text-muted-foreground mt-6">
@@ -84,7 +86,7 @@ function askFromRoute(): SigninAsk | null {
   const present = str(q.present);
   const challenge = str(q.c);
   if (!door || !present || !challenge) return null;
-  return {
+  const ask: SigninAsk = {
     door,
     present,
     challenge,
@@ -95,6 +97,11 @@ function askFromRoute(): SigninAsk | null {
     community: str(q.name),
     service: str(q.service) || str(q.svc),
   };
+  // `ek=` rides only a control-panel sign-in that offered a passcode handover;
+  // carry it only when present so an ordinary sign-in is unchanged (#663).
+  const sealingKey = str(q.ek);
+  if (sealingKey) ask.sealingKey = sealingKey;
+  return ask;
 }
 
 function str(v: unknown): string {

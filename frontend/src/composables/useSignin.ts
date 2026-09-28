@@ -19,8 +19,10 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { getCommunityDescriptor } from 'src/lib/clientConfig';
 import { useIdentityStore } from 'src/stores/identity';
 import { useKnownDoorsStore } from 'src/stores/knownDoors';
-import { parseSigninLink, type SigninAsk } from 'src/lib/signin/link';
+import { parseSigninLink, isPanelSignin, type SigninAsk } from 'src/lib/signin/link';
 import { chooseCredential, describeCredential, type HeldCredential } from 'src/lib/signin/credential';
+import { STEWARD_ROLE } from 'src/lib/spaces/steward';
+import { fingerprintOf, sealPasscode } from 'src/lib/signin/sealedPasscode';
 import { buildCardView, type ApproveCardView } from 'src/lib/signin/view';
 import { runApprove } from 'src/lib/signin/approve';
 import { getSigner } from 'src/lib/signin/signer';
@@ -51,6 +53,18 @@ export interface SigninDeps {
   present(presentUrl: string, body: PresentBody): Promise<PresentVerdict>;
   /** schema SAID → descriptor kind key (e.g. "membership"), for the label. */
   schemaKinds(): Promise<Record<string, string>>;
+  /**
+   * The short fingerprint of the control-panel tab's sealing-key verkey, for the
+   * details disclosure (#663). Only called for a control-panel sign-in.
+   */
+  sealingKeyFingerprint(verkey: string): Promise<string>;
+  /**
+   * Seal the steward's held passcode to the tab's sealing-key verkey, returning
+   * the CESR qb64 cipher for `sealed_passcode`, or null when there is no passcode
+   * to seal. Called ONLY on a control-panel unlock with the line on; the passcode
+   * itself is read inside this call and never leaves it (#663).
+   */
+  sealPasscode(verkey: string): Promise<string | null>;
   /**
    * Resolve once the wallet can answer: its session restored and its agent
    * connected. A code opened from the camera cold-starts the app, and boot
@@ -115,7 +129,25 @@ function defaultDeps(): SigninDeps {
       }
       return map;
     },
+    sealingKeyFingerprint: (verkey) => fingerprintOf(verkey),
+    async sealPasscode(verkey: string) {
+      // The passcode lives in the unlocked identity store; read it here, seal it,
+      // and let only the ciphertext leave. No passcode is returned or logged.
+      const bran = identity.passcode;
+      if (!bran) return null;
+      return sealPasscode(bran, verkey);
+    },
   };
+}
+
+/**
+ * Whether the presented credential makes its holder a steward — its `role` is
+ * `operator` (case-insensitive), the same rule that gates every steward surface
+ * (ADR 0226; {@link STEWARD_ROLE}). A missing credential or role is not a
+ * steward, so the unlock line is never offered without one (#663).
+ */
+function presenterIsSteward(cred: HeldCredential | null): boolean {
+  return (cred?.sad?.a?.role ?? '').trim().toLowerCase() === STEWARD_ROLE;
 }
 
 export function useSignin(deps: SigninDeps = defaultDeps()) {
@@ -128,6 +160,17 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
   const refusal = ref<RefusalCopy | null>(null);
   /** The credential the wallet will present (null → nothing matches; no Approve). */
   const chosen = shallowRef<HeldCredential | null>(null);
+  /**
+   * Whether the steward-unlock line is offered on this card (#663): true ONLY
+   * when the sign-in is to the control panel (the code carried `ek=`) AND the
+   * presented credential makes the holder a steward. Every other card leaves it
+   * false and nothing is ever armed.
+   */
+  const unlockAvailable = ref(false);
+  /** Whether the offered unlock line is switched on. On by default; the line IS
+   *  the consent, so there is no second confirm (#663). Meaningless when
+   *  {@link unlockAvailable} is false. */
+  const unlockOn = ref(true);
 
   /**
    * Parse a `matou://signin` link and prepare the card, or return false when
@@ -152,6 +195,10 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     refusal.value = null;
     view.value = null;
     chosen.value = null;
+    // Start disarmed and default-on for every fresh sign-in — arming is decided
+    // below, only for a steward's control-panel sign-in.
+    unlockAvailable.value = false;
+    unlockOn.value = true;
 
     try {
       await deps.ready();
@@ -164,7 +211,19 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
       const kinds = await deps.schemaKinds();
       const toShow = cred ? describeCredential(cred, kinds) : null;
       chosen.value = cred;
-      view.value = buildCardView(parsed, toShow, aid, knownDoors.isHome(parsed.door));
+
+      // The unlock line appears ONLY when the sign-in is to the control panel
+      // (the code carried `ek=`) AND the presented credential makes the holder a
+      // steward (its role is operator). The fingerprint rides the details
+      // disclosure so a careful steward can compare it with the panel; it is
+      // never on the face, and nothing is armed on any other card.
+      let unlock: ApproveCardView['unlock'] = null;
+      if (isPanelSignin(parsed) && presenterIsSteward(cred)) {
+        const fingerprint = await deps.sealingKeyFingerprint(parsed.sealingKey ?? '');
+        unlock = { sealingKeyFingerprint: fingerprint };
+        unlockAvailable.value = true;
+      }
+      view.value = buildCardView(parsed, toShow, aid, knownDoors.isHome(parsed.door), unlock);
     } catch (err) {
       console.warn('[Signin] Could not prepare the sign-in:', err);
       phase.value = 'unavailable';
@@ -204,10 +263,35 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     phase.value = 'proving';
     refusal.value = null;
 
+    // Arm on approve, in the same act as the presentation: when this is a
+    // steward's control-panel sign-in with the line on, seal the passcode to the
+    // tab's sealing key and ride it in the ONE present request (#663). Sealed
+    // once, for this challenge — a fresh card is the only way to a second box,
+    // and the door's single-use/expiry guards (409 spent, 410 expired) do the
+    // rest. Any other card, or the line switched off, seals nothing. A seal that
+    // fails degrades to an ordinary locked-seat session rather than blocking the
+    // sign-in — nothing but the ciphertext ever leaves, so a failure is silent.
+    let sealedPasscode: string | undefined;
+    if (unlockAvailable.value && unlockOn.value && a.sealingKey) {
+      try {
+        sealedPasscode = (await deps.sealPasscode(a.sealingKey)) ?? undefined;
+      } catch {
+        console.warn('[Signin] Could not seal the passcode; signing in with the seat locked');
+        sealedPasscode = undefined;
+      }
+    }
+
     let verdict: PresentVerdict;
     try {
       verdict = await runApprove(
-        { door: a.door, present: a.present, challenge: a.challenge, aid, credentialSaid: cred.sad.d },
+        {
+          door: a.door,
+          present: a.present,
+          challenge: a.challenge,
+          aid,
+          credentialSaid: cred.sad.d,
+          ...(sealedPasscode ? { sealedPasscode } : {}),
+        },
         {
           sign: (message) => deps.sign(aid, message),
           exportCredential: deps.exportCredential,
@@ -235,6 +319,12 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     phase.value = 'refused';
   }
 
+  /** Switch the steward-unlock line on or off (PU-A2u, #663). The line is the
+   *  consent, so this is the only gesture — there is no second confirm. */
+  function setUnlock(on: boolean): void {
+    unlockOn.value = on;
+  }
+
   /** Not now: nothing was signed or posted; the page keeps waiting (story 15). */
   function notNow(): void {
     phase.value = 'card';
@@ -248,5 +338,21 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     refusal.value = null;
   }
 
-  return { ask, view, phase, refusal, chosen, prepareFromLink, prepare, retry, trust, approve, notNow, tryAgain };
+  return {
+    ask,
+    view,
+    phase,
+    refusal,
+    chosen,
+    unlockAvailable,
+    unlockOn,
+    setUnlock,
+    prepareFromLink,
+    prepare,
+    retry,
+    trust,
+    approve,
+    notNow,
+    tryAgain,
+  };
 }

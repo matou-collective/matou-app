@@ -1,6 +1,6 @@
 {
   "note": "Golden wire contract for the sign-in bridge's APP DOOR (DDR 0246, ADR 0236; Ben's rulings on idss #1666 and #1669). matou-app copies THIS file so neither side guesses the wire. Values are illustrative; the fields, paths, statuses and refusal kinds are the contract. Snake_case on the wire.",
-  "_copied_from": "idss internal/idp/testdata/app-door-golden.json @ fc3baca3 (copied for matou-app #574)",
+  "_copied_from": "idss internal/idp/testdata/app-door-golden.json @ cb183eac (copied for matou-app #663; panel handover added by idss#1939)",
   "sign_in_site": {
     "rule": "ONE string is the sign-in site: the descriptor's signin.url == the ask's door == the address the verifier binds. It is the bridge's own sign-in address.",
     "value": "https://id.whakatohea.idss.nz/login"
@@ -14,14 +14,26 @@
       "challenge_id": "nonce-EXAMPLE",
       "expires_at": "2026-09-20T00:02:00Z",
       "door": "https://id.whakatohea.idss.nz/login",
-      "schemas": ["EMembershipSchemaSAID-EXAMPLE"],
+      "schemas": [
+        "EMembershipSchemaSAID-EXAMPLE"
+      ],
       "service": "Files",
       "community": "Whakatōhea",
       "present_url": "https://id.whakatohea.idss.nz/login/app/present",
       "deep_link": "matou://signin?c=nonce-EXAMPLE&door=…&name=…&present=…&s=…&svc=…"
-    }
+    },
+    "response_note": "This is an ORDINARY service sign-in: it carries NEITHER sealing_key NOR ek= (see panel below). The negative case is as much of the contract as the positive one."
   },
-  "deep_link_params": ["c", "door", "name", "present", "s", "svc"],
+  "deep_link_params": [
+    "c",
+    "door",
+    "ek",
+    "name",
+    "present",
+    "s",
+    "svc"
+  ],
+  "deep_link_params_note": "ek= rides ONLY a control-panel challenge whose code offered a sealing key (see panel below); an ordinary service sign-in carries the other six and no ek=.",
   "present": {
     "method": "POST",
     "url": "the ask's present_url, verbatim — never derived from door",
@@ -31,16 +43,97 @@
       "response": "0BExampleSignifySignature",
       "presentation": "-EXAMPLE-bare-ACDC+iss-CESR-stream"
     },
-    "verified": { "status": 200, "body": { "status": "verified" } },
-    "refused": { "status": 200, "body": { "status": "refused", "refusal": "signature" } },
-    "unknown_challenge": { "status": 404, "body": { "status": "refused", "refusal": "unknown" } },
-    "spent_challenge": { "status": 409, "body": { "status": "refused", "refusal": "spent" } },
-    "expired_challenge": { "status": 410, "body": { "status": "expired" } }
+    "request_note": "The plain (non-panel) present request carries NO sealed_passcode. A panel unlock adds one — see panel.present.request below.",
+    "verified": {
+      "status": 200,
+      "body": {
+        "status": "verified"
+      }
+    },
+    "refused": {
+      "status": 200,
+      "body": {
+        "status": "refused",
+        "refusal": "signature"
+      }
+    },
+    "unknown_challenge": {
+      "status": 404,
+      "body": {
+        "status": "refused",
+        "refusal": "unknown"
+      }
+    },
+    "spent_challenge": {
+      "status": 409,
+      "body": {
+        "status": "refused",
+        "refusal": "spent"
+      }
+    },
+    "expired_challenge": {
+      "status": 410,
+      "body": {
+        "status": "expired"
+      }
+    },
+    "sealed_box_refused": {
+      "when": "a sealed_passcode arrives on an ordinary service sign-in, OR on a panel challenge whose code carried no ek — there is no key it could have been sealed to. Caught before the verifier; nothing is stored or relayed.",
+      "status": 400,
+      "body": {
+        "status": "refused",
+        "refusal": "sealed-box-refused"
+      }
+    }
   },
   "status_poll": {
     "method": "GET",
     "path": "/login/app/status?c=<challenge_id>",
-    "states": ["waiting", "verified", "refused", "expired"],
-    "verified": { "status": "verified", "redirect": "https://…/callback?…" }
+    "states": [
+      "waiting",
+      "verified",
+      "refused",
+      "expired"
+    ],
+    "verified": {
+      "status": "verified",
+      "redirect": "https://…/callback?…"
+    }
+  },
+  "panel": {
+    "note": "The control-panel passcode relay (ADR 0282 d.6 + its 2026-09-27 #1938 amendment, PU-A2u). The panel tab mints a throwaway Ed25519 Signer in tab memory; its verkey qb64 rides ek= as the sealing key, and the steward's phone seals their passcode to it with signify's Encrypter (a CESR qb64 X25519_Cipher_Salt cipher). The door relays ek= and the cipher as OPAQUE strings — it validates NEITHER. These fields appear ONLY on a control-panel unlock; an ordinary service sign-in (ask.response, present.request above) carries none of them.",
+    "challenge": {
+      "adds_to_ask_response": {
+        "sealing_key": "DXwPc9Pg5L9o8DpQbsd0tWUlAoycDgCLMnPx8SBl9NoA"
+      },
+      "sealing_key_note": "the tab's Ed25519 verkey qb64, echoed from ?ek= on the mint; a public key, never a secret — it rides the URL by design, the passcode never does.",
+      "service": "the control panel",
+      "deep_link": "matou://signin?c=nonce-PANEL&door=…&ek=DXwPc9Pg5L9o8DpQbsd0tWUlAoycDgCLMnPx8SBl9NoA&name=…&present=…&s=…&svc=the%20control%20panel"
+    },
+    "present": {
+      "request": {
+        "aid": "Etama",
+        "challenge_id": "nonce-PANEL",
+        "response": "0BExampleSignifySignature",
+        "presentation": "-EXAMPLE-bare-ACDC+iss-CESR-stream",
+        "sealed_passcode": "1AAHXSl-r-AQPCtOr41JjX--Rqq5BGy4o-TwNXynwu6YhGYL44tJqyT26dbFdUNw42QIE_fa3aZF9-SBCoIEwhi908F9kAdFCQhp"
+      },
+      "request_note": "sealed_passcode is a CESR qb64 X25519_Cipher_Salt cipher (1AAH…) the door cannot open. It rides ONLY a panel challenge that offered a sealing key.",
+      "sealed_box_refused": "see present.sealed_box_refused above — a box without a sealing key is refused 400 sealed-box-refused",
+      "second_box_spent": "see present.spent_challenge above — a SECOND box for the same challenge hits the single-use guard: 409 spent",
+      "box_after_expiry": "see present.expired_challenge above — a box after the two-minute life: 410 expired"
+    },
+    "status_poll": {
+      "verified_first_poll": {
+        "status": "verified",
+        "redirect": "https://…/callback?…",
+        "handover": "1AAHXSl-r-AQPCtOr41JjX--Rqq5BGy4o-TwNXynwu6YhGYL44tJqyT26dbFdUNw42QIE_fa3aZF9-SBCoIEwhi908F9kAdFCQhp"
+      },
+      "verified_second_poll": {
+        "status": "verified",
+        "redirect": "https://…/callback?…"
+      },
+      "handover_note": "handover is the same ciphertext, handed to the tab EXACTLY ONCE then deleted (omitempty). The SECOND poll omits it — no field ever leaks whether one existed, so an ordinary sign-in is byte-identical to a panel unlock after the box is taken."
+    }
   }
 }

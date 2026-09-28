@@ -40,6 +40,46 @@
       <b data-field="community">{{ view.community }}</b>?
     </p>
 
+    <!-- PU-A2u: the steward-unlock line (#663). Present ONLY on a steward's
+         control-panel sign-in (view.unlock set), under the headline, on by
+         default. The line IS the consent — switching it on is the whole gesture,
+         there is no second confirm and the passcode never appears. On approve
+         with it on, the wallet seals the passcode to the panel's key in the same
+         act as the presentation; off gives an ordinary locked-seat session. -->
+    <div
+      v-if="view && view.unlock && (phase === 'card' || phase === 'proving')"
+      class="unlock text-left border border-border rounded-lg p-4 space-y-2 bg-card"
+      :class="{ 'opacity-40 pointer-events-none': phase === 'proving' }"
+      data-field="unlock-line"
+    >
+      <label class="flex items-start gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          class="mt-0.5 shrink-0"
+          data-action="toggle-unlock"
+          :checked="unlockOn"
+          @change="$emit('toggle-unlock', ($event.target as HTMLInputElement).checked)"
+        />
+        <span class="text-sm font-medium">Also unlock steward actions on this computer until you sign out</span>
+      </label>
+      <p
+        v-if="unlockOn"
+        class="text-xs text-muted-foreground pl-7"
+        data-status="unlock-on"
+      >
+        This computer will be able to approve people, issue and revoke credentials, and see who's
+        waiting — without typing your twelve words. You can end it from your app at any time.
+      </p>
+      <p
+        v-else
+        class="text-xs text-muted-foreground pl-7"
+        data-status="unlock-off"
+      >
+        You'll be signed in, but this computer won't be able to approve people or issue credentials.
+        You can unlock it later from the Members tab.
+      </p>
+    </div>
+
     <!-- The card body: the sign-in site, then what will be shown. Kept visible
          through Proving (dimmed) and hidden once done/refused. -->
     <div
@@ -92,6 +132,12 @@
           <dd data-field="challenge-id">{{ view.details.challengeId }}</dd>
           <dt class="text-muted-foreground">signs over</dt>
           <dd data-field="bound-message">{{ view.details.boundMessage }}</dd>
+          <!-- The panel tab's sealing-key fingerprint — in details only, for a
+               careful steward to compare with what the panel shows (#663). -->
+          <template v-if="view.unlock">
+            <dt class="text-muted-foreground">this computer's key</dt>
+            <dd data-field="sealing-key-fingerprint">{{ view.unlock.sealingKeyFingerprint }}</dd>
+          </template>
         </dl>
       </details>
     </div>
@@ -181,6 +227,9 @@ const props = defineProps<{
   phase: SigninPhase;
   refusal: RefusalCopy | null;
   canApprove: boolean;
+  /** Whether the steward-unlock line is switched on (default on; only rendered
+   *  when `view.unlock` is set, #663). */
+  unlockOn?: boolean;
 }>();
 
 defineEmits<{
@@ -189,6 +238,8 @@ defineEmits<{
   'try-again': [];
   retry: [];
   close: [];
+  /** The steward toggled the unlock line (PU-A2u, #663). */
+  'toggle-unlock': [on: boolean];
 }>();
 
 /** "Member since 12 Aug 2026" — role + issue date, omitting either when absent. */

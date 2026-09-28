@@ -46,4 +46,17 @@ describe('runApprove', () => {
     const deps = fakeDeps({ outcome: 'refused', refusal: 'revoked' });
     await expect(runApprove(input, deps)).resolves.toEqual({ outcome: 'refused', refusal: 'revoked' });
   });
+
+  it('rides the sealed passcode in the ONE present body when armed (#663)', async () => {
+    const deps = fakeDeps({ outcome: 'verified' });
+    await runApprove({ ...input, sealedPasscode: '1AAHsealed' }, deps);
+    expect(deps.present).toHaveBeenCalledTimes(1);
+    expect(deps.present.mock.calls[0]![1]).toMatchObject({ sealed_passcode: '1AAHsealed' });
+  });
+
+  it('never puts sealed_passcode on the wire for an ordinary sign-in (#663)', async () => {
+    const deps = fakeDeps({ outcome: 'verified' });
+    await runApprove(input, deps);
+    expect(deps.present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
+  });
 });

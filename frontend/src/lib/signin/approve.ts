@@ -21,6 +21,13 @@ export interface ApproveInput {
   aid: string;
   /** The SAID of the credential to present. */
   credentialSaid: string;
+  /**
+   * The steward's passcode already sealed to the control-panel tab's sealing key
+   * (a CESR qb64 `X25519_Cipher_Salt` cipher), when this is a control-panel
+   * unlock with the line on. Posted verbatim as `sealed_passcode`; omitted (and
+   * the field never appears on the wire) on every ordinary sign-in (#663).
+   */
+  sealedPasscode?: string;
 }
 
 /** The side-effecting dependencies, injected for testability. */
@@ -40,7 +47,7 @@ export interface ApproveDeps {
  * {@link PresentVerdict}, not an exception.
  */
 export async function runApprove(input: ApproveInput, deps: ApproveDeps): Promise<PresentVerdict> {
-  const { door, present, challenge, aid, credentialSaid } = input;
+  const { door, present, challenge, aid, credentialSaid, sealedPasscode } = input;
 
   // Export the full stream, then trim to the ACDC + iss the door reads. The
   // door also accepts the full stream, so a trim that cannot find both messages
@@ -52,5 +59,10 @@ export async function runApprove(input: ApproveInput, deps: ApproveDeps): Promis
   // `present_url` — the two need not share a path, and the URL is never derived.
   const response = await deps.sign(boundMessage(door, aid, challenge));
 
-  return deps.present(present, { aid, challenge_id: challenge, response, presentation });
+  const body: PresentBody = { aid, challenge_id: challenge, response, presentation };
+  // The sealed passcode rides the ONE present request on a panel unlock; on an
+  // ordinary sign-in it is absent, so the field never appears on the wire.
+  if (sealedPasscode) body.sealed_passcode = sealedPasscode;
+
+  return deps.present(present, body);
 }
