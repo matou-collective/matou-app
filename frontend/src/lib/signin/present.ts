@@ -35,11 +35,21 @@ export interface PresentBody {
   /** The exported CESR presentation (ACDC + iss). */
   presentation: string;
   /**
-   * The steward's passcode sealed to the control-panel tab's sealing key — a
-   * CESR qb64 `X25519_Cipher_Salt` cipher the door relays but cannot open
-   * (app-door-golden `panel.present.request.sealed_passcode`, #663). Present
-   * ONLY on a control-panel unlock whose code carried `ek=`; omitted on every
-   * ordinary sign-in (a `sealed_passcode` without a sealing key is refused 400).
+   * Option B (app-door-golden `panel.present.request.armed`, idss #1967,
+   * matou-app #674): the steward approved a control-panel unlock with the line
+   * ON, so the wallet ARMS — it keeps the passcode ready to seal for this one
+   * challenge and sends NO box on present. On completing an armed panel sign-in
+   * the door mints a single-use handover capability (delivered to the panel over
+   * the OIDC channel), and the wallet seals to the verkey the panel binds on the
+   * `sign_in_armed_handover` routes. Present (`true`) ONLY on a steward
+   * control-panel unlock with the line on; omitted on every other sign-in.
+   */
+  armed?: boolean;
+  /**
+   * The retiring option-A field (app-door-golden `panel.present.option_a_retiring`,
+   * idss #1933): the wallet sealed EAGERLY at Approve to whatever key rode `ek=`.
+   * Option B ({@link armed}) replaces it — the live wallet no longer sends it. It
+   * stays on the wire type so the door's dormant transitional path still parses.
    */
   sealed_passcode?: string;
 }

@@ -48,6 +48,7 @@ function deps(overrides: Partial<SigninDeps> = {}): SigninDeps {
     sealingKeyFingerprint: async (verkey) => `fp(${verkey})`,
     now: () => 1_000_000,
     arm: () => undefined,
+    answerHandover: async () => undefined,
     ...overrides,
   };
 }
@@ -337,13 +338,18 @@ describe('useSignin — the steward-unlock line (#663)', () => {
     expect(s.view.value?.unlock).toBeNull();
   });
 
-  it('arms for the challenge and posts no sealed_passcode when the line is on (#674)', async () => {
-    // Approve now ARMS the wallet for the panel's later request rather than
-    // sealing to the sign-in code's `ek=`; the present request carries no
-    // passcode, and the box the panel can open is minted only when it asks.
+  it('arms, posts armed:true and no box, and answers the panel later when the line is on (#674)', async () => {
+    // Approve ARMS the wallet for the panel's later request rather than sealing
+    // to the sign-in code's `ek=`; the present request carries `armed: true` and
+    // NO box, and the box the panel can open is minted only when it asks — so
+    // after the sign-in verifies the wallet answers the panel's request in the
+    // background (option B, idss #1961/#1967).
     const present = vi.fn(async () => ({ outcome: 'verified' as const }));
     const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
-    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm, now: () => 1_000_000 }));
+    const answerHandover = vi.fn(async () => undefined);
+    const s = useSignin(
+      deps({ listCredentials: async () => [stewardCred], present, arm, answerHandover, now: () => 1_000_000 }),
+    );
     await s.prepareFromLink(PANEL_LINK);
     await s.approve();
     expect(arm).toHaveBeenCalledTimes(1);
@@ -351,43 +357,75 @@ describe('useSignin — the steward-unlock line (#663)', () => {
     expect(arm.mock.calls[0]![0]).toBe('c_panel');
     expect(arm.mock.calls[0]![1]).toBeGreaterThan(1_000_000);
     expect(present).toHaveBeenCalledTimes(1);
-    expect(present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('sealed_passcode');
+    // The wire tells the door the sign-in armed a handover so it mints the
+    // capability (idss #1967).
+    expect(body.armed).toBe(true);
+    // The panel's request is answered in the background, keyed by this sign-in's
+    // present URL, challenge and AID.
+    expect(answerHandover).toHaveBeenCalledWith('https://id.example.nz/login/app/present', 'c_panel', 'EHa');
     expect(s.phase.value).toBe('done');
   });
 
-  it('arms nothing and posts no sealed_passcode when the line is switched off (#674)', async () => {
+  it('arms nothing, posts no armed signal, and answers nothing when the line is switched off (#674)', async () => {
     const present = vi.fn(async () => ({ outcome: 'verified' as const }));
     const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
-    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm }));
+    const answerHandover = vi.fn(async () => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm, answerHandover }));
     await s.prepareFromLink(PANEL_LINK);
     s.setUnlock(false);
     await s.approve();
     expect(arm).not.toHaveBeenCalled();
-    expect(present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('sealed_passcode');
+    expect(body).not.toHaveProperty('armed');
+    expect(answerHandover).not.toHaveBeenCalled();
     expect(s.phase.value).toBe('done');
   });
 
-  it('arms nothing on an ordinary service sign-in even for a steward (#674)', async () => {
+  it('arms nothing and answers nothing on an ordinary service sign-in even for a steward (#674)', async () => {
     const present = vi.fn(async () => ({ outcome: 'verified' as const }));
     const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
-    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm }));
+    const answerHandover = vi.fn(async () => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm, answerHandover }));
     await s.prepareFromLink(LINK);
     await s.approve();
     expect(arm).not.toHaveBeenCalled();
-    expect(present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('sealed_passcode');
+    expect(body).not.toHaveProperty('armed');
+    expect(answerHandover).not.toHaveBeenCalled();
   });
 
-  it('signs in with the seat locked when arming throws (#674)', async () => {
+  it('signs in with the seat locked, posts no armed signal, and answers nothing when arming throws (#674)', async () => {
     // A failure to arm must never block the sign-in — it degrades to an ordinary
-    // locked-seat session; nothing but a later ciphertext ever leaves.
+    // locked-seat session; nothing but a later ciphertext ever leaves, and with
+    // no arming there is nothing to answer.
     const present = vi.fn(async () => ({ outcome: 'verified' as const }));
     const arm = vi.fn(() => {
       throw new Error('no passcode in this session');
     });
-    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm }));
+    const answerHandover = vi.fn(async () => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm, answerHandover }));
     await s.prepareFromLink(PANEL_LINK);
     await s.approve();
-    expect(present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('sealed_passcode');
+    expect(body).not.toHaveProperty('armed');
+    expect(answerHandover).not.toHaveBeenCalled();
     expect(s.phase.value).toBe('done');
+  });
+
+  it('a refused armed sign-in answers no panel request (#674)', async () => {
+    // The door refused, so nothing was handed over — the wallet must not poll or
+    // seal for a sign-in that never completed.
+    const present = vi.fn(async () => ({ outcome: 'refused' as const, refusal: 'signature' }));
+    const answerHandover = vi.fn(async () => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, answerHandover }));
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(answerHandover).not.toHaveBeenCalled();
   });
 });

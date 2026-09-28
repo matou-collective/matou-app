@@ -3,7 +3,8 @@ import type { Page } from '@playwright/test';
 
 /**
  * #674 — panel unlock 3/3: the wallet ARMS at approve and seals when the panel
- * asks (ADR 0282 d.2/d.6 + its armed-consent amendment, idss#1957).
+ * asks (ADR 0282 d.2/d.6 + its armed-consent amendment, idss #1961/#1967,
+ * option B).
  *
  * #663 sealed the steward's passcode ONCE during approve, to the verkey that
  * rode the sign-in code (`ek=`). But that key belongs to the bridge's door page
@@ -11,22 +12,27 @@ import type { Page } from '@playwright/test';
  * `admin.<apex>` never minted it and cannot open the box. So a control-panel
  * sign-in approved with the unlock line ON now ARMS the wallet for that one
  * challenge and seals NOTHING at approve — the present request carries no
- * `sealed_passcode`. The box the panel can open is minted only when the panel
- * later asks with the verkey it actually holds (that request transport is
- * idss#1957, out of scope here and not exercised by this spec).
+ * `sealed_passcode`, only `armed: true` so the door mints the handover
+ * capability. The box the panel can open is minted only when the panel later
+ * asks: after the sign-in verifies the wallet reads the verkey the panel bound
+ * off the door's handover route and seals the passcode to THAT verkey, posting
+ * the ciphertext once (the wire is idss #1961's `sign_in_armed_handover`).
  *
  * Ben ruled 2026-09-28 the mechanism stays sign-in-armed — one tap, no second
  * scan — so the approve card and its unlock line are visually unchanged from
- * #663; what changes is only that the passcode no longer rides the present
- * request. Drives the wallet's card over the web build with the sign-in site
- * faked by route interception (the #663/#664 precedent); the present POST is
- * intercepted so the wallet's body can be asserted without a live bridge.
- * adminPage is the community's steward (a Membership credential with role
- * operator); memberPage is a plain member.
+ * #663; what changes is only the wire. Drives the wallet's card over the web
+ * build with the sign-in site faked by route interception (the #663/#664
+ * precedent); the present POST and the handover routes are intercepted so the
+ * wallet's traffic can be asserted without a live bridge. adminPage is the
+ * community's steward (a Membership credential with role operator); memberPage
+ * is a plain member.
  */
 
 const DOOR = 'https://door.test';
 const PRESENT = `${DOOR}/login/app/present`;
+// The door's wallet-facing handover routes (siblings of the present route).
+const HANDOVER_KEY = /\/login\/app\/handover\/key/;
+const HANDOVER_SEAL = /\/login\/app\/handover\/seal$/;
 // A real Ed25519 verkey qb64 — the throwaway sealing key the panel tab would
 // mint and echo on `ek=` at sign-in. Under #674 the wallet no longer seals to
 // it at approve; it is only the machine-readable signal that this is a
@@ -72,11 +78,61 @@ test.describe('#674 panel unlock — the wallet arms at approve, seals when the 
 
     await expect(adminPage.locator('[data-status="done"]')).toContainText('Signed in.');
     // The wallet armed for the panel's later request rather than sealing here:
-    // the present request carries NO sealed_passcode, and the passcode is never
-    // on screen.
+    // the present request carries NO sealed_passcode, only `armed: true` so the
+    // door mints the handover capability, and the passcode is never on screen.
     expect(postedBody).not.toBeNull();
     expect(postedBody as Record<string, unknown>).not.toHaveProperty('sealed_passcode');
+    expect((postedBody as Record<string, unknown>).armed).toBe(true);
     await snap(adminPage, 'approve-armed-no-seal');
+  });
+
+  test('after approve the wallet reads the panel verkey and posts the sealed box (option B answering half)', async ({
+    adminPage,
+    snap,
+  }) => {
+    // The verkey the panel binds to the door AFTER it lands (never rode `ek=`).
+    // A known-good Ed25519 verkey qb64 so signify's Encrypter seals to it; in
+    // production the panel mints a fresh one in its tab post-landing.
+    const PANEL_BOUND_KEY = SEALING_KEY;
+    await adminPage.route(PRESENT, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'verified' }),
+      });
+    });
+    // The wallet polls this route; the panel has bound its verkey, so answer it.
+    await adminPage.route(HANDOVER_KEY, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ sealing_key: PANEL_BOUND_KEY }),
+      });
+    });
+    let sealedBox: Record<string, unknown> | null = null;
+    await adminPage.route(HANDOVER_SEAL, async (route) => {
+      sealedBox = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'answered' }),
+      });
+    });
+
+    await openCard(adminPage, 'c_panel_answer', { panel: true });
+    await adminPage.locator('[data-action="approve"]').click();
+    await expect(adminPage.locator('[data-status="done"]')).toContainText('Signed in.');
+
+    // In the background the wallet answered the panel's request: it sealed the
+    // steward's passcode to the verkey the panel bound and posted the ciphertext
+    // once. The passcode leaves ONLY as the sealed cipher.
+    await expect.poll(() => sealedBox).not.toBeNull();
+    const box = sealedBox as unknown as Record<string, unknown>;
+    expect(box.challenge_id).toBe('c_panel_answer');
+    expect(typeof box.aid).toBe('string');
+    expect(typeof box.sealed_passcode).toBe('string');
+    expect((box.sealed_passcode as string).length).toBeGreaterThan(0);
+    await snap(adminPage, 'answered-panel-request');
   });
 
   test('Approve with the line off also posts no sealed_passcode (nothing armed)', async ({ adminPage, snap }) => {
@@ -93,6 +149,8 @@ test.describe('#674 panel unlock — the wallet arms at approve, seals when the 
     await expect(adminPage.locator('[data-status="done"]')).toContainText('Signed in.');
     expect(postedBody).not.toBeNull();
     expect(postedBody as Record<string, unknown>).not.toHaveProperty('sealed_passcode');
+    // Nothing armed → no `armed` signal, so the door mints no capability.
+    expect(postedBody as Record<string, unknown>).not.toHaveProperty('armed');
     await snap(adminPage, 'approve-line-off-no-seal');
   });
 
@@ -112,6 +170,7 @@ test.describe('#674 panel unlock — the wallet arms at approve, seals when the 
 
     await expect(adminPage.locator('[data-status="done"]')).toContainText('Signed in.');
     expect(postedBody as Record<string, unknown>).not.toHaveProperty('sealed_passcode');
+    expect(postedBody as Record<string, unknown>).not.toHaveProperty('armed');
     await snap(adminPage, 'ordinary-sign-in');
   });
 });

@@ -24,6 +24,7 @@ import { chooseCredential, describeCredential, type HeldCredential } from 'src/l
 import { STEWARD_ROLE } from 'src/lib/spaces/steward';
 import { fingerprintOf, sealPasscode } from 'src/lib/signin/sealedPasscode';
 import { armForChallenge, type PasscodeSealer } from 'src/lib/signin/armedPasscode';
+import { runHandover } from 'src/lib/signin/handover';
 import { buildCardView, type ApproveCardView } from 'src/lib/signin/view';
 import { runApprove } from 'src/lib/signin/approve';
 import { getSigner } from 'src/lib/signin/signer';
@@ -75,6 +76,15 @@ export interface SigninDeps {
    * (#674). The passcode never leaves this wallet's unlocked session (#663).
    */
   arm(challenge: string, expiresAt: number): void;
+  /**
+   * Answer the panel's later request for an armed control-panel sign-in (#674):
+   * read the verkey the panel bound to the door and seal the passcode to it,
+   * once (idss #1961). Called ONLY after an armed panel sign-in verifies, and
+   * run in the background — it never blocks or fails the sign-in, and a panel
+   * that never lands simply leaves the poll unanswered. Nothing but the sealed
+   * ciphertext ever leaves this wallet's unlocked session.
+   */
+  answerHandover(presentUrl: string, challenge: string, aid: string): Promise<void>;
   /** The current wall-clock instant, injectable so the arming expiry is testable. */
   now(): number;
   /**
@@ -149,6 +159,10 @@ function defaultDeps(): SigninDeps {
     // the ciphertext leave — never returned, never logged — so a wallet locked
     // between approve and the request seals nothing (#663/#674).
     arm: (challenge, expiresAt) => armForChallenge(challenge, expiresAt, sealPasscodeLive),
+    // Answer the panel's later request: poll the door for the verkey the panel
+    // bound and seal to it once (#674). Best-effort — runHandover never throws
+    // and seals nothing when the panel never binds or the seat is locked.
+    answerHandover: (presentUrl, challenge, aid) => runHandover(presentUrl, challenge, aid),
   };
 }
 
@@ -314,16 +328,20 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     // steward's control-panel sign-in with the line on, keep the passcode ready
     // to seal for this challenge's life and answer the panel's LATER request
     // (#674). Nothing is sealed now and the present request below carries no
-    // passcode. #663 sealed here, to the sign-in code's `ek=`, but that key
-    // belongs to the bridge's door page the OIDC hop tears down — the panel at
-    // `admin.<apex>` never held it, so the box could not be opened. The seal
-    // happens when the panel asks with the verkey it actually minted (idss
-    // #1957). Any other card, or the line switched off, arms nothing. A failure
+    // passcode — only `armed: true`, so the door mints the handover capability.
+    // #663 sealed here, to the sign-in code's `ek=`, but that key belongs to the
+    // bridge's door page the OIDC hop tears down — the panel at `admin.<apex>`
+    // never held it, so the box could not be opened. The seal happens after the
+    // sign-in verifies, when the wallet reads the verkey the panel bound and
+    // seals to it (answerHandover, idss #1961). Any other card, or the line
+    // switched off, arms nothing. A failure
     // to arm degrades to an ordinary locked-seat session rather than blocking the
     // sign-in — nothing but a later ciphertext ever leaves, so it is silent.
+    let armed = false;
     if (unlockAvailable.value && unlockOn.value) {
       try {
         deps.arm(a.challenge, deps.now() + ARMING_TTL_MS);
+        armed = true;
       } catch {
         console.warn('[Signin] Could not arm the steward unlock; signing in with the seat locked');
       }
@@ -338,6 +356,10 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
           challenge: a.challenge,
           aid,
           credentialSaid: cred.sad.d,
+          // Only a wallet that actually armed rides `armed: true`, so the door
+          // mints the handover capability only when there is a passcode ready to
+          // seal. An arm that threw degrades to an ordinary locked seat.
+          armed,
         },
         {
           sign: (message) => deps.sign(aid, message),
@@ -356,6 +378,17 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
       // Only the known-doors entry changes on a completed sign-in (story 17).
       await knownDoors.touch(a.door);
       phase.value = 'done';
+      // Answer the panel's later request in the background (#674): read the
+      // verkey the panel bound to the door and seal the passcode to it, once.
+      // Fire-and-forget — the sign-in is already done (the phone shows "Signed
+      // in"), the box arrives a moment later, and a panel that never lands just
+      // leaves the poll unanswered. It never blocks or fails the sign-in, and
+      // nothing but the sealed ciphertext ever leaves.
+      if (armed) {
+        void deps.answerHandover(a.present, a.challenge, aid).catch(() => {
+          /* the answer is best-effort; a failure never touches the sign-in */
+        });
+      }
       return;
     }
     if (verdict.outcome === 'refused') {

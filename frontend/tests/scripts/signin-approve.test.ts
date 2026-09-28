@@ -47,16 +47,28 @@ describe('runApprove', () => {
     await expect(runApprove(input, deps)).resolves.toEqual({ outcome: 'refused', refusal: 'revoked' });
   });
 
-  it('rides the sealed passcode in the ONE present body when armed (#663)', async () => {
+  it('rides the armed signal — and NO box — in the ONE present body when armed (#674)', async () => {
+    // Option B (idss #1967): a panel unlock with the line on arms and posts
+    // `armed: true`, never a sealed box. The door mints the handover capability
+    // off this signal; the wallet seals later on the handover routes.
     const deps = fakeDeps({ outcome: 'verified' });
-    await runApprove({ ...input, sealedPasscode: '1AAHsealed' }, deps);
+    await runApprove({ ...input, armed: true }, deps);
     expect(deps.present).toHaveBeenCalledTimes(1);
-    expect(deps.present.mock.calls[0]![1]).toMatchObject({ sealed_passcode: '1AAHsealed' });
+    const body = deps.present.mock.calls[0]![1];
+    expect(body.armed).toBe(true);
+    expect(body).not.toHaveProperty('sealed_passcode');
   });
 
-  it('never puts sealed_passcode on the wire for an ordinary sign-in (#663)', async () => {
+  it('never puts armed or a box on the wire for an ordinary sign-in (#674)', async () => {
     const deps = fakeDeps({ outcome: 'verified' });
     await runApprove(input, deps);
+    expect(deps.present.mock.calls[0]![1]).not.toHaveProperty('armed');
     expect(deps.present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
+  });
+
+  it('posts no armed signal when armed is explicitly false (#674)', async () => {
+    const deps = fakeDeps({ outcome: 'verified' });
+    await runApprove({ ...input, armed: false }, deps);
+    expect(deps.present.mock.calls[0]![1]).not.toHaveProperty('armed');
   });
 });
