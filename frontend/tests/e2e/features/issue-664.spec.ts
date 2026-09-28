@@ -94,7 +94,9 @@ test.describe('#664 panel unlock — the unlock-only card', () => {
     await adminPage.route(RELAY, async (route) => {
       postCount += 1;
       postedBody = route.request().postDataJSON() as Record<string, unknown>;
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'verified' }) });
+      // The unlock route's success is `answered`, never `verified` (idss#1959,
+      // reconciled in #678) — an unlock verifies nothing.
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'answered' }) });
     });
 
     await openUnlock(adminPage, 'u_seal');
@@ -107,10 +109,11 @@ test.describe('#664 panel unlock — the unlock-only card', () => {
     expect(body).not.toBeNull();
     expect(String(body!.sealed_passcode)).toMatch(/^1AAH/);
     expect(body!.challenge_id).toBe('u_seal');
-    // No presentation, no signature, no AID — the passcode and only the passcode.
+    // No presentation and no signature — the passcode and only the passcode. The
+    // aid DOES ride (ADR 0282 d.6, #678): the panel matches the opened agent to it.
     expect(body).not.toHaveProperty('presentation');
     expect(body).not.toHaveProperty('response');
-    expect(body).not.toHaveProperty('aid');
+    expect(String(body!.aid)).not.toBe('');
     await snap(adminPage, 'unlocked');
   });
 
