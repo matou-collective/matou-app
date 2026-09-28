@@ -1,6 +1,6 @@
 {
+  "_copied_from": "idss internal/idp/testdata/app-door-golden.json @ be126a6b (re-vendored for matou-app #674; option-B sign_in_armed_handover routes + present armed signal added by idss#1961/#1967)",
   "note": "Golden wire contract for the sign-in bridge's APP DOOR (DDR 0246, ADR 0236; Ben's rulings on idss #1666 and #1669). matou-app copies THIS file so neither side guesses the wire. Values are illustrative; the fields, paths, statuses and refusal kinds are the contract. Snake_case on the wire.",
-  "_copied_from": "idss internal/idp/testdata/app-door-golden.json @ cb8f3e9a (re-vendored for matou-app #678; unlock section added by idss#1959)",
   "sign_in_site": {
     "rule": "ONE string is the sign-in site: the descriptor's signin.url == the ask's door == the address the verifier binds. It is the bridge's own sign-in address.",
     "value": "https://id.whakatohea.idss.nz/login"
@@ -14,7 +14,9 @@
       "challenge_id": "nonce-EXAMPLE",
       "expires_at": "2026-09-20T00:02:00Z",
       "door": "https://id.whakatohea.idss.nz/login",
-      "schemas": ["EMembershipSchemaSAID-EXAMPLE"],
+      "schemas": [
+        "EMembershipSchemaSAID-EXAMPLE"
+      ],
       "service": "Files",
       "community": "Whakatōhea",
       "present_url": "https://id.whakatohea.idss.nz/login/app/present",
@@ -22,7 +24,15 @@
     },
     "response_note": "This is an ORDINARY service sign-in: it carries NEITHER sealing_key NOR ek= (see panel below). The negative case is as much of the contract as the positive one."
   },
-  "deep_link_params": ["c", "door", "ek", "name", "present", "s", "svc"],
+  "deep_link_params": [
+    "c",
+    "door",
+    "ek",
+    "name",
+    "present",
+    "s",
+    "svc"
+  ],
   "deep_link_params_note": "ek= rides ONLY a control-panel challenge whose code offered a sealing key (see panel below); an ordinary service sign-in carries the other six and no ek=.",
   "present": {
     "method": "POST",
@@ -34,22 +44,61 @@
       "presentation": "-EXAMPLE-bare-ACDC+iss-CESR-stream"
     },
     "request_note": "The plain (non-panel) present request carries NO sealed_passcode. A panel unlock adds one — see panel.present.request below.",
-    "verified": { "status": 200, "body": { "status": "verified" } },
-    "refused": { "status": 200, "body": { "status": "refused", "refusal": "signature" } },
-    "unknown_challenge": { "status": 404, "body": { "status": "refused", "refusal": "unknown" } },
-    "spent_challenge": { "status": 409, "body": { "status": "refused", "refusal": "spent" } },
-    "expired_challenge": { "status": 410, "body": { "status": "expired" } },
+    "verified": {
+      "status": 200,
+      "body": {
+        "status": "verified"
+      }
+    },
+    "refused": {
+      "status": 200,
+      "body": {
+        "status": "refused",
+        "refusal": "signature"
+      }
+    },
+    "unknown_challenge": {
+      "status": 404,
+      "body": {
+        "status": "refused",
+        "refusal": "unknown"
+      }
+    },
+    "spent_challenge": {
+      "status": 409,
+      "body": {
+        "status": "refused",
+        "refusal": "spent"
+      }
+    },
+    "expired_challenge": {
+      "status": 410,
+      "body": {
+        "status": "expired"
+      }
+    },
     "sealed_box_refused": {
       "when": "a sealed_passcode arrives on an ordinary service sign-in, OR on a panel challenge whose code carried no ek — there is no key it could have been sealed to. Caught before the verifier; nothing is stored or relayed.",
       "status": 400,
-      "body": { "status": "refused", "refusal": "sealed-box-refused" }
+      "body": {
+        "status": "refused",
+        "refusal": "sealed-box-refused"
+      }
     }
   },
   "status_poll": {
     "method": "GET",
     "path": "/login/app/status?c=<challenge_id>",
-    "states": ["waiting", "verified", "refused", "expired"],
-    "verified": { "status": "verified", "redirect": "https://…/callback?…" }
+    "states": [
+      "waiting",
+      "verified",
+      "refused",
+      "expired"
+    ],
+    "verified": {
+      "status": "verified",
+      "redirect": "https://…/callback?…"
+    }
   },
   "panel": {
     "note": "The control-panel passcode relay (ADR 0282 d.6 + its 2026-09-27 #1938 amendment, PU-A2u). The panel tab mints a throwaway Ed25519 Signer in tab memory; its verkey qb64 rides ek= as the sealing key, and the steward's phone seals their passcode to it with signify's Encrypter (a CESR qb64 X25519_Cipher_Salt cipher). The door relays ek= and the cipher as OPAQUE strings — it validates NEITHER. These fields appear ONLY on a control-panel unlock; an ordinary service sign-in (ask.response, present.request above) carries none of them.",
@@ -67,12 +116,21 @@
         "challenge_id": "nonce-PANEL",
         "response": "0BExampleSignifySignature",
         "presentation": "-EXAMPLE-bare-ACDC+iss-CESR-stream",
-        "sealed_passcode": "1AAHXSl-r-AQPCtOr41JjX--Rqq5BGy4o-TwNXynwu6YhGYL44tJqyT26dbFdUNw42QIE_fa3aZF9-SBCoIEwhi908F9kAdFCQhp"
+        "armed": true
       },
-      "request_note": "sealed_passcode is a CESR qb64 X25519_Cipher_Salt cipher (1AAH…) the door cannot open. It rides ONLY a panel challenge that offered a sealing key.",
+      "request_note": "OPTION B (ADR 0282 d.2/d.6 + its armed-consent amendment, idss #1967, matou-app#674). The steward approved with the unlock line ON, so the wallet ARMS: it sets armed:true and sends NO box on present (it keeps the passcode ready to seal for this one challenge and seals only when the freshly-landed panel asks, #1961). On completing an armed panel sign-in the door mints a single-use HANDOVER CAPABILITY (see handover_capability below) — never derived from the AID — and delivers it to the panel over the OIDC channel (userinfo), NOT on this wallet→door wire. The panel presents that capability, not the forgeable AID cookie (#1966), to the door's bind/collect (#1961) to ask for the box.",
+      "option_a_retiring": {
+        "sealed_passcode": "1AAHXSl-r-AQPCtOr41JjX--Rqq5BGy4o-TwNXynwu6YhGYL44tJqyT26dbFdUNw42QIE_fa3aZF9-SBCoIEwhi908F9kAdFCQhp",
+        "note": "The RETIRING option-A field (idss #1933): the wallet sealed EAGERLY at Approve to whatever key rode ek=, and the door relayed the ciphertext once on the status poll (status_poll.verified_first_poll.handover below). Option B (idss #1961) REPLACES this: an option-B wallet sends NO box on present — it arms, then reads the panel's verkey and seals to it on the sign_in_armed_handover routes below (the panel binds AFTER it lands, so its key never rode ek=). This eager present field and its status-poll relay are left dormant for a transitional wallet; the live path is sign_in_armed_handover. sealed_passcode is a CESR qb64 X25519_Cipher_Salt cipher (1AAH…) the door cannot open."
+      },
       "sealed_box_refused": "see present.sealed_box_refused above — a box without a sealing key is refused 400 sealed-box-refused",
       "second_box_spent": "see present.spent_challenge above — a SECOND box for the same challenge hits the single-use guard: 409 spent",
       "box_after_expiry": "see present.expired_challenge above — a box after the two-minute life: 410 expired"
+    },
+    "handover_capability": {
+      "note": "The panel-handover capability (idss #1967, splitting the gate-hop out of #1961). On completing an ARMED panel sign-in the door mints a high-entropy, single-use token — 256 bits of crypto/rand, base64url, NEVER derived from the AID — bound to that one sign-in's challenge and dying with it. It is delivered to the panel over the OIDC channel, NOT this wallet→door wire: it rides the USERINFO endpoint ALONE (the `handover_capability` claim), never the id token (which tends to be persisted/logged). The gate that holds the token captures it and a panel-readable route exposes it; the panel presents it to bind/collect (#1961). The wallet neither reads nor carries it — it is here so the copy on both sides records where the capability lives.",
+      "userinfo_claim": "handover_capability",
+      "example": "aGlnaC1lbnRyb3B5LTI1Ni1iaXQtY2FwYWJpbGl0eS10b2tlbg"
     },
     "status_poll": {
       "verified_first_poll": {
@@ -85,6 +143,147 @@
         "redirect": "https://…/callback?…"
       },
       "handover_note": "handover is the same ciphertext, handed to the tab EXACTLY ONCE then deleted (omitempty). The SECOND poll omits it — no field ever leaks whether one existed, so an ordinary sign-in is byte-identical to a panel unlock after the box is taken."
+    }
+  },
+  "sign_in_armed_handover": {
+    "note": "OPTION B — the SIGN-IN-ARMED steward handover (ADR 0282 d.2/d.6 + its armed-consent amendment, ruled Ben 2026-09-28; idss #1961). The panel loads signed in but LOCKED, mints a fresh Ed25519 Signer in tab memory, and asks the door for the box belonging to the sign-in it just completed — one tap, no second scan, NO secret in any URL or history entry. It proves it may ask with the single-use HANDOVER CAPABILITY its armed sign-in minted (handover_capability above, #1967), delivered over the OIDC channel and read back over the community session (GET /api/v1/panel/handover) — NEVER the forgeable AID cookie (#1966), never a URL. The armed wallet (matou-app#674) reads the panel's verkey and seals to it. Three routes below; matou-app copies them so neither side guesses the wire. A box on a sign-in that armed NOTHING (no capability minted) is refused, as today.",
+    "panel_bind_collect": {
+      "method": "POST",
+      "path": "/login/app/handover",
+      "who": "the control panel (admin.<apex>), cross-origin to the door (id.<apex>)",
+      "request": {
+        "capability": "aGlnaC1lbnRyb3B5LTI1Ni1iaXQtY2FwYWJpbGl0eS10b2tlbg",
+        "sealing_key": "DXwPc9Pg5L9o8DpQbsd0tWUlAoycDgCLMnPx8SBl9NoA"
+      },
+      "request_note": "The capability (delivered over the OIDC channel, #1967) and the tab's Ed25519 verkey qb64 ride the BODY — NEVER a query string, so no secret is in any URL, fragment or history entry (AC 6/8). The panel sends the SAME verkey on every poll: the first call binds it, later calls poll for the box. A later call carrying a DIFFERENT verkey is a hijack attempt and is refused (already-bound).",
+      "waiting": {
+        "status": 200,
+        "body": {
+          "status": "waiting"
+        },
+        "note": "bound; the armed wallet has not sealed yet (PU-M0q). Keep polling."
+      },
+      "answered": {
+        "status": 200,
+        "body": {
+          "status": "answered",
+          "handover": "1AAHXSl-r-AQPCtOr41JjX--Rqq5BGy4o-TwNXynwu6YhGYL",
+          "aid": "Etama"
+        },
+        "note": "the sealed box (ciphertext only) + the AID the door recorded as signed in, handed to the tab EXACTLY ONCE then deleted. `handover` is a CESR qb64 X25519_Cipher_Salt cipher the door cannot open. `aid` is what the opened agent MUST match (ADR 0282 d.6)."
+      },
+      "no_capability": {
+        "status": 401,
+        "body": {
+          "status": "refused",
+          "refusal": "no-capability"
+        },
+        "note": "nothing presented"
+      },
+      "unknown_capability": {
+        "status": 404,
+        "body": {
+          "status": "refused",
+          "refusal": "unknown"
+        },
+        "note": "a forged token, or a public AID passed off as a capability — it authenticates nothing; the AID is an input nowhere in this path"
+      },
+      "already_bound": {
+        "status": 409,
+        "body": {
+          "status": "refused",
+          "refusal": "already-bound"
+        },
+        "note": "a bind with a DIFFERENT verkey after one is bound — a hijack attempt"
+      },
+      "spent": {
+        "status": 409,
+        "body": {
+          "status": "refused",
+          "refusal": "spent"
+        },
+        "note": "the box was already collected — the capability is single-use; a second tab gets nothing and stays locked (AC 3)"
+      },
+      "expired": {
+        "status": 410,
+        "body": {
+          "status": "expired"
+        },
+        "note": "the sign-in's two-minute challenge has died — the arm dies with it (AC 4)"
+      }
+    },
+    "wallet_key": {
+      "method": "GET",
+      "path": "/login/app/handover/key?c=<challenge_id>",
+      "who": "the wallet, keyed by the challenge it armed (held from the scan)",
+      "answered": {
+        "status": 200,
+        "body": {
+          "sealing_key": "DXwPc9Pg5L9o8DpQbsd0tWUlAoycDgCLMnPx8SBl9NoA"
+        }
+      },
+      "answered_note": "the verkey the panel bound (a PUBLIC key). Empty ({}) until the panel has bound one, or on an unknown/dead challenge — the wallet polls for a second or two after Approve, then gives up (the panel lands on PU-M0x cause 1)."
+    },
+    "wallet_seal": {
+      "method": "POST",
+      "path": "/login/app/handover/seal",
+      "who": "the wallet, posting the box sealed to the panel's verkey",
+      "request": {
+        "challenge_id": "nonce-PANEL",
+        "aid": "Etama",
+        "sealed_passcode": "1AAHXSl-r-AQPCtOr41JjX--Rqq5BGy4o-TwNXynwu6YhGYL"
+      },
+      "request_note": "the door keeps only the CIPHERTEXT — never plaintext — and relays it to the panel's collect once. `sealed_passcode` is a CESR qb64 X25519_Cipher_Salt cipher.",
+      "answered": {
+        "status": 200,
+        "body": {
+          "status": "answered"
+        }
+      },
+      "no_box": {
+        "status": 400,
+        "body": {
+          "status": "refused",
+          "refusal": "no-box"
+        }
+      },
+      "not_armed": {
+        "status": 400,
+        "body": {
+          "status": "refused",
+          "refusal": "not-armed"
+        },
+        "note": "a box for a sign-in that armed NOTHING (no capability minted) — refused as today (AC 7)"
+      },
+      "unknown_challenge": {
+        "status": 404,
+        "body": {
+          "status": "refused",
+          "refusal": "unknown"
+        }
+      },
+      "no_key": {
+        "status": 409,
+        "body": {
+          "status": "refused",
+          "refusal": "no-key"
+        },
+        "note": "the panel has not bound a verkey yet — nothing to seal to (a stale/racing post; the wallet reads the key first)"
+      },
+      "spent": {
+        "status": 409,
+        "body": {
+          "status": "refused",
+          "refusal": "spent"
+        },
+        "note": "a box was already posted or collected — single-use"
+      },
+      "expired": {
+        "status": 410,
+        "body": {
+          "status": "expired"
+        }
+      }
     }
   },
   "unlock": {
@@ -101,9 +300,17 @@
         "present_url": "https://id.whakatohea.idss.nz/login/app/unlock/present",
         "deep_link": "matou://unlock?ek=DXwPc9Pg5L9o8DpQbsd0tWUlAoycDgCLMnPx8SBl9NoA&panel=https%3A%2F%2Fadmin.whakatohea.idss.nz&present=https%3A%2F%2Fid.whakatohea.idss.nz%2Flogin%2Fapp%2Funlock%2Fpresent&u=unlock-EXAMPLE"
       },
-      "no_ek": { "status": 400, "note": "an unlock challenge with no ek is refused — there is no key the phone could seal to" }
+      "no_ek": {
+        "status": 400,
+        "note": "an unlock challenge with no ek is refused — there is no key the phone could seal to"
+      }
     },
-    "deep_link_params": ["ek", "panel", "present", "u"],
+    "deep_link_params": [
+      "ek",
+      "panel",
+      "present",
+      "u"
+    ],
     "deep_link_params_note": "matou://unlock carries FOUR params: the tab's sealing key (ek, a public key), the panel site (panel), where to post (present, never derived — #1669), and the challenge (u). NO schema, no service, no community — an unlock presents no credential.",
     "present": {
       "method": "POST",
@@ -114,22 +321,56 @@
         "sealed_passcode": "1AAHXSl-r-AQPCtOr41JjX--Rqq5BGy4o-TwNXynwu6YhGYL44tJqyT26dbFdUNw42QIE_fa3aZF9-SBCoIEwhi908F9kAdFCQhp"
       },
       "request_note": "sealed_passcode is a CESR qb64 X25519_Cipher_Salt cipher (1AAH…) the door cannot open. aid is the identity the wallet reports answered — relayed back on the poll as what the opened agent MUST match (d.6). NO signify response and NO presentation: an unlock verifies nothing and mints nothing.",
-      "answered": { "status": 200, "body": { "status": "answered" } },
-      "no_box": { "status": 400, "body": { "status": "refused", "refusal": "no-box" } },
-      "unknown_challenge": { "status": 404, "body": { "status": "refused", "refusal": "unknown" } },
-      "spent_challenge": { "status": 409, "body": { "status": "refused", "refusal": "spent" } },
-      "expired_challenge": { "status": 410, "body": { "status": "expired" } }
+      "answered": {
+        "status": 200,
+        "body": {
+          "status": "answered"
+        }
+      },
+      "no_box": {
+        "status": 400,
+        "body": {
+          "status": "refused",
+          "refusal": "no-box"
+        }
+      },
+      "unknown_challenge": {
+        "status": 404,
+        "body": {
+          "status": "refused",
+          "refusal": "unknown"
+        }
+      },
+      "spent_challenge": {
+        "status": 409,
+        "body": {
+          "status": "refused",
+          "refusal": "spent"
+        }
+      },
+      "expired_challenge": {
+        "status": 410,
+        "body": {
+          "status": "expired"
+        }
+      }
     },
     "status_poll": {
       "method": "GET",
       "path": "/login/app/unlock/status?u=<challenge_id>",
-      "states": ["waiting", "answered", "expired"],
+      "states": [
+        "waiting",
+        "answered",
+        "expired"
+      ],
       "answered_first_poll": {
         "status": "answered",
         "handover": "1AAHXSl-r-AQPCtOr41JjX--Rqq5BGy4o-TwNXynwu6YhGYL44tJqyT26dbFdUNw42QIE_fa3aZF9-SBCoIEwhi908F9kAdFCQhp",
         "aid": "Etama"
       },
-      "answered_second_poll": { "status": "answered" },
+      "answered_second_poll": {
+        "status": "answered"
+      },
       "handover_note": "handover + aid are handed to the tab EXACTLY ONCE then the box is deleted (omitempty). The SECOND poll omits handover. NO redirect and no Set-Cookie ever ride an unlock poll — an unlock mints no session (contrast status_poll.verified.redirect above)."
     }
   }

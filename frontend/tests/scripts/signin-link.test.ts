@@ -85,11 +85,14 @@ describe('parseSigninLink — the control-panel sealing key (#663)', () => {
   });
 
   it('the wire contract lists ek among the deep-link params (golden)', () => {
-    // The panel handover rides ek on the code and a sealing_key + sealed_passcode
-    // on the panel challenge/present (idss#1939); the parser answers ek.
+    // The panel handover rides ek on the code and a sealing_key on the panel
+    // challenge (idss #1939); the parser answers ek. Under option B (idss
+    // #1961/#1967) the panel present carries `armed: true` and NO box — the
+    // wallet seals later on the sign_in_armed_handover routes.
     expect(golden.deep_link_params).toContain('ek');
     expect(golden.panel.challenge.adds_to_ask_response.sealing_key).toBeTruthy();
-    expect(golden.panel.present.request.sealed_passcode).toBeTruthy();
+    expect(golden.panel.present.request.armed).toBe(true);
+    expect(golden.panel.present.request).not.toHaveProperty('sealed_passcode');
   });
 });
 
