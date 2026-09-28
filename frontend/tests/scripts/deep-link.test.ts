@@ -22,6 +22,8 @@ import { useOnboardingStore } from 'src/stores/onboarding';
 
 const SIGNIN =
   'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_3f9&s=EMe&name=Home&service=Files';
+const UNLOCK =
+  'matou://unlock?panel=https://admin.example.nz&present=https://id.example.nz/login/app/unlock&u=u_2d7&ek=DFRESHKEY&name=Home&t=14:06';
 const PAIR = 'matou://pair?id=s1&pk=EPubKey&s=0ABsig';
 const INBOX = 'matou://inbox';
 const INBOX_TARGET = { name: 'dashboard', query: { focus: 'pending' } };
@@ -30,6 +32,13 @@ describe('classifyDeepLink', () => {
   it('recognises a sign-in link', () => {
     expect(classifyDeepLink(SIGNIN)).toBe('signin');
     expect(classifyDeepLink(`  ${SIGNIN}  `)).toBe('signin');
+  });
+
+  it('recognises an unlock link (#664)', () => {
+    expect(classifyDeepLink(UNLOCK)).toBe('unlock');
+    expect(classifyDeepLink(`  ${UNLOCK}  `)).toBe('unlock');
+    // A code missing the fresh sealing key is not answerable.
+    expect(classifyDeepLink('matou://unlock?panel=https://admin.nz&present=https://d.nz/u&u=n1')).toBe('unknown');
   });
 
   it('recognises a pairing link', () => {
@@ -89,6 +98,21 @@ describe('handleDeepLink', () => {
       },
     });
     expect(consumePendingPairLink()).toBeNull();
+  });
+
+  it('pushes the unlock-only card for an unlock link (#664)', async () => {
+    await handleDeepLink(UNLOCK);
+    expect(push).toHaveBeenCalledWith({
+      name: 'signin-unlock',
+      query: {
+        panel: 'https://admin.example.nz',
+        present: 'https://id.example.nz/login/app/unlock',
+        u: 'u_2d7',
+        ek: 'DFRESHKEY',
+        name: 'Home',
+        t: '14:06',
+      },
+    });
   });
 
   it('steers onboarding to the link-device screen and stashes a pairing link', async () => {

@@ -7,7 +7,7 @@
  * it is refused rather than answered by guessing a path (#574).
  */
 import { describe, it, expect } from 'vitest';
-import { parseSigninLink, isSigninLink, isPanelSignin } from 'src/lib/signin/link';
+import { parseSigninLink, isSigninLink, isPanelSignin, parseUnlockLink, isUnlockLink } from 'src/lib/signin/link';
 import golden from './fixtures/app-door/app-door-golden.json';
 
 const PRESENT = 'https%3A%2F%2Fid.example.nz%2Flogin%2Fapp%2Fpresent';
@@ -98,5 +98,62 @@ describe('isSigninLink', () => {
     expect(isSigninLink(LINK)).toBe(true);
     expect(isSigninLink('matou://pair?id=x&pk=y&s=z')).toBe(false);
     expect(isSigninLink('matou://signin?c=n1')).toBe(false);
+  });
+});
+
+// The control-panel UNLOCK code (#664, idss#1929 PU-M0q/PU-A4). A distinct
+// scheme, `matou://unlock?…`, a locked-but-signed-in panel shows; it carries a
+// FRESH sealing key and no credential presentation.
+const UNLOCK_PRESENT = 'https%3A%2F%2Fid.example.nz%2Flogin%2Fapp%2Funlock';
+const UNLOCK_LINK =
+  'matou://unlock?panel=https%3A%2F%2Fadmin.example.nz&present=' +
+  UNLOCK_PRESENT +
+  '&u=u_2d7abc&ek=DFRESHKEY&name=Te%20R%C5%ABnanga%20o%20Example&t=14%3A06&exp=1800000000';
+
+describe('parseUnlockLink', () => {
+  it('reads every field off a full unlock code', () => {
+    const ask = parseUnlockLink(UNLOCK_LINK);
+    expect(ask).toEqual({
+      panel: 'https://admin.example.nz',
+      present: 'https://id.example.nz/login/app/unlock',
+      challenge: 'u_2d7abc',
+      sealingKey: 'DFRESHKEY',
+      community: 'Te Rūnanga o Example',
+      signedInAt: '14:06',
+      expiresAt: 1800000000 * 1000,
+    });
+  });
+
+  it('tolerates a code with no name, time or expiry', () => {
+    const ask = parseUnlockLink('matou://unlock?panel=https://admin.nz&present=https://d.nz/u&u=n1&ek=DK');
+    expect(ask?.community).toBe('');
+    expect(ask?.signedInAt).toBe('');
+    expect(ask?.expiresAt).toBeNull();
+  });
+
+  it('drops a malformed exp to null rather than reading it as already expired', () => {
+    const ask = parseUnlockLink('matou://unlock?panel=https://admin.nz&present=https://d.nz/u&u=n1&ek=DK&exp=soon');
+    expect(ask?.expiresAt).toBeNull();
+  });
+
+  it('refuses a code missing the panel, challenge, sealing key or present URL', () => {
+    expect(parseUnlockLink('matou://unlock?present=https://d.nz/u&u=n1&ek=DK')).toBeNull();
+    expect(parseUnlockLink('matou://unlock?panel=https://admin.nz&present=https://d.nz/u&ek=DK')).toBeNull();
+    expect(parseUnlockLink('matou://unlock?panel=https://admin.nz&present=https://d.nz/u&u=n1')).toBeNull();
+    expect(parseUnlockLink('matou://unlock?panel=https://admin.nz&u=n1&ek=DK')).toBeNull();
+  });
+
+  it('is not confused with a sign-in link and vice versa', () => {
+    expect(parseUnlockLink(LINK)).toBeNull();
+    expect(parseSigninLink(UNLOCK_LINK)).toBeNull();
+  });
+});
+
+describe('isUnlockLink', () => {
+  it('accepts an unlock code and refuses sign-in and pairing links', () => {
+    expect(isUnlockLink(UNLOCK_LINK)).toBe(true);
+    expect(isUnlockLink(LINK)).toBe(false);
+    expect(isUnlockLink('matou://pair?id=x&pk=y&s=z')).toBe(false);
+    expect(isUnlockLink('matou://unlock?panel=https://admin.nz')).toBe(false);
   });
 });
