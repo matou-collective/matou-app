@@ -44,9 +44,19 @@ function deps(overrides: Partial<SigninDeps> = {}): SigninDeps {
     present: async () => ({ outcome: 'verified' }),
     schemaKinds: async () => ({ EMe: 'membership' }),
     ready: async () => undefined,
+    sealingKeyFingerprint: async (verkey) => `fp(${verkey})`,
+    sealPasscode: async (verkey) => `sealed(${verkey})`,
     ...overrides,
   };
 }
+
+// A steward's control-panel sign-in: the link carries `ek=` (a sealing key) and
+// the held credential's role is operator. #663.
+const stewardCred: HeldCredential = {
+  sad: { d: 'ECred', s: 'EMe', i: 'ECommunity', a: { i: 'EHa', role: 'operator', dt: '2026-08-12T00:00:00Z' } },
+};
+const PANEL_LINK =
+  'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_panel&s=EMe&name=Home&svc=the%20control%20panel&ek=DVERKEY_EXAMPLE';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -211,5 +221,83 @@ describe('walletReady — the default readiness gate', () => {
   it('gives up after the timeout', async () => {
     const identity = reactive({ isReady: false, aidPrefix: null as string | null });
     await expect(walletReady(identity, { ensureSession: async () => undefined }, 10)).rejects.toThrow(/did not finish/);
+  });
+});
+
+// The steward-unlock line and the passcode sealed to the panel's key (#663,
+// PU-A2u). The line appears ONLY for a steward's control-panel sign-in; on
+// approve with it on the passcode is sealed and posted once; every other card is
+// untouched and nothing is armed.
+describe('useSignin — the steward-unlock line (#663)', () => {
+  it('offers the unlock line, on by default, for a steward control-panel sign-in', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(PANEL_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.unlockAvailable.value).toBe(true);
+    expect(s.unlockOn.value).toBe(true);
+    // The sealing-key fingerprint rides the details, off the face.
+    expect(s.view.value?.unlock).toEqual({ sealingKeyFingerprint: 'fp(DVERKEY_EXAMPLE)' });
+  });
+
+  it('offers no unlock line for an ordinary service sign-in (no ek)', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(LINK);
+    expect(s.unlockAvailable.value).toBe(false);
+    expect(s.view.value?.unlock).toBeNull();
+  });
+
+  it('offers no unlock line to a non-steward on a control-panel sign-in', async () => {
+    // The held credential is a plain Member (role !== operator).
+    const s = useSignin(deps({ listCredentials: async () => [cred] }));
+    await s.prepareFromLink(PANEL_LINK);
+    expect(s.unlockAvailable.value).toBe(false);
+    expect(s.view.value?.unlock).toBeNull();
+  });
+
+  it('seals the passcode and posts it once when the line is on', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const sealPasscode = vi.fn(async (verkey: string) => `sealed(${verkey})`);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, sealPasscode }));
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    expect(sealPasscode).toHaveBeenCalledTimes(1);
+    expect(sealPasscode).toHaveBeenCalledWith('DVERKEY_EXAMPLE');
+    expect(present).toHaveBeenCalledTimes(1);
+    expect(present.mock.calls[0]![1]).toMatchObject({ sealed_passcode: 'sealed(DVERKEY_EXAMPLE)' });
+    expect(s.phase.value).toBe('done');
+  });
+
+  it('seals nothing and posts no sealed_passcode when the line is switched off', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const sealPasscode = vi.fn(async (verkey: string) => `sealed(${verkey})`);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, sealPasscode }));
+    await s.prepareFromLink(PANEL_LINK);
+    s.setUnlock(false);
+    await s.approve();
+    expect(sealPasscode).not.toHaveBeenCalled();
+    expect(present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
+    expect(s.phase.value).toBe('done');
+  });
+
+  it('arms nothing on an ordinary service sign-in even for a steward', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const sealPasscode = vi.fn(async (verkey: string) => `sealed(${verkey})`);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, sealPasscode }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(sealPasscode).not.toHaveBeenCalled();
+    expect(present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
+  });
+
+  it('signs in with the seat locked (no sealed_passcode) when sealing fails', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const sealPasscode = vi.fn(async () => {
+      throw new Error('no passcode in this session');
+    });
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, sealPasscode }));
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    expect(present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
+    expect(s.phase.value).toBe('done');
   });
 });

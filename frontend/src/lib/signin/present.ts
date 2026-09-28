@@ -34,6 +34,14 @@ export interface PresentBody {
   response: string;
   /** The exported CESR presentation (ACDC + iss). */
   presentation: string;
+  /**
+   * The steward's passcode sealed to the control-panel tab's sealing key — a
+   * CESR qb64 `X25519_Cipher_Salt` cipher the door relays but cannot open
+   * (app-door-golden `panel.present.request.sealed_passcode`, #663). Present
+   * ONLY on a control-panel unlock whose code carried `ek=`; omitted on every
+   * ordinary sign-in (a `sealed_passcode` without a sealing key is refused 400).
+   */
+  sealed_passcode?: string;
 }
 
 /** The outcome the card acts on. */

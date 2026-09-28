@@ -23,6 +23,18 @@ export interface ApproveCardView {
   isHome: boolean;
   /** The single-match credential line, or null when nothing matches. */
   credential: CredentialToShow | null;
+  /**
+   * The steward-unlock region (PU-A2u, #663), present ONLY when the sign-in is
+   * to the control panel AND the presented credential makes the holder a
+   * steward; null on every other card, which is therefore untouched. When
+   * present, the card shows the unlock line (default on) under the headline, and
+   * the sealing-key fingerprint inside the details disclosure — never the face.
+   */
+  unlock: {
+    /** The tab's sealing-key fingerprint (`xxxx·xxxx`), shown in details only so
+     *  a careful steward can compare it with what the panel shows. */
+    sealingKeyFingerprint: string;
+  } | null;
   /** The details disclosure — never on the face. */
   details: {
     aid: string;
@@ -32,12 +44,18 @@ export interface ApproveCardView {
   };
 }
 
-/** Build the card view model. `aid` is the signing member's AID. */
+/**
+ * Build the card view model. `aid` is the signing member's AID. `unlock` is the
+ * steward-unlock region (or null) — supplied only when the sign-in is to the
+ * control panel and the presented credential makes the holder a steward (#663);
+ * every ordinary card passes null and is untouched.
+ */
 export function buildCardView(
   ask: SigninAsk,
   credential: CredentialToShow | null,
   aid: string,
   isHome: boolean,
+  unlock: ApproveCardView['unlock'] = null,
 ): ApproveCardView {
   const community = ask.community || 'your community';
   return {
@@ -49,6 +67,7 @@ export function buildCardView(
     siteAddress: siteAddress(ask.door),
     isHome,
     credential,
+    unlock,
     details: {
       aid,
       credentialSaid: credential?.said ?? '',

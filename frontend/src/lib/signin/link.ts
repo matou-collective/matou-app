@@ -28,6 +28,14 @@
  *  - `service` the OIDC client that started the hop (Files, the Portal). The
  *              prototype omitted it; the real bridge carries it (spec story 4).
  *              Read from `service` or the short `svc`, tolerated absent.
+ *  - `ek`      the control-panel tab's throwaway **Ed25519 sealing-key verkey**
+ *              (qb64). It rides ONLY a control-panel challenge whose code offered
+ *              a sealing key (app-door-golden `panel`), so its mere presence is
+ *              the machine-readable signal that this is a control-panel sign-in
+ *              expecting a passcode handover (#663; never string-match `svc`,
+ *              which is a display name). An ordinary service sign-in carries the
+ *              other six params and no `ek`. A public key by design — it travels
+ *              in the URL; the passcode never does.
  *
  * The scanner accepts this beside the existing `matou://pair?…` pairing link;
  * `isSigninLink` is the cheap discriminator the scan/paste paths use.
@@ -51,6 +59,13 @@ export interface SigninAsk {
   community: string;
   /** The service that started the sign-in (empty when the link omits it). */
   service: string;
+  /**
+   * The control-panel tab's sealing-key verkey (qb64) from `ek=`, present ONLY
+   * on a control-panel sign-in that offered a passcode handover. Its presence —
+   * not the display-name `service` — is the signal that a steward may unlock the
+   * seat on this computer (#663). Absent (undefined) on every ordinary sign-in.
+   */
+  sealingKey?: string;
 }
 
 /**
@@ -91,5 +106,19 @@ export function parseSigninLink(text: string): SigninAsk | null {
   const community = (params.get('name') ?? '').trim();
   const service = (params.get('service') ?? params.get('svc') ?? '').trim();
 
-  return { door, present, challenge, schemas, community, service };
+  const ask: SigninAsk = { door, present, challenge, schemas, community, service };
+
+  // `ek` rides only a control-panel challenge that offered a sealing key; carry
+  // it only when present so an ordinary sign-in's ask is byte-identical to what
+  // it was before #663 (the panel path keys off `sealingKey` being set).
+  const sealingKey = (params.get('ek') ?? '').trim();
+  if (sealingKey) ask.sealingKey = sealingKey;
+
+  return ask;
+}
+
+/** True when the ask is a control-panel sign-in that offered a passcode handover
+ *  (it carried `ek=`). The steward-unlock line appears only for these (#663). */
+export function isPanelSignin(ask: SigninAsk): boolean {
+  return !!ask.sealingKey;
 }

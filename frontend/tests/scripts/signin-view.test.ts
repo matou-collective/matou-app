@@ -55,6 +55,21 @@ describe('buildCardView', () => {
   });
 });
 
+describe('buildCardView — the steward-unlock region (#663)', () => {
+  it('carries the unlock region and the sealing-key fingerprint when supplied', () => {
+    const v = buildCardView(ask, shown, 'EHa4mPq', true, { sealingKeyFingerprint: 'eff1·63d6' });
+    expect(v.unlock).toEqual({ sealingKeyFingerprint: 'eff1·63d6' });
+    // The identifiers on the face are unchanged — the fingerprint is not among
+    // the details identifiers (it rides view.unlock, shown inside the disclosure).
+    expect(v.details).not.toHaveProperty('sealingKeyFingerprint');
+  });
+
+  it('has no unlock region by default (every ordinary card is untouched)', () => {
+    const v = buildCardView(ask, shown, 'EHa4mPq', true);
+    expect(v.unlock).toBeNull();
+  });
+});
+
 describe('siteAddress', () => {
   it('is the host of the door URL, or the raw door when it does not parse', () => {
     expect(siteAddress('https://id.example.nz/login')).toBe('id.example.nz');

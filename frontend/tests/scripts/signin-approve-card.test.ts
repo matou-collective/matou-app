@@ -75,6 +75,77 @@ describe('ApproveCard — WS-A2 the card', () => {
   });
 });
 
+// The steward-unlock line (#663, PU-A2u). Built onto its own view via a second
+// buildCardView so the ordinary card above proves it stays untouched.
+const panelView = buildCardView(
+  ask,
+  { said: 'EMe7Qzr', schema: 'EMe', kindLabel: 'Membership', role: 'operator', issuedOn: '12 Aug 2026' },
+  'EHa4mPq',
+  true,
+  { sealingKeyFingerprint: 'eff1·63d6' },
+);
+
+describe('ApproveCard — the steward-unlock line (#663)', () => {
+  it('shows the on-by-default line with the exact copy, and no second confirm', () => {
+    const w = mount(ApproveCard, {
+      props: { view: panelView, phase: 'card', refusal: null, canApprove: true, unlockOn: true },
+      global: { stubs },
+    });
+    const line = w.find('[data-field="unlock-line"]');
+    expect(line.exists()).toBe(true);
+    expect(line.text()).toContain('Also unlock steward actions on this computer until you sign out');
+    const on = w.find('[data-status="unlock-on"]');
+    expect(on.exists()).toBe(true);
+    expect(on.text()).toContain('approve people, issue and revoke credentials');
+    expect(on.text()).toContain('without typing your twelve words');
+    // The toggle IS the consent: the checkbox reflects on, and Approve is the
+    // only other action — there is no separate "confirm unlock" control.
+    expect((w.find('[data-action="toggle-unlock"]').element as HTMLInputElement).checked).toBe(true);
+    expect(w.find('[data-status="unlock-off"]').exists()).toBe(false);
+  });
+
+  it('shows the off-state guard sentence when switched off, before any press', () => {
+    const w = mount(ApproveCard, {
+      props: { view: panelView, phase: 'card', refusal: null, canApprove: true, unlockOn: false },
+      global: { stubs },
+    });
+    const off = w.find('[data-status="unlock-off"]');
+    expect(off.exists()).toBe(true);
+    expect(off.text()).toContain("this computer won't be able to approve people or issue credentials");
+    expect(off.text()).toContain('unlock it later from the Members tab');
+    expect(w.find('[data-status="unlock-on"]').exists()).toBe(false);
+  });
+
+  it('emits toggle-unlock with the new state when the switch is flipped', async () => {
+    const w = mount(ApproveCard, {
+      props: { view: panelView, phase: 'card', refusal: null, canApprove: true, unlockOn: true },
+      global: { stubs },
+    });
+    const box = w.find('[data-action="toggle-unlock"]');
+    (box.element as HTMLInputElement).checked = false;
+    await box.trigger('change');
+    expect(w.emitted('toggle-unlock')).toEqual([[false]]);
+  });
+
+  it('shows the sealing-key fingerprint only inside details, never on the face', () => {
+    const w = mount(ApproveCard, {
+      props: { view: panelView, phase: 'card', refusal: null, canApprove: true, unlockOn: true },
+      global: { stubs },
+    });
+    const fp = w.find('[data-field="sealing-key-fingerprint"]');
+    expect(fp.text()).toBe('eff1·63d6');
+    // It lives within the <details> disclosure, not the unlock line on the face.
+    expect(w.find('[data-action="details"]').element.contains(fp.element)).toBe(true);
+    expect(w.find('[data-field="unlock-line"]').element.contains(fp.element)).toBe(false);
+  });
+
+  it('shows no unlock line on an ordinary card (view.unlock null)', () => {
+    const w = mountCard({});
+    expect(w.find('[data-field="unlock-line"]').exists()).toBe(false);
+    expect(w.find('[data-field="sealing-key-fingerprint"]').exists()).toBe(false);
+  });
+});
+
 describe('ApproveCard — the follow-on faces', () => {
   it('WS-A2p Proving: one honest line, no card actions', () => {
     const w = mountCard({ phase: 'proving' });
