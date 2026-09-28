@@ -150,6 +150,16 @@ export function useUnlock(deps: UnlockDeps = defaultDeps()) {
     phase.value = 'unlocking';
     refusal.value = null;
 
+    // The door relays this aid to the panel as the identity the opened agent MUST
+    // match (ADR 0282 d.6). With no aid to report the panel would fail every box
+    // closed to PU-M0x cause 2, so we never hand it one — refuse wallet-side.
+    const aid = identity.aidPrefix ?? '';
+    if (!aid) {
+      refusal.value = refusalCopy('site-unreachable');
+      phase.value = 'refused';
+      return;
+    }
+
     let sealed: string | null;
     try {
       sealed = await deps.sealPasscode(a.sealingKey);
@@ -165,7 +175,7 @@ export function useUnlock(deps: UnlockDeps = defaultDeps()) {
 
     let verdict: PresentVerdict;
     try {
-      verdict = await deps.post(a.present, { challenge_id: a.challenge, sealed_passcode: sealed });
+      verdict = await deps.post(a.present, { challenge_id: a.challenge, aid, sealed_passcode: sealed });
     } catch {
       verdict = { outcome: 'site-unreachable' };
     }

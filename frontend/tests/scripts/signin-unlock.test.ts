@@ -15,16 +15,23 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('src/lib/keri/client', () => ({
   useKERIClient: () => ({ getSignifyClient: () => null, ensureSession: async () => undefined }),
 }));
-vi.mock('src/stores/identity', () => ({ useIdentityStore: () => ({ aidPrefix: 'EHa', passcode: 'abcdefghijklmnopqrstu' }) }));
+// A mutable identity so a test can drop the aid and prove the wallet refuses.
+const identityState = { aidPrefix: 'EHa' as string | null, passcode: 'abcdefghijklmnopqrstu' };
+vi.mock('src/stores/identity', () => ({ useIdentityStore: () => identityState }));
 
 import { postUnlock, type UnlockBody } from 'src/lib/signin/unlock';
 import { buildUnlockView } from 'src/lib/signin/view';
 import { useUnlock, type UnlockDeps } from 'src/composables/useUnlock';
 import type { PresentVerdict } from 'src/lib/signin/present';
 import type { UnlockAsk } from 'src/lib/signin/link';
+import golden from './fixtures/app-door/app-door-golden.json';
 
-const RELAY = 'https://id.example.nz/login/app/unlock';
-const body: UnlockBody = { challenge_id: 'u_2d7', sealed_passcode: '1AAHsealed' };
+// The unlock wire is pinned by the sign-in bridge's APP DOOR golden, copied from
+// idss (`internal/idp/testdata/app-door-golden.json`). Driving these cases from
+// `golden.unlock.*` means a drift on either side of the wire reds this test, so
+// neither repo guesses the unlock contract (idss#1959, matou-app #678).
+const RELAY = golden.unlock.challenge.response.present_url;
+const body: UnlockBody = golden.unlock.present.request;
 
 /** Fulfil a response with an HTTP code + JSON body. */
 function respond(spec: { status: number; body: unknown }): typeof fetch {
@@ -32,21 +39,46 @@ function respond(spec: { status: number; body: unknown }): typeof fetch {
 }
 
 describe('postUnlock', () => {
-  it('posts the sealed box to the relay URL verbatim and reads verified', async () => {
-    const fetchImpl = respond({ status: 200, body: { status: 'verified' } });
+  it('the golden pins the unlock wire the wallet depends on (drift guard)', () => {
+    // The aid rides the request (ADR 0282 d.6) and the success status is
+    // `answered`, never `verified` — the two fields #678 reconciled.
+    expect(golden.unlock.present.request).toHaveProperty('aid');
+    expect(golden.unlock.present.answered.body.status).toBe('answered');
+    // The re-vendored copy carries idss's whole unlock section.
+    expect(golden.unlock.present.request).toHaveProperty('sealed_passcode');
+    expect(golden.unlock.challenge.response).toHaveProperty('present_url');
+  });
+
+  it('posts the sealed box (with the aid) to the relay verbatim and reads answered → success', async () => {
+    const fetchImpl = respond(golden.unlock.present.answered);
     const verdict = await postUnlock(RELAY, body, fetchImpl);
+    // `answered` is the unlock route's success — an unlock verifies nothing, so
+    // it never says `verified`; postUnlock maps it onto the shared success outcome.
     expect(verdict).toEqual({ outcome: 'verified' });
     expect(fetchImpl).toHaveBeenCalledWith(
       RELAY,
       expect.objectContaining({ method: 'POST', headers: { 'Content-Type': 'application/json' } }),
     );
     const sent = JSON.parse((vi.mocked(fetchImpl).mock.calls[0]![1] as RequestInit).body as string);
-    // No aid, no response, no presentation — the passcode and only the passcode.
-    expect(sent).toEqual({ challenge_id: 'u_2d7', sealed_passcode: '1AAHsealed' });
+    // The challenge id, the answering aid (d.6), and the sealed box — no response,
+    // no presentation. An unlock presents no credential.
+    expect(sent).toEqual({
+      challenge_id: golden.unlock.present.request.challenge_id,
+      aid: golden.unlock.present.request.aid,
+      sealed_passcode: golden.unlock.present.request.sealed_passcode,
+    });
+  });
+
+  it('a stray `verified` is NOT the unlock success — it fails closed to a refusal', async () => {
+    // The unlock route never answers `verified`; if one appears it is unrecognised
+    // and must fail closed, never be mistaken for success.
+    expect(await postUnlock(RELAY, body, respond({ status: 200, body: { status: 'verified' } }))).toMatchObject({
+      outcome: 'refused',
+    });
   });
 
   it('maps 410 and status:expired to an expired refusal (dead challenge)', async () => {
-    expect(await postUnlock(RELAY, body, respond({ status: 410, body: {} }))).toEqual({
+    expect(await postUnlock(RELAY, body, respond(golden.unlock.present.expired_challenge))).toEqual({
       outcome: 'refused',
       refusal: 'expired',
     });
@@ -56,12 +88,20 @@ describe('postUnlock', () => {
     });
   });
 
-  it('maps 409 spent and a refused body, and fails closed on garble', async () => {
-    expect(await postUnlock(RELAY, body, respond({ status: 409, body: {} }))).toMatchObject({ refusal: 'spent' });
+  it('maps 404 unknown, 409 spent, 400 no-box, a refused body, and fails closed on garble', async () => {
+    expect(await postUnlock(RELAY, body, respond(golden.unlock.present.unknown_challenge))).toMatchObject({
+      refusal: 'unknown',
+    });
+    expect(await postUnlock(RELAY, body, respond(golden.unlock.present.spent_challenge))).toMatchObject({
+      refusal: 'spent',
+    });
+    expect(await postUnlock(RELAY, body, respond(golden.unlock.present.no_box))).toMatchObject({
+      outcome: 'refused',
+    });
     expect(await postUnlock(RELAY, body, respond({ status: 200, body: { status: 'refused', refusal: 'signature' } }))).toEqual(
       { outcome: 'refused', refusal: 'signature' },
     );
-    // A 2xx with no status never reads as verified.
+    // A 2xx with no status never reads as success.
     expect(await postUnlock(RELAY, body, respond({ status: 200, body: {} }))).toMatchObject({ outcome: 'refused' });
   });
 
@@ -117,7 +157,10 @@ function deps(overrides: Partial<UnlockDeps> = {}): UnlockDeps {
   };
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  identityState.aidPrefix = 'EHa';
+});
 
 describe('useUnlock', () => {
   it('prepareFromLink builds the unlock-only card with the fresh fingerprint', async () => {
@@ -146,8 +189,28 @@ describe('useUnlock', () => {
     await u.unlock();
     expect(sealPasscode).toHaveBeenCalledWith('DFRESHKEY');
     expect(post).toHaveBeenCalledTimes(1);
-    expect(post).toHaveBeenCalledWith(RELAY, { challenge_id: 'u_2d7', sealed_passcode: 'sealed(DFRESHKEY)' });
+    // The body carries the wallet's own aid alongside the challenge and the box.
+    expect(post).toHaveBeenCalledWith(RELAY, {
+      challenge_id: 'u_2d7',
+      aid: 'EHa',
+      sealed_passcode: 'sealed(DFRESHKEY)',
+    });
     expect(u.phase.value).toBe('done');
+  });
+
+  it('refuses without posting when the wallet has no aid to report', async () => {
+    // The panel would fail an empty aid closed to PU-M0x cause 2, so nothing is
+    // sealed or posted — the wallet refuses on its own side.
+    identityState.aidPrefix = '';
+    const post = vi.fn(async () => ({ outcome: 'verified' }) as PresentVerdict);
+    const sealPasscode = vi.fn(async () => 'sealed');
+    const u = useUnlock(deps({ post, sealPasscode }));
+    await u.prepare(ask);
+    await u.unlock();
+    expect(post).not.toHaveBeenCalled();
+    expect(sealPasscode).not.toHaveBeenCalled();
+    expect(u.phase.value).toBe('refused');
+    expect(u.refusal.value?.kind).toBe('site-unreachable');
   });
 
   it('a refused post lands on refused with the door copy, and posts nothing more', async () => {
