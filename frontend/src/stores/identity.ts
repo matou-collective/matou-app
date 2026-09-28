@@ -10,6 +10,7 @@ import { IDSS_STEWARD_APP_ROLE } from 'src/lib/spaces/steward';
 import { useAppStore } from 'stores/app';
 import { toKeriAlias } from 'src/lib/keri/alias';
 import { clearSigners } from 'src/lib/signin/signer';
+import { clearArming } from 'src/lib/signin/armedPasscode';
 
 export interface AdminCredentialInfo extends CredentialInfo {
   role?: string;
@@ -498,6 +499,9 @@ export const useIdentityStore = defineStore('identity', () => {
     // Drop the in-memory sign-in signer cache — nothing survives a lock/exit
     // (idss #1492 story 18, ADR 0236).
     clearSigners();
+    // Drop any armed passcode handover too — an arming must never outlive the
+    // wallet's own unlocked session (#674).
+    clearArming();
     currentAID.value = null;
     passcode.value = null;
     isConnected.value = false;

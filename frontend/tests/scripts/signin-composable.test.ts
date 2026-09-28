@@ -46,7 +46,8 @@ function deps(overrides: Partial<SigninDeps> = {}): SigninDeps {
     schemaKinds: async () => ({ EMe: 'membership' }),
     ready: async () => undefined,
     sealingKeyFingerprint: async (verkey) => `fp(${verkey})`,
-    sealPasscode: async (verkey) => `sealed(${verkey})`,
+    now: () => 1_000_000,
+    arm: () => undefined,
     ...overrides,
   };
 }
@@ -336,47 +337,54 @@ describe('useSignin — the steward-unlock line (#663)', () => {
     expect(s.view.value?.unlock).toBeNull();
   });
 
-  it('seals the passcode and posts it once when the line is on', async () => {
+  it('arms for the challenge and posts no sealed_passcode when the line is on (#674)', async () => {
+    // Approve now ARMS the wallet for the panel's later request rather than
+    // sealing to the sign-in code's `ek=`; the present request carries no
+    // passcode, and the box the panel can open is minted only when it asks.
     const present = vi.fn(async () => ({ outcome: 'verified' as const }));
-    const sealPasscode = vi.fn(async (verkey: string) => `sealed(${verkey})`);
-    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, sealPasscode }));
+    const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm, now: () => 1_000_000 }));
     await s.prepareFromLink(PANEL_LINK);
     await s.approve();
-    expect(sealPasscode).toHaveBeenCalledTimes(1);
-    expect(sealPasscode).toHaveBeenCalledWith('DVERKEY_EXAMPLE');
+    expect(arm).toHaveBeenCalledTimes(1);
+    // Armed for the sign-in's own challenge, with an expiry in the future.
+    expect(arm.mock.calls[0]![0]).toBe('c_panel');
+    expect(arm.mock.calls[0]![1]).toBeGreaterThan(1_000_000);
     expect(present).toHaveBeenCalledTimes(1);
-    expect(present.mock.calls[0]![1]).toMatchObject({ sealed_passcode: 'sealed(DVERKEY_EXAMPLE)' });
+    expect(present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
     expect(s.phase.value).toBe('done');
   });
 
-  it('seals nothing and posts no sealed_passcode when the line is switched off', async () => {
+  it('arms nothing and posts no sealed_passcode when the line is switched off (#674)', async () => {
     const present = vi.fn(async () => ({ outcome: 'verified' as const }));
-    const sealPasscode = vi.fn(async (verkey: string) => `sealed(${verkey})`);
-    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, sealPasscode }));
+    const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm }));
     await s.prepareFromLink(PANEL_LINK);
     s.setUnlock(false);
     await s.approve();
-    expect(sealPasscode).not.toHaveBeenCalled();
+    expect(arm).not.toHaveBeenCalled();
     expect(present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
     expect(s.phase.value).toBe('done');
   });
 
-  it('arms nothing on an ordinary service sign-in even for a steward', async () => {
+  it('arms nothing on an ordinary service sign-in even for a steward (#674)', async () => {
     const present = vi.fn(async () => ({ outcome: 'verified' as const }));
-    const sealPasscode = vi.fn(async (verkey: string) => `sealed(${verkey})`);
-    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, sealPasscode }));
+    const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm }));
     await s.prepareFromLink(LINK);
     await s.approve();
-    expect(sealPasscode).not.toHaveBeenCalled();
+    expect(arm).not.toHaveBeenCalled();
     expect(present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');
   });
 
-  it('signs in with the seat locked (no sealed_passcode) when sealing fails', async () => {
+  it('signs in with the seat locked when arming throws (#674)', async () => {
+    // A failure to arm must never block the sign-in — it degrades to an ordinary
+    // locked-seat session; nothing but a later ciphertext ever leaves.
     const present = vi.fn(async () => ({ outcome: 'verified' as const }));
-    const sealPasscode = vi.fn(async () => {
+    const arm = vi.fn(() => {
       throw new Error('no passcode in this session');
     });
-    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, sealPasscode }));
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm }));
     await s.prepareFromLink(PANEL_LINK);
     await s.approve();
     expect(present.mock.calls[0]![1]).not.toHaveProperty('sealed_passcode');

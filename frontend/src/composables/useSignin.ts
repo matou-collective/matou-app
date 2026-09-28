@@ -23,6 +23,7 @@ import { parseSigninLink, isPanelSignin, type SigninAsk } from 'src/lib/signin/l
 import { chooseCredential, describeCredential, type HeldCredential } from 'src/lib/signin/credential';
 import { STEWARD_ROLE } from 'src/lib/spaces/steward';
 import { fingerprintOf, sealPasscode } from 'src/lib/signin/sealedPasscode';
+import { armForChallenge, type PasscodeSealer } from 'src/lib/signin/armedPasscode';
 import { buildCardView, type ApproveCardView } from 'src/lib/signin/view';
 import { runApprove } from 'src/lib/signin/approve';
 import { getSigner } from 'src/lib/signin/signer';
@@ -40,6 +41,14 @@ export type SigninPhase = 'loading' | 'unavailable' | 'first-contact' | 'card' |
 
 /** How long a sign-in waits for the wallet's session restore before giving up. */
 const READY_TIMEOUT_MS = 45_000;
+
+/**
+ * How long an arming stays live after Approve, waiting for the panel to ask
+ * (#674). A generous wallet-side upper bound on the OIDC hop + panel load; the
+ * door's own challenge expiry is the real limit, this is the self-destruct so an
+ * arming never lingers past a sign-in the panel never came back for.
+ */
+const ARMING_TTL_MS = 5 * 60_000;
 
 /** Injectable side-effects; production defaults resolve the real client/stores. */
 export interface SigninDeps {
@@ -59,12 +68,15 @@ export interface SigninDeps {
    */
   sealingKeyFingerprint(verkey: string): Promise<string>;
   /**
-   * Seal the steward's held passcode to the tab's sealing-key verkey, returning
-   * the CESR qb64 cipher for `sealed_passcode`, or null when there is no passcode
-   * to seal. Called ONLY on a control-panel unlock with the line on; the passcode
-   * itself is read inside this call and never leaves it (#663).
+   * Arm the wallet to seal the steward's passcode when the panel later asks, for
+   * the challenge that lives until `expiresAt` (wall-clock ms). Called ONLY on a
+   * control-panel unlock with the line on; it seals nothing now — the box the
+   * panel can open is minted only when the panel asks, to the verkey it holds
+   * (#674). The passcode never leaves this wallet's unlocked session (#663).
    */
-  sealPasscode(verkey: string): Promise<string | null>;
+  arm(challenge: string, expiresAt: number): void;
+  /** The current wall-clock instant, injectable so the arming expiry is testable. */
+  now(): number;
   /**
    * Resolve once the wallet can answer: its session restored and its agent
    * connected. A code opened from the camera cold-starts the app, and boot
@@ -104,6 +116,7 @@ export async function walletReady(
 function defaultDeps(): SigninDeps {
   const keri = useKERIClient();
   const identity = useIdentityStore();
+  const sealPasscodeLive = makeSealPasscodeLive(identity);
   return {
     ready: () => walletReady(identity, keri),
     async listCredentials() {
@@ -130,13 +143,26 @@ function defaultDeps(): SigninDeps {
       return map;
     },
     sealingKeyFingerprint: (verkey) => fingerprintOf(verkey),
-    async sealPasscode(verkey: string) {
-      // The passcode lives in the unlocked identity store; read it here, seal it,
-      // and let only the ciphertext leave. No passcode is returned or logged.
-      const bran = identity.passcode;
-      if (!bran) return null;
-      return sealPasscode(bran, verkey);
-    },
+    now: () => Date.now(),
+    // Arm the wallet to answer the panel's later request. The sealer reads the
+    // passcode LIVE from the unlocked identity store at seal time and lets only
+    // the ciphertext leave — never returned, never logged — so a wallet locked
+    // between approve and the request seals nothing (#663/#674).
+    arm: (challenge, expiresAt) => armForChallenge(challenge, expiresAt, sealPasscodeLive),
+  };
+}
+
+/**
+ * Seal the steward's held passcode to a verkey, reading the passcode live from
+ * the unlocked identity store at seal time. Only the ciphertext leaves; the
+ * passcode is never returned or logged. Bound into the arming so the panel's
+ * later request seals to the key it holds, not to the sign-in code's `ek=`.
+ */
+function makeSealPasscodeLive(identity: { readonly passcode: string | null }): PasscodeSealer {
+  return async (verkey: string) => {
+    const bran = identity.passcode;
+    if (!bran) return null;
+    return sealPasscode(bran, verkey);
   };
 }
 
@@ -285,20 +311,21 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     refusal.value = null;
 
     // Arm on approve, in the same act as the presentation: when this is a
-    // steward's control-panel sign-in with the line on, seal the passcode to the
-    // tab's sealing key and ride it in the ONE present request (#663). Sealed
-    // once, for this challenge — a fresh card is the only way to a second box,
-    // and the door's single-use/expiry guards (409 spent, 410 expired) do the
-    // rest. Any other card, or the line switched off, seals nothing. A seal that
-    // fails degrades to an ordinary locked-seat session rather than blocking the
-    // sign-in — nothing but the ciphertext ever leaves, so a failure is silent.
-    let sealedPasscode: string | undefined;
-    if (unlockAvailable.value && unlockOn.value && a.sealingKey) {
+    // steward's control-panel sign-in with the line on, keep the passcode ready
+    // to seal for this challenge's life and answer the panel's LATER request
+    // (#674). Nothing is sealed now and the present request below carries no
+    // passcode. #663 sealed here, to the sign-in code's `ek=`, but that key
+    // belongs to the bridge's door page the OIDC hop tears down — the panel at
+    // `admin.<apex>` never held it, so the box could not be opened. The seal
+    // happens when the panel asks with the verkey it actually minted (idss
+    // #1957). Any other card, or the line switched off, arms nothing. A failure
+    // to arm degrades to an ordinary locked-seat session rather than blocking the
+    // sign-in — nothing but a later ciphertext ever leaves, so it is silent.
+    if (unlockAvailable.value && unlockOn.value) {
       try {
-        sealedPasscode = (await deps.sealPasscode(a.sealingKey)) ?? undefined;
+        deps.arm(a.challenge, deps.now() + ARMING_TTL_MS);
       } catch {
-        console.warn('[Signin] Could not seal the passcode; signing in with the seat locked');
-        sealedPasscode = undefined;
+        console.warn('[Signin] Could not arm the steward unlock; signing in with the seat locked');
       }
     }
 
@@ -311,7 +338,6 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
           challenge: a.challenge,
           aid,
           credentialSaid: cred.sad.d,
-          ...(sealedPasscode ? { sealedPasscode } : {}),
         },
         {
           sign: (message) => deps.sign(aid, message),
