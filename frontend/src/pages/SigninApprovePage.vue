@@ -53,6 +53,23 @@ watch(signin.phase, (p) => {
   if (p === 'done') setTimeout(onClose, 1500);
 });
 
+/**
+ * A fresh sign-in code that arrives while the card is already mounted routes
+ * here again with a new `c=` (a re-scan, a new deep link, or the member opening
+ * a freshly-minted `matou://signin?c=…`). Vue reuses this component for the
+ * same route, so `onMounted` does not fire again — without this the wallet would
+ * keep presenting the FIRST challenge it saw. Rebuild the card from the new ask
+ * so the newest challenge always wins (#675).
+ */
+watch(
+  () => route.query.c,
+  (c) => {
+    if (!c) return;
+    const ask = askFromRoute();
+    if (ask && ask.challenge !== signin.ask.value?.challenge) void signin.prepare(ask);
+  },
+);
+
 onMounted(async () => {
   // Seed the home community's sign-in site from the descriptor so it is
   // pre-trusted and shows the "your community" chip (spec story 12). A missing
