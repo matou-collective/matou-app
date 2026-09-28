@@ -86,7 +86,12 @@ test.describe('#663 panel unlock — the steward-unlock line', () => {
     await snap(adminPage, 'unlock-line-off');
   });
 
-  test('Approve with the line on seals the passcode onto the one present request', async ({ adminPage, snap }) => {
+  test('Approve with the line on arms the wallet and posts no sealed_passcode (superseded by #674)', async ({ adminPage, snap }) => {
+    // #663 sealed the passcode onto this present request. #674 supersedes that:
+    // the sign-in code's `ek=` belongs to the bridge's door page the OIDC hop
+    // tears down, so the wallet now ARMS for the panel's later request and seals
+    // nothing here — the present request carries no sealed_passcode. See
+    // tests/e2e/features/issue-674.spec.ts for the arming behavior in full.
     let postedBody: Record<string, unknown> | null = null;
     await adminPage.route(PRESENT, async (route) => {
       postedBody = route.request().postDataJSON() as Record<string, unknown>;
@@ -98,11 +103,9 @@ test.describe('#663 panel unlock — the steward-unlock line', () => {
     await adminPage.locator('[data-action="approve"]').click();
 
     await expect(adminPage.locator('[data-status="done"]')).toContainText('Signed in.');
-    // The sealed passcode rode the ONE present request as a CESR qb64 cipher the
-    // door cannot open (1AAH…). The passcode itself is never on screen.
     expect(postedBody).not.toBeNull();
-    expect(String((postedBody as Record<string, unknown>).sealed_passcode)).toMatch(/^1AAH/);
-    await snap(adminPage, 'approve-sealed');
+    expect(postedBody as Record<string, unknown>).not.toHaveProperty('sealed_passcode');
+    await snap(adminPage, 'approve-armed');
   });
 
   test('Approve with the line off posts no sealed_passcode (ordinary locked seat)', async ({ adminPage }) => {

@@ -55,7 +55,8 @@ function deps(): SigninDeps {
     schemaKinds: async () => ({ EMe: 'membership' }),
     ready: async () => undefined,
     sealingKeyFingerprint: async (verkey) => `fp(${verkey})`,
-    sealPasscode: async (verkey) => `sealed(${verkey})`,
+    now: () => 1_000_000,
+    arm: () => undefined,
   };
 }
 
