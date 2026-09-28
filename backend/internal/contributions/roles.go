@@ -16,6 +16,15 @@ const (
 	RoleFoundingMember    Role = "founding_member"
 )
 
+// KERIRoleAdministrator is the fixed slug of the built-in Administrator
+// credential on an IDSS community (idss#1948/#1949, ADR 0286 d.13). Holding it
+// IS being matou-app's Founding Member — one super user across both apps — so it
+// resolves to the same role bundle the legacy "operator"/"Founding Member" role
+// string yields. IDSS is deleting that role string; the credential keys on this
+// slug (never a display name, never the deleted string), so role resolution
+// reads the credential rather than the string. See MapKERIRole.
+const KERIRoleAdministrator = "administrator"
+
 // MapKERIRole maps a KERI credential role string (Title Case) to contribution roles.
 // A single KERI role may grant multiple contribution roles (e.g. stewards also get project_steward).
 func MapKERIRole(keriRole string) []Role {
@@ -29,8 +38,14 @@ func MapKERIRole(keriRole string) []Role {
 		return []Role{RoleMember, RoleContributor, RoleCommunitySteward, RoleProjectSteward}
 	case "Operations Steward":
 		return []Role{RoleMember, RoleContributor, RoleOperationsSteward, RoleProjectSteward, RoleProjectLead}
-	case "Founding Member", "operator":
-		// "operator" is the IDSS steward's Membership role (keri.IDSSRoleOperator).
+	case "Founding Member", "operator", KERIRoleAdministrator:
+		// "operator" is the IDSS steward's legacy Membership role
+		// (keri.IDSSRoleOperator); "administrator" (KERIRoleAdministrator) is the
+		// built-in Administrator credential's fixed slug that replaces it on an
+		// IDSS backend (idss#1948, ADR 0286 d.13) — holding it resolves the
+		// founding-member bundle from the credential, not the role string IDSS is
+		// deleting. A Coa-hosted community has no such credential, so its
+		// "Founding Member" string still resolves exactly as before.
 		return []Role{RoleMember, RoleContributor, RoleFoundingMember, RoleOperationsSteward, RoleProjectSteward, RoleProjectLead}
 	case "Financial Steward":
 		return []Role{RoleMember, RoleContributor}
