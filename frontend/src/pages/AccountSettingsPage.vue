@@ -494,6 +494,11 @@
         </button>
       </section>
 
+      <!-- Section: Sign out of the control panel everywhere — the steward's
+           take-back (#665, idss #1935, ADR 0282 d.4). Beside "Sign-in sites you
+           trust"; stewards only (a member has no control panel to sign out of). -->
+      <SignOutEverywhereSection v-if="isSteward" />
+
       <!-- Section 7: Support (mobile only) — the sidebar's "Report an issue"
            button is hidden on mobile, so surface the same dialog here. -->
       <section v-if="isMobile" class="settings-card">
@@ -615,6 +620,7 @@ import { getFileUrl, uploadFile, clearBackendIdentity } from 'src/lib/api/client
 import { useIsMobile } from 'src/composables/useIsMobile';
 import { applyPushEnabled } from 'src/composables/usePush';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
+import SignOutEverywhereSection from 'src/components/settings/SignOutEverywhereSection.vue';
 import TypedForm from 'src/components/profiles/TypedForm.vue';
 import LinkDeviceQrScreen from 'src/components/onboarding/LinkDeviceQrScreen.vue';
 import LinkDeviceScanScreen from 'src/components/onboarding/LinkDeviceScanScreen.vue';
@@ -801,6 +807,11 @@ function removeSocialLink(type: string) {
 }
 
 const aidPrefix = computed(() => identityStore.aidPrefix);
+
+// Stewards can take back their control-panel access on every computer they've
+// unlocked (#665). Members with no steward role have no control panel to sign
+// out of, so the row is theirs alone.
+const isSteward = computed(() => identityStore.isSteward);
 
 // --- Local form state ---
 
