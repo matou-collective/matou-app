@@ -54,8 +54,7 @@ describe('chooseCredential', () => {
     expect(chooseCredential([membershipCred], ['ENope'], HOLDER)).toBeUndefined();
   });
 
-  // A revoked credential is never presented, whether or not the door named the
-  // credential it asks for (#687).
+  // A live credential is always presented before a revoked one (#687).
   it('passes over a revoked Membership for the live one issued after it', () => {
     const revoked: HeldCredential = {
       sad: { d: 'ERevokedMembership', s: MEMBERSHIP, a: { i: HOLDER } },
@@ -64,9 +63,11 @@ describe('chooseCredential', () => {
     expect(chooseCredential([revoked, membershipCred], [MEMBERSHIP], HOLDER)).toBe(membershipCred);
   });
 
-  it('presents nothing when the only Membership held is revoked', () => {
+  // A suspended member is told so by the door ("your membership has been
+  // revoked"), which the app can only reach by presenting it.
+  it('presents a revoked Membership when it is the only one held, so the door says why', () => {
     const revoked: HeldCredential = { ...membershipCred, status: { s: '1', et: 'rev' } };
-    expect(chooseCredential([revoked], [MEMBERSHIP], HOLDER)).toBeUndefined();
+    expect(chooseCredential([revoked], [MEMBERSHIP], HOLDER)).toBe(revoked);
   });
 });
 
