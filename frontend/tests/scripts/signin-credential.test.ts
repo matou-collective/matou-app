@@ -4,7 +4,7 @@
  * issue date; the export is trimmed to the ACDC and its iss, dropping the KEL
  * noise the door reads from the witnessed ledger itself.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
@@ -20,6 +20,12 @@ import {
 import golden from './fixtures/app-door/app-door-golden.json';
 import { NO_CREDENTIAL_TEXT, normalizeRefusal } from 'src/lib/signin/refusal';
 import { parseSigninLink } from 'src/lib/signin/link';
+import { rememberRevoked, forgetRevoked, clearRevokedMemory } from 'src/lib/signin/revokedMemory';
+
+// What a door said of one credential must never leak into the next test.
+beforeEach(() => {
+  clearRevokedMemory();
+});
 
 const MEMBERSHIP = 'EMembershipSchemaSAID';
 const HOLDER = 'EHolderAID';
@@ -231,6 +237,84 @@ describe('chooseCredential — the credential the door names (#683)', () => {
     expect(chooseCredential([financeCred, membershipCred], [MEMBERSHIP], HOLDER)).toBe(membershipCred);
     expect(chooseCredential([financeCred, membershipCred], [MEMBERSHIP], HOLDER, undefined)).toBe(membershipCred);
     expect(chooseCredential([financeCred, membershipCred], [MEMBERSHIP], HOLDER, '')).toBe(membershipCred);
+  });
+});
+
+// A credential the DOOR called revoked (#690). The door's answer is the witnessed
+// ledger's; the agent's record of a held credential is as old as the day it was
+// admitted, so a credential revoked since still reads as live there. What the
+// door said is remembered of that one SAID, and it is passed over exactly as one
+// the agent reads as revoked.
+describe('chooseCredential — a credential the door called revoked (#690)', () => {
+  const operatorCred: HeldCredential = {
+    sad: { d: 'EOperatorSAID', s: MEMBERSHIP, i: 'EIssuer', a: { i: HOLDER, role: 'operator' } },
+    status: { s: '0', et: 'iss' },
+  };
+
+  it('is presented until the door has said so — the agent reads it as live', () => {
+    expect(chooseCredential([administratorCred, operatorCred], PANEL_SCHEMAS, HOLDER, 'administrator')).toBe(
+      administratorCred,
+    );
+  });
+
+  it.each([
+    ['Administrator first', [administratorCred, operatorCred]],
+    ['Membership first', [operatorCred, financeCred, administratorCred]],
+  ])("passes over it for the steward's Membership (%s)", (_order, held) => {
+    rememberRevoked('EAdministratorSAID');
+    expect(chooseCredential(held, PANEL_SCHEMAS, HOLDER, 'administrator')).toBe(operatorCred);
+  });
+
+  it('passes over it for nothing when the holder is not a steward', () => {
+    rememberRevoked('EAdministratorSAID');
+    expect(
+      chooseCredential([administratorCred, financeCred, membershipCred], PANEL_SCHEMAS, HOLDER, 'administrator'),
+    ).toBeUndefined();
+  });
+
+  it('passes over it for the live one issued after it', () => {
+    const issuedAgain: HeldCredential = {
+      sad: { ...administratorCred.sad, d: 'EAdministratorAgainSAID' },
+      status: { s: '0', et: 'iss' },
+    };
+    rememberRevoked('EAdministratorSAID');
+    expect(
+      chooseCredential([administratorCred, operatorCred, issuedAgain], PANEL_SCHEMAS, HOLDER, 'administrator'),
+    ).toBe(issuedAgain);
+  });
+
+  it('is presented again once it is read as live', () => {
+    rememberRevoked('EAdministratorSAID');
+    forgetRevoked('EAdministratorSAID');
+    expect(chooseCredential([administratorCred, operatorCred], PANEL_SCHEMAS, HOLDER, 'administrator')).toBe(
+      administratorCred,
+    );
+  });
+
+  it('is a fact about one credential, never about a kind: a later Membership is presented', () => {
+    const laterOperator: HeldCredential = {
+      sad: { ...operatorCred.sad, d: 'EOperatorLaterSAID' },
+      status: { s: '0', et: 'iss' },
+    };
+    const laterMembership: HeldCredential = { sad: { ...membershipCred.sad, d: 'ECredLaterSAID' } };
+    rememberRevoked('EOperatorSAID');
+    rememberRevoked('ECredSAID');
+    // At the control panel's door: the Membership the door refused is passed
+    // over, the one issued after it is the fallback.
+    expect(chooseCredential([operatorCred, laterOperator], PANEL_SCHEMAS, HOLDER, 'administrator')).toBe(
+      laterOperator,
+    );
+    expect(chooseCredential([operatorCred], PANEL_SCHEMAS, HOLDER, 'administrator')).toBeUndefined();
+    // At a service's door: nothing remembered of one Membership stops another.
+    expect(chooseCredential([laterMembership], [MEMBERSHIP], HOLDER)).toBe(laterMembership);
+  });
+
+  it('wears the revoked status on its card', () => {
+    expect(credentialCard(administratorCred, {}).statusTone).toBe('healthy');
+    rememberRevoked('EAdministratorSAID');
+    const card = credentialCard(administratorCred, {});
+    expect(card.statusTone).toBe('warning');
+    expect(card.statusLabel).toBe(credentialCard({ ...administratorCred, status: { s: '1', et: 'rev' } }, {}).statusLabel);
   });
 });
 

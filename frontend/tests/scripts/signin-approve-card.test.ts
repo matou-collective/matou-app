@@ -708,6 +708,22 @@ describe('ApproveCard — the follow-on faces', () => {
     expect(w.find('[data-field="contact-line"]').exists()).toBe(true);
   });
 
+  it('WS-A2r revoked, with a Membership to fall back on: the region says what happens next (#690)', () => {
+    const w = mountCard({
+      phase: 'refused',
+      refusal: refusalCopy('revoked', { revoked: 'Administrator', next: 'Membership' }),
+    });
+    const region = w.find('[data-status="refused"]');
+    expect(region.attributes('data-refusal')).toBe('revoked');
+    expect(region.text()).toContain('Your access could not be verified.');
+    expect(region.text()).toContain('your Administrator credential has been revoked');
+    expect(region.text()).toContain('you will sign in with your Membership');
+    expect(w.find('[data-action="try-again"]').exists()).toBe(true);
+    expect(w.find('[data-field="contact-line"]').exists()).toBe(true);
+    // The refused card presents nothing more: no Approve on this face.
+    expect(w.find('[data-action="approve"]').exists()).toBe(false);
+  });
+
   it('records-unreachable wears its own line with no contact line', () => {
     const w = mountCard({ phase: 'refused', refusal: refusalCopy('records-unreachable') });
     expect(w.find('[data-status="records-unreachable"]').exists()).toBe(true);

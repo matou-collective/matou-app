@@ -20,6 +20,7 @@ import {
   toWalletCredential,
   type WalletCredential,
 } from 'src/lib/walletCredential';
+import { isRememberedRevoked } from './revokedMemory';
 
 /** The subset of a signify-ts credential record the card and export need. The
  * full record carries much more; we read `sad`, and for the card the schema and
@@ -163,9 +164,18 @@ export function credentialSlug(cred: HeldCredential): string {
   return typeof slug === 'string' ? slug.trim() : '';
 }
 
-/** Whether the agent last read this credential as revoked. */
+/**
+ * Whether this credential is revoked, as far as the wallet knows: the agent
+ * last read it as revoked, or a sign-in door answered `revoked` when it was
+ * presented this session (#690). The door reads the witnessed ledger; the
+ * agent's record is as old as the day the credential was admitted.
+ */
 function isRevoked(cred: HeldCredential): boolean {
-  return cred.status?.et === 'rev' || isRevokedStatus(String(cred.status?.s ?? ''));
+  return (
+    cred.status?.et === 'rev' ||
+    isRevokedStatus(String(cred.status?.s ?? '')) ||
+    isRememberedRevoked(cred.sad?.d)
+  );
 }
 
 /** Known credential-kind labels; anything else is title-cased from its key. */
