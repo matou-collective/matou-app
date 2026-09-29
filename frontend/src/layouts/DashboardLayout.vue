@@ -185,6 +185,7 @@ import { useCommentScope } from 'src/composables/useCommentScope';
 import { useKeyboardOpen } from 'src/composables/useKeyboardOpen';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useKERINotificationService } from 'src/composables/useKERINotificationService';
+import { useGrantAdmission } from 'src/composables/useGrantAdmission';
 import { initNotifications, registerNotificationClickHandler } from 'src/lib/notifications';
 import { fetchOrgConfig } from 'src/api/config';
 import { getFileUrl } from 'src/lib/api/client';
@@ -348,6 +349,8 @@ watch(lastEvent, (event) => {
   }
 });
 const notificationService = useKERINotificationService();
+// Credentials the community issues after joining are admitted on that poll (#685).
+useGrantAdmission();
 
 // User info — prefer SharedProfile from community space, fallback to onboarding store
 const mySharedProfile = computed(() => {
@@ -384,6 +387,8 @@ onMounted(() => {
     if (data.route === 'chat' && data.channelId) {
       router.push({ name: 'chat' }).catch(() => {});
       chatStore.selectChannel(data.channelId);
+    } else if (data.route === 'wallet') {
+      router.push({ name: 'wallet' }).catch(() => {});
     }
   });
   initNotifications();

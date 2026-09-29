@@ -110,6 +110,13 @@ export interface SigninDeps {
    * before there is an identity or a connected agent to read credentials from.
    */
   ready(): Promise<void>;
+  /**
+   * Admit the credentials the community issued this member that the wallet has
+   * not yet accepted (issue #685). Called only when the wallet holds nothing
+   * the door asks for — a code scanned cold opens this card, not the dashboard
+   * whose poll admits them.
+   */
+  admitPending?(): Promise<void>;
 }
 
 /** Wait for the identity store to finish restoring, then refresh the agent session. */
@@ -145,6 +152,11 @@ function defaultDeps(): SigninDeps {
   const sealPasscodeLive = makeSealPasscodeLive(identity);
   return {
     ready: () => walletReady(identity, keri),
+    async admitPending() {
+      // Loaded only when a door asks for something the wallet does not hold.
+      const { admitPendingCommunityGrants } = await import('src/lib/keri/communityGrants');
+      await admitPendingCommunityGrants(identity.aidPrefix);
+    },
     async listCredentials() {
       const client = keri.getSignifyClient();
       if (!client) return [];
@@ -302,10 +314,20 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
       await knownDoors.load();
 
       const aid = identity.aidPrefix ?? '';
-      const creds = await deps.listCredentials();
+      let creds = await deps.listCredentials();
       // The credential the door asked for: the one it named (`cred=`), else
       // the first of an asked schema as before (#683).
-      const cred = chooseCredential(creds, parsed.schemas, aid, parsed.credential) ?? null;
+      let cred = chooseCredential(creds, parsed.schemas, aid, parsed.credential) ?? null;
+      if (!cred && deps.admitPending) {
+        // It may have been issued and be waiting to be accepted (#685).
+        try {
+          await deps.admitPending();
+          creds = await deps.listCredentials();
+          cred = chooseCredential(creds, parsed.schemas, aid, parsed.credential) ?? null;
+        } catch (err) {
+          console.warn('[Signin] Could not admit pending credentials:', err);
+        }
+      }
 
       const kinds = await deps.schemaKinds();
       const toShow = cred ? describeCredential(cred, kinds, parsed.community) : null;
