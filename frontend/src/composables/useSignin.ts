@@ -9,6 +9,15 @@
  * post, read the verdict — reusing the in-memory signer on a repeat sign-in.
  * Not now signs and posts nothing.
  *
+ * The card has two forms, and the code says which (#688; idss ADR 0282 as
+ * amended 2026-09-29). A **sign-in** is the card above — with the unlock line,
+ * on by default, when the code offers a seat unlock and the wallet's identity
+ * is a steward (PU-A2u). An **unlock** — a locked panel unlocking through this
+ * same door — is the same card with the unlock as its act and no switch
+ * (PU-A4): Unlock presents, arms, and answers the panel's request (PU-A4d).
+ * Opened by an identity that is not a steward, an unlock says so and posts
+ * nothing (PU-A4n).
+ *
  * The KERI-side dependencies are injected (defaults wired to the real client
  * and stores) so the phase machine and view model are unit-testable without
  * signify-ts or a live door.
@@ -19,17 +28,15 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { getCommunityDescriptor } from 'src/lib/clientConfig';
 import { useIdentityStore } from 'src/stores/identity';
 import { useKnownDoorsStore } from 'src/stores/knownDoors';
-import { parseSigninLink, isPanelSignin, type SigninAsk } from 'src/lib/signin/link';
+import { parseSigninLink, isUnlockAsk, offersSeatUnlock, type SigninAsk } from 'src/lib/signin/link';
 import {
   askedCredentialName,
   chooseCredential,
-  credentialSlug,
   describeCredential,
-  isOperatorMembership,
   type HeldCredential,
 } from 'src/lib/signin/credential';
-import { STEWARD_ROLE } from 'src/lib/spaces/steward';
-import { fingerprintOf, sealPasscode } from 'src/lib/signin/sealedPasscode';
+import { identityIsSteward } from 'src/lib/signin/steward';
+import { sealPasscode } from 'src/lib/signin/sealedPasscode';
 import { armForChallenge, type PasscodeSealer } from 'src/lib/signin/armedPasscode';
 import { runHandover } from 'src/lib/signin/handover';
 import { buildCardView, type ApproveCardView } from 'src/lib/signin/view';
@@ -43,18 +50,27 @@ import { refusalCopy, type RefusalCopy } from 'src/lib/signin/refusal';
  * built; `unavailable` is the try-again fallback when it could not be.
  * `first-contact` (WS-A1) comes *before* the card when the ask names a sign-in
  * site the wallet has never met (#535); `no-credential` replaces the card when
- * the wallet holds nothing the door asks for (#683); the rest are the approve
- * card and its follow-ons (WS-A2/A2p/A2d/A2r).
+ * the wallet holds nothing the door asks for (#683); `not-a-steward` replaces
+ * it when the code says it is an unlock and the wallet's identity is not a
+ * steward (PU-A4n, #688); the rest are the approve card and its follow-ons
+ * (WS-A2/A2p/A2d/A2r — and, in the unlock form, PU-A4/A4d).
  */
 export type SigninPhase =
   | 'loading'
   | 'unavailable'
   | 'first-contact'
   | 'no-credential'
+  | 'not-a-steward'
   | 'card'
   | 'proving'
   | 'done'
   | 'refused';
+
+/**
+ * The card's form, which the code decides (#688): an ordinary `signin`, or an
+ * `unlock` — a code that says it is one (`offer=unlock`).
+ */
+export type SigninForm = 'signin' | 'unlock';
 
 /** How long a sign-in waits for the wallet's session restore before giving up. */
 const READY_TIMEOUT_MS = 45_000;
@@ -86,16 +102,12 @@ export interface SigninDeps {
   /** schema SAID → descriptor kind key (e.g. "membership"), for the label. */
   schemaKinds(): Promise<Record<string, string>>;
   /**
-   * The short fingerprint of the control-panel tab's sealing-key verkey, for the
-   * details disclosure (#663). Only called for a control-panel sign-in.
-   */
-  sealingKeyFingerprint(verkey: string): Promise<string>;
-  /**
    * Arm the wallet to seal the steward's passcode when the panel later asks, for
-   * the challenge that lives until `expiresAt` (wall-clock ms). Called ONLY on a
-   * control-panel unlock with the line on; it seals nothing now — the box the
-   * panel can open is minted only when the panel asks, to the verkey it holds
-   * (#674). The passcode never leaves this wallet's unlocked session (#663).
+   * the challenge that lives until `expiresAt` (wall-clock ms). Called ONLY for
+   * a steward — on a control-panel sign-in approved with the unlock line on, or
+   * on an unlock (#688); it seals nothing now — the box the panel can open is
+   * minted only when the panel asks, to the verkey it holds (#674). The passcode
+   * never leaves this wallet's unlocked session (#663).
    */
   arm(challenge: string, expiresAt: number): void;
   /**
@@ -187,7 +199,6 @@ function defaultDeps(): SigninDeps {
       }
       return map;
     },
-    sealingKeyFingerprint: (verkey) => fingerprintOf(verkey),
     now: () => Date.now(),
     // Arm the wallet to answer the panel's later request. The sealer reads the
     // passcode LIVE from the unlocked identity store at seal time and lets only
@@ -205,7 +216,8 @@ function defaultDeps(): SigninDeps {
  * Seal the steward's held passcode to a verkey, reading the passcode live from
  * the unlocked identity store at seal time. Only the ciphertext leaves; the
  * passcode is never returned or logged. Bound into the arming so the panel's
- * later request seals to the key it holds, not to the sign-in code's `ek=`.
+ * later request seals to the key the panel holds — the one it bound at the door
+ * after it landed. No sign-in code carries a sealing key (#688).
  */
 function makeSealPasscodeLive(identity: { readonly passcode: string | null }): PasscodeSealer {
   return async (verkey: string) => {
@@ -213,32 +225,6 @@ function makeSealPasscodeLive(identity: { readonly passcode: string | null }): P
     if (!bran) return null;
     return sealPasscode(bran, verkey);
   };
-}
-
-/**
- * Whether the member presenting is a steward — the rule that gates every
- * steward surface (ADR 0226; {@link STEWARD_ROLE}). Nothing presented, no
- * steward, so the unlock line is never offered without one (#663).
- *
- * When a **Membership** is presented, its own role decides, as it always did:
- * `operator` (case-insensitive) is a steward. When a **komiti credential** is
- * presented — Administrator, at the control panel's door (#683, idss ADR 0289)
- * — the credential carries no role, and holding it makes nobody a steward (idss
- * ADR 0286 d.2): the standing is read where it still lives, on the member's own
- * live operator Membership of an asked schema. So who is offered the unlock
- * line is who was offered it before.
- */
-function presenterIsSteward(
-  presented: HeldCredential | null,
-  held: readonly HeldCredential[],
-  schemas: readonly string[],
-  holderAid: string,
-): boolean {
-  if (!presented) return false;
-  if (!credentialSlug(presented)) {
-    return (presented.sad?.a?.role ?? '').trim().toLowerCase() === STEWARD_ROLE;
-  }
-  return held.some((c) => isOperatorMembership(c, schemas, holderAid));
 }
 
 export function useSignin(deps: SigninDeps = defaultDeps()) {
@@ -276,16 +262,43 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
    */
   const posted = ref(false);
   /**
-   * Whether the steward-unlock line is offered on this card (#663): true ONLY
-   * when the sign-in is to the control panel (the code carried `ek=`) AND the
-   * member presenting is a steward ({@link presenterIsSteward}). Every other
-   * card leaves it false and nothing is ever armed.
+   * The card's form, read from the code's own offer field (#688): `unlock` when
+   * the code says it is an unlock, `signin` otherwise. Known from the ask alone,
+   * so the loading and unavailable faces already speak of the right thing.
+   */
+  const form = computed<SigninForm>(() => (ask.value && isUnlockAsk(ask.value) ? 'unlock' : 'signin'));
+  /**
+   * Whether the wallet's identity is one of the community's stewards
+   * ({@link identityIsSteward} — the one place that is read). Decides who is
+   * offered the unlock line and who may unlock; false until the card is built.
+   */
+  const steward = ref(false);
+  /**
+   * Whether the steward-unlock line is offered on this card (PU-A2u): true ONLY
+   * when the code offers a seat unlock AND the wallet's identity is a steward.
+   * Every other card leaves it false. An unlock has no line — it has no switch.
    */
   const unlockAvailable = ref(false);
   /** Whether the offered unlock line is switched on. On by default; the line IS
    *  the consent, so there is no second confirm (#663). Meaningless when
    *  {@link unlockAvailable} is false. */
   const unlockOn = ref(true);
+  /**
+   * Whether the sign-in that verified ARMED the wallet to answer the panel — a
+   * steward's control-panel sign-in approved with the line on, or an unlock.
+   * True only once the door has verified it; false for every other sign-in.
+   */
+  const armed = ref(false);
+  /**
+   * Whether the done face must stay until it is closed, rather than close
+   * itself after a beat (WS-A2d). True after an armed sign-in or an unlock
+   * verifies: the handover happens AFTER that face appears — the panel lands,
+   * binds its key and asks; the wallet seals and answers — so the face carries
+   * the one instruction that matters, to keep the app open until Members
+   * appears (PU-A2u, PU-A4d). An app closed at once leaves the panel signed in
+   * and locked.
+   */
+  const keepOpen = computed(() => phase.value === 'done' && (armed.value || form.value === 'unlock'));
 
   /**
    * Parse a `matou://signin` link and prepare the card, or return false when
@@ -312,9 +325,11 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     chosen.value = null;
     posted.value = false;
     // Start disarmed and default-on for every fresh sign-in — arming is decided
-    // below, only for a steward's control-panel sign-in.
+    // below, only for a steward, and only when the code offers it.
+    steward.value = false;
     unlockAvailable.value = false;
     unlockOn.value = true;
+    armed.value = false;
 
     try {
       await deps.ready();
@@ -337,31 +352,44 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
       }
 
       const kinds = await deps.schemaKinds();
+
+      // Whether there is a seat to unlock is the wallet's to decide, from
+      // whether its identity is a steward (idss ADR 0282, ruling 3).
+      steward.value = identityIsSteward(cred, creds, parsed.schemas, aid);
+
+      // A code that says it is an unlock, opened by an identity that is not a
+      // steward, presents NOTHING (PU-A4n): the person is already signed in, so
+      // a presentation would only repeat the sign-in. Holding Administrator
+      // does not change that — there is no seat behind it.
+      if (isUnlockAsk(parsed) && !steward.value) cred = null;
+
       const toShow = cred ? describeCredential(cred, kinds, parsed.community) : null;
       chosen.value = cred;
 
-      // The unlock line appears ONLY when the sign-in is to the control panel
-      // (the code carried `ek=`), there is a credential to present, AND the
-      // member presenting it is a steward. The fingerprint rides the details
-      // disclosure so a careful steward can compare it with the panel; it is
-      // never on the face, and nothing is armed on any other card.
-      let unlock: ApproveCardView['unlock'] = null;
-      if (isPanelSignin(parsed) && presenterIsSteward(cred, creds, parsed.schemas, aid)) {
-        const fingerprint = await deps.sealingKeyFingerprint(parsed.sealingKey ?? '');
-        unlock = { sealingKeyFingerprint: fingerprint };
-        unlockAvailable.value = true;
-      }
+      // The unlock line appears ONLY when the code OFFERS a seat unlock — read
+      // from its own field, never from a sealing key, the service's display
+      // name or the credential asked for — AND the identity is a steward.
+      // Nothing is armed on any other card.
+      unlockAvailable.value = offersSeatUnlock(parsed) && steward.value;
       view.value = buildCardView(
         parsed,
         toShow,
         aid,
         knownDoors.isHome(parsed.door),
-        unlock,
+        unlockAvailable.value,
         askedCredentialName(parsed.credential, parsed.schemas, kinds),
       );
     } catch (err) {
       console.warn('[Signin] Could not prepare the sign-in:', err);
       phase.value = 'unavailable';
+      return;
+    }
+
+    // An unlock this identity cannot make: say so, on its own screen (PU-A4n).
+    // Nothing is presented and nothing is posted — so, as with no-credential,
+    // there is nothing to trust an unmet site with.
+    if (isUnlockAsk(parsed) && !steward.value) {
+      phase.value = 'not-a-steward';
       return;
     }
 
@@ -401,34 +429,48 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     const a = ask.value;
     const cred = chosen.value;
     if (!a || !cred?.sad?.d) return;
+    // An identity that is not a steward cannot unlock, and posts nothing
+    // (PU-A4n). It has no card to press; this holds even if called.
+    if (phase.value === 'not-a-steward') return;
     // Never re-present a code the door has already spent or expired — it can
     // only be refused again. The card waits for a freshly-minted challenge
     // instead (#675).
     if (staleCode.value) return;
     const aid = identity.aidPrefix ?? '';
+    const unlocking = isUnlockAsk(a);
 
     phase.value = 'proving';
     refusal.value = null;
+    armed.value = false;
 
-    // Arm on approve, in the same act as the presentation: when this is a
-    // steward's control-panel sign-in with the line on, keep the passcode ready
-    // to seal for this challenge's life and answer the panel's LATER request
-    // (#674). Nothing is sealed now and the present request below carries no
-    // passcode — only `armed: true`, so the door mints the handover capability.
-    // #663 sealed here, to the sign-in code's `ek=`, but that key belongs to the
-    // bridge's door page the OIDC hop tears down — the panel at `admin.<apex>`
-    // never held it, so the box could not be opened. The seal happens after the
-    // sign-in verifies, when the wallet reads the verkey the panel bound and
-    // seals to it (answerHandover, idss #1961). Any other card, or the line
-    // switched off, arms nothing. A failure
-    // to arm degrades to an ordinary locked-seat session rather than blocking the
-    // sign-in — nothing but a later ciphertext ever leaves, so it is silent.
-    let armed = false;
-    if (unlockAvailable.value && unlockOn.value) {
+    // Arm on approve, in the same act as the presentation: a steward's
+    // control-panel sign-in with the line on, or a steward's Unlock — which has
+    // no switch, the unlock being the only reason its card exists (#688). The
+    // wallet keeps the passcode ready to seal for this challenge's life and
+    // answers the panel's LATER request (#674). Nothing is sealed now and the
+    // present request below carries no passcode — only `armed: true`, so the
+    // door mints the handover capability. The seal happens after the sign-in
+    // verifies, when the wallet reads the verkey the panel bound at the door
+    // and seals to it (answerHandover, idss #1961). Any other card, or the
+    // line switched off, arms nothing.
+    let arming = false;
+    if (unlocking ? steward.value : unlockAvailable.value && unlockOn.value) {
       try {
         deps.arm(a.challenge, deps.now() + ARMING_TTL_MS);
-        armed = true;
+        arming = true;
       } catch {
+        if (unlocking) {
+          // An unlock that cannot arm has nothing to do: presenting unarmed
+          // would only sign the person in again, to a panel that stays locked,
+          // behind a face that says it is unlocking. Post nothing; offer the
+          // try-again face.
+          console.warn('[Signin] Could not arm the steward unlock; nothing was sent');
+          phase.value = 'unavailable';
+          return;
+        }
+        // At sign-in a failure to arm degrades to an ordinary locked-seat
+        // session rather than blocking the sign-in — nothing but a later
+        // ciphertext ever leaves, so it is silent.
         console.warn('[Signin] Could not arm the steward unlock; signing in with the seat locked');
       }
     }
@@ -445,7 +487,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
           // Only a wallet that actually armed rides `armed: true`, so the door
           // mints the handover capability only when there is a passcode ready to
           // seal. An arm that threw degrades to an ordinary locked seat.
-          armed,
+          armed: arming,
         },
         {
           sign: (message) => deps.sign(aid, message),
@@ -463,14 +505,17 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     if (verdict.outcome === 'verified') {
       // Only the known-doors entry changes on a completed sign-in (story 17).
       await knownDoors.touch(a.door);
+      // Said before the done face shows, so the face it shows is the right one.
+      armed.value = arming;
       phase.value = 'done';
       // Answer the panel's later request in the background (#674): read the
       // verkey the panel bound to the door and seal the passcode to it, once.
-      // Fire-and-forget — the sign-in is already done (the phone shows "Signed
-      // in"), the box arrives a moment later, and a panel that never lands just
+      // Fire-and-forget — the sign-in is already done (the app says "Signed
+      // in" and to keep it open, or after an unlock "Unlocking that computer"),
+      // the box arrives a moment later, and a panel that never lands just
       // leaves the poll unanswered. It never blocks or fails the sign-in, and
       // nothing but the sealed ciphertext ever leaves.
-      if (armed) {
+      if (arming) {
         void deps.answerHandover(a.present, a.challenge, aid).catch(() => {
           /* the answer is best-effort; a failure never touches the sign-in */
         });
@@ -513,9 +558,11 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     unlockOn.value = on;
   }
 
-  /** Not now: nothing was signed or posted; the page keeps waiting (story 15). */
+  /** Not now: nothing was signed or posted; the page keeps waiting (story 15).
+   *  The same on an unlock: nothing is sent, and the door keeps waiting until
+   *  its code expires (PU-A4). */
   function notNow(): void {
-    if (phase.value === 'no-credential') return;
+    if (phase.value === 'no-credential' || phase.value === 'not-a-steward') return;
     phase.value = 'card';
     refusal.value = null;
   }
@@ -540,6 +587,9 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     chosen,
     posted,
     staleCode,
+    form,
+    armed,
+    keepOpen,
     unlockAvailable,
     unlockOn,
     setUnlock,

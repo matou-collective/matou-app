@@ -12,13 +12,11 @@
  * are, and signify's own `Controller` seals a passcode this exact way
  * (`keri/app/controller.js`). So the wallet imports nothing beyond signify:
  *
- *  - {@link fingerprintOf} renders the sealing-key verkey (the value that rode
- *    `ek=`) as the short fingerprint the careful steward compares with what the
- *    panel shows — the SAME function idss #1938 prints. It goes in the approve
- *    card's details, never on the face.
- *  - {@link sealPasscode} seals the steward's 21-char passcode (bran) to that
- *    verkey. `Encrypter` takes an Ed25519 verkey and converts it to X25519
- *    itself, so `ek=` is an ordinary CESR verkey, not raw X25519 bytes.
+ *  - {@link sealPasscode} seals the steward's 21-char passcode (bran) to the
+ *    verkey the panel bound at the door (read off the handover key route —
+ *    `handover.ts`; no sign-in code carries a sealing key, #688). `Encrypter`
+ *    takes an Ed25519 verkey and converts it to X25519 itself, so the sealing
+ *    key is an ordinary CESR verkey, not raw X25519 bytes.
  *
  * ## The pad position (the round-trip golden, shared with idss #1938)
  *
@@ -33,7 +31,7 @@
  * (`1AAH…`, 100 chars) the door relays but cannot open.
  */
 
-import { ready, Encrypter, Verfer, MtrDex, b } from 'signify-ts';
+import { ready, Encrypter, MtrDex, b } from 'signify-ts';
 
 /**
  * The 24-char qb64 salt the wallet seals for a 21-char bran — signify's
@@ -45,25 +43,11 @@ export function saltQb64FromBran(bran: string): string {
 }
 
 /**
- * A short fingerprint of a verkey qb64: the first 4 raw bytes as `xxxx·xxxx` hex
- * — stable, public, and cheap for a steward to eyeball against the panel. The
- * exact function idss #1938 prints on the panel side, so the two strings match.
- * Awaits libsodium (`Verfer` needs it) so the caller need not have.
- */
-export async function fingerprintOf(verkeyQb64: string): Promise<string> {
-  await ready();
-  const raw = new Verfer({ qb64: verkeyQb64 }).raw;
-  const hex = Array.from(raw.slice(0, 4))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-  return `${hex.slice(0, 4)}·${hex.slice(4, 8)}`;
-}
-
-/**
  * Seal a 21-char passcode (bran) to the control-panel tab's sealing-key verkey
- * (the `ek=` value), returning the CESR qb64 `X25519_Cipher_Salt` cipher for the
- * present request's `sealed_passcode`. A libsodium sealed box: only the tab that
- * minted the matching seed can open it, so the door relays a box it cannot read.
+ * (the key the panel bound at the door), returning the CESR qb64
+ * `X25519_Cipher_Salt` cipher for the handover seal route's `sealed_passcode`.
+ * A libsodium sealed box: only the tab that minted the matching seed can open
+ * it, so the door relays a box it cannot read.
  *
  * The passcode is read into this scope and sealed; it is never returned, logged
  * or persisted — only the ciphertext leaves. Awaits libsodium first.

@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
   chooseCredential,
   describeCredential,
@@ -201,7 +202,9 @@ describe('chooseCredential — the credential the door names (#683)', () => {
     it("reads the door's own control-panel code", () => {
       const ask = parseSigninLink(golden.panel.challenge.deep_link);
       expect(ask?.credential).toBe(ADMINISTRATOR_SLUG);
-      expect(ask?.sealingKey).toBe(golden.panel.challenge.adds_to_ask_response.sealing_key);
+      expect(ask?.offer).toBe(golden.panel.challenge.adds_to_ask_response.offer);
+      // …an unlock asks for the same credential: one door, one ask.
+      expect(parseSigninLink(golden.unlock_hop.challenge.deep_link)?.credential).toBe(ADMINISTRATOR_SLUG);
       // …and the ordinary service code names no credential.
       expect(parseSigninLink(golden.ask.response.deep_link)).not.toHaveProperty('credential');
     });
@@ -210,16 +213,17 @@ describe('chooseCredential — the credential the door names (#683)', () => {
       expect(normalizeRefusal(golden.present.no_credential.body.refusal)).toBe('no-credential');
     });
 
-    it('is the file idss holds at the commit it names', () => {
-      // sha256 over the contract's JSON with keys sorted (its content, not its
-      // whitespace), less the `_copied_from` note this copy adds. Re-vendoring
-      // the golden means updating both the note and this digest; editing the
-      // copy by hand fails here.
-      const { _copied_from: copiedFrom, ...contract } = golden as Record<string, unknown>;
-      expect(copiedFrom).toContain('@ af7ba1db');
-      expect(createHash('sha256').update(canonical(contract)).digest('hex')).toBe(
-        '911eeadd6f346d6439b35fb0bea9a9bd7c9825921302dca57e69a88621c6efa7',
+    it('is byte-for-byte the file idss holds', () => {
+      // sha256 over the vendored file's own bytes: idss
+      // `internal/idp/testdata/app-door-golden.json` @ 71c2edad (idss #1994, on
+      // idss main). The copy adds nothing and changes nothing — not a note, not
+      // a newline — so re-vendoring is `cp` and this digest; editing the copy by
+      // hand fails here (#688).
+      const bytes = readFileSync(new URL('./fixtures/app-door/app-door-golden.json', import.meta.url));
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(
+        'f77bdcf66d5ed306cac662624635cdfeaf9e0e12c2d2bac2bbe2b07f0117b6bb',
       );
+      expect(golden).not.toHaveProperty('_copied_from');
     });
   });
 
@@ -229,18 +233,6 @@ describe('chooseCredential — the credential the door names (#683)', () => {
     expect(chooseCredential([financeCred, membershipCred], [MEMBERSHIP], HOLDER, '')).toBe(membershipCred);
   });
 });
-
-function canonical(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
-  if (v && typeof v === 'object') {
-    const o = v as Record<string, unknown>;
-    return `{${Object.keys(o)
-      .sort()
-      .map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(v);
-}
 
 describe('describeCredential — a named credential (#683)', () => {
   it('carries the slug of a komiti credential, and none for a Membership', () => {
@@ -321,6 +313,13 @@ describe('credentialCard', () => {
     expect(card.serviceName).toBe('');
     expect(card.description).toBe('Te Rūnanga o Example');
     expect(card.footer).toBe('Issued 12 Aug 2026');
+  });
+
+  // The approve card's contract names the issuer line (idss PU-A4,
+  // `credential-issuer`), so the card always has one to draw (#688).
+  it('names the community as the headline does when neither the credential nor the code names one', () => {
+    expect(credentialCard(membershipCred, { [MEMBERSHIP]: 'membership' }).description).toBe('your community');
+    expect(credentialCard(membershipCred, { [MEMBERSHIP]: 'membership' }, '  ').description).toBe('your community');
   });
 
   it('uses the schema title the agent holds, as the wallet card does', () => {

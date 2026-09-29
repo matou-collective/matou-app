@@ -224,16 +224,21 @@ export interface CredentialCardModel {
   subtitle: string;
   /** The slug services know the credential as (blank for a legacy credential). */
   serviceName: string;
-  /** The community the credential belongs to. */
+  /** The community the credential belongs to. Never blank. */
   description: string;
   /** "Issued 12 Aug 2026" (blank when the issue date is unknown). */
   footer: string;
 }
 
+/** What the approve card calls a community neither the credential nor the
+ *  sign-in code names. */
+export const UNNAMED_COMMUNITY = 'your community';
+
 /**
  * Build the card for a chosen credential. `community` is the name the sign-in
  * code carried, used only when the credential itself names no community — what
- * the community signed wins over what a code claims.
+ * the community signed wins over what a code claims. When neither names one the
+ * card says {@link UNNAMED_COMMUNITY}, as the headline does (#688).
  */
 export function credentialCard(
   cred: HeldCredential,
@@ -254,7 +259,10 @@ export function credentialCard(
     // The role line would only repeat a name that already says it.
     subtitle: role && role.toLowerCase() !== name.toLowerCase() ? role : '',
     serviceName: credentialCardServiceName(credential),
-    description: credential.communityName || community,
+    // Always a line to draw: the approve card's contract names it (idss PU-A4,
+    // `credential-issuer`). With no name from either, it says what the card's
+    // headline says of a code that names no community.
+    description: credential.communityName || community.trim() || UNNAMED_COMMUNITY,
     footer: issuedOn ? `Issued ${issuedOn}` : '',
   };
 }

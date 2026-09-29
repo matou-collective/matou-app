@@ -5,10 +5,15 @@
  * it produces exactly what the card renders — service first, then the sign-in
  * site, then what will be shown — and the details disclosure's four lines. No
  * AID, SAID, nonce or words reach the face; those live only in `details`.
+ *
+ * One view serves the card's two forms (#688): the sign-in form (WS-A2, and
+ * PU-A2u when the unlock line is offered) and the unlock form (PU-A4), which a
+ * code that says it is an unlock opens. The form is the ask's; the view carries
+ * what either draws.
  */
 
 import { boundMessage } from './present';
-import type { CredentialToShow } from './credential';
+import { UNNAMED_COMMUNITY, type CredentialToShow } from './credential';
 import type { SigninAsk } from './link';
 
 /** The whole approve-card face plus its details disclosure (WS-A2). */
@@ -33,16 +38,24 @@ export interface ApproveCardView {
    *  what is being presented. */
   provingLine: string;
   /**
-   * The steward-unlock region (PU-A2u, #663), present ONLY when the sign-in is
-   * to the control panel AND the member presenting is a steward; null on every
-   * other card, which is therefore untouched. When present, the card shows the unlock line (default on) under the headline, and
-   * the sealing-key fingerprint inside the details disclosure — never the face.
+   * True when the code is a control-panel one — it said what it offers (a seat
+   * unlock, or an unlock). Read from the code's own offer field, never from the
+   * display name in `service`.
    */
-  unlock: {
-    /** The tab's sealing-key fingerprint (`xxxx·xxxx`), shown in details only so
-     *  a careful steward can compare it with what the panel shows. */
-    sealingKeyFingerprint: string;
-  } | null;
+  panel: boolean;
+  /**
+   * Whether the steward-unlock line is offered (PU-A2u): true ONLY when the code
+   * offers a seat unlock AND the wallet's identity is a steward; false on every
+   * other card, which is therefore untouched. The line is on by default and is
+   * the whole consent. The unlock form (PU-A4) has no line — it has no switch.
+   */
+  unlockLine: boolean;
+  /**
+   * PU-A4's WHERE line: "‹community›'s control panel". By name only — the code
+   * carries no address for the panel, and none is derived from the sign-in
+   * site's (the panel is not always `admin.` beside `id.`).
+   */
+  panelName: string;
   /** The details disclosure — never on the face. */
   details: {
     aid: string;
@@ -53,21 +66,21 @@ export interface ApproveCardView {
 }
 
 /**
- * Build the card view model. `aid` is the signing member's AID. `unlock` is the
- * steward-unlock region (or null) — supplied only when the sign-in is to the
- * control panel and the member presenting is a steward (#663);
- * every ordinary card passes null and is untouched. `askedName` is what the
- * door asked for, in words (see `askedCredentialName`).
+ * Build the card view model. `aid` is the signing member's AID. `unlockLine` is
+ * whether the steward-unlock line is offered — true only when the code offers a
+ * seat unlock and the wallet's identity is a steward (#663, #688); every
+ * ordinary card passes false and is untouched. `askedName` is what the door
+ * asked for, in words (see `askedCredentialName`).
  */
 export function buildCardView(
   ask: SigninAsk,
   credential: CredentialToShow | null,
   aid: string,
   isHome: boolean,
-  unlock: ApproveCardView['unlock'] = null,
+  unlockLine = false,
   askedName = '',
 ): ApproveCardView {
-  const community = ask.community || 'your community';
+  const community = ask.community || UNNAMED_COMMUNITY;
   return {
     // The real bridge always names the service; a link that omits it keeps the
     // sentence grammatical rather than dropping a blank into the headline.
@@ -83,7 +96,9 @@ export function buildCardView(
     // Membership — the operator's fallback at the panel included — proves
     // membership, as it always did.
     provingLine: credential?.slug ? `Proving you hold ${credential.name}…` : "Proving you're a member…",
-    unlock,
+    panel: ask.offer !== undefined,
+    unlockLine,
+    panelName: `${community}'s control panel`,
     details: {
       aid,
       credentialSaid: credential?.said ?? '',
@@ -101,63 +116,4 @@ export function siteAddress(door: string): string {
   } catch {
     return door;
   }
-}
-
-/**
- * The unlock-only card's view model (idss #1929 story 14, wireframe PU-A4;
- * matou-app #664). Distinct from {@link ApproveCardView} by design: no service,
- * no credential, no bound message — nothing is presented and no session is
- * minted. The card carries the unlock and only the unlock. The FRESH sealing-key
- * fingerprint rides the details disclosure so a careful steward can compare it
- * with the panel's; it differs from the one at sign-in by construction.
- */
-export interface UnlockCardView {
-  /** The community name for the WHERE line ("your community" when absent). */
-  community: string;
-  /** "‹community›'s control panel" — the WHERE line's name half. */
-  panelName: string;
-  /** The panel site's host ("admin.example.nz") — the WHERE line's address. */
-  panelAddress: string;
-  /** The "ALREADY SIGNED IN" note, naming the sign-in time when the code carried
-   *  one, and always saying this only unlocks steward actions. */
-  signedInNote: string;
-  /** The details disclosure — never on the face. */
-  details: {
-    aid: string;
-    challengeId: string;
-    /** The FRESH sealing-key fingerprint (`xxxx·xxxx`), for a careful compare. */
-    sealingKeyFingerprint: string;
-  };
-}
-
-/**
- * Build the unlock-only card view model. `aid` is the steward's own AID; `panel`,
- * `community`, `challenge` and `signedInAt` come off the unlock ask, and
- * `sealingKeyFingerprint` is the precomputed fingerprint of the fresh `ek`
- * (computed by the composable, which owns libsodium). A blank `signedInAt`
- * degrades the note to a timeless sentence rather than dropping a blank time in.
- */
-export function buildUnlockView(
-  panel: string,
-  community: string,
-  challenge: string,
-  aid: string,
-  signedInAt: string,
-  sealingKeyFingerprint: string,
-): UnlockCardView {
-  const name = community || 'your community';
-  const signedInNote = signedInAt
-    ? `You signed in on this computer at ${signedInAt}. This only unlocks steward actions.`
-    : "You're already signed in on this computer. This only unlocks steward actions.";
-  return {
-    community: name,
-    panelName: `${name}'s control panel`,
-    panelAddress: siteAddress(panel),
-    signedInNote,
-    details: {
-      aid,
-      challengeId: challenge,
-      sealingKeyFingerprint,
-    },
-  };
 }

@@ -20,6 +20,11 @@
         :posted="signin.posted.value"
         @close="onClose"
       />
+      <!-- A code that says it is an unlock, opened by an identity that is not a
+           steward (PU-A4n, #688): said by the app, and nothing is sent. -->
+      <NotASteward v-else-if="signin.phase.value === 'not-a-steward'" @close="onClose" />
+      <!-- The approve card — in its unlock form when the code says it is an
+           unlock (PU-A4, #688). -->
       <ApproveCard
         v-else
         :view="signin.view.value"
@@ -27,6 +32,8 @@
         :refusal="signin.refusal.value"
         :can-approve="canApprove"
         :unlock-on="signin.unlockOn.value"
+        :form="signin.form.value"
+        :armed="signin.armed.value"
         @approve="signin.approve"
         @not-now="onNotNow"
         @try-again="signin.tryAgain"
@@ -47,6 +54,7 @@ import { useRoute, useRouter } from 'vue-router';
 import ApproveCard from 'src/components/signin/ApproveCard.vue';
 import FirstContact from 'src/components/signin/FirstContact.vue';
 import NoCredential from 'src/components/signin/NoCredential.vue';
+import NotASteward from 'src/components/signin/NotASteward.vue';
 import { useSignin } from 'src/composables/useSignin';
 import { useKnownDoorsStore } from 'src/stores/knownDoors';
 import { getCommunityDescriptor } from 'src/lib/clientConfig';
@@ -66,9 +74,14 @@ const shownKomitiName = computed(() => {
   return shown?.slug ? shown.name : '';
 });
 
-/** Close the card after a beat once the door answers VERIFIED (WS-A2d). */
+/**
+ * Close the card after a beat once the door answers VERIFIED (WS-A2d). Not
+ * after an unlock (PU-A4d) or a sign-in that armed (PU-A2u, the line on): that
+ * face carries the one instruction that matters — keep this app open until
+ * Members appears — so it stays until it is closed.
+ */
 watch(signin.phase, (p) => {
-  if (p === 'done') setTimeout(onClose, 1500);
+  if (p === 'done' && !signin.keepOpen.value) setTimeout(onClose, 1500);
 });
 
 /**
@@ -111,8 +124,9 @@ onMounted(async () => {
 
 /**
  * Build the ask from the route query. The OS deep-link handler and the scanner
- * both route here with the `matou://signin` params carried as query params. A
- * missing `present` is a door this app cannot answer, so the ask is refused
+ * both route here with the `matou://signin` params carried as query params —
+ * what the code offers among them, which is what makes this an unlock (#688).
+ * A missing `present` is a door this app cannot answer, so the ask is refused
  * (never a guessed path).
  */
 function askFromRoute(): SigninAsk | null {
