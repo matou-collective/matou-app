@@ -34,7 +34,7 @@ import { armForChallenge, type PasscodeSealer } from 'src/lib/signin/armedPassco
 import { runHandover } from 'src/lib/signin/handover';
 import { buildCardView, type ApproveCardView } from 'src/lib/signin/view';
 import { runApprove } from 'src/lib/signin/approve';
-import { getSigner } from 'src/lib/signin/signer';
+import { dropSigner, getSigner } from 'src/lib/signin/signer';
 import { presentToDoor, type PresentBody, type PresentVerdict } from 'src/lib/signin/present';
 import { refusalCopy, type RefusalCopy } from 'src/lib/signin/refusal';
 
@@ -75,6 +75,12 @@ export interface SigninDeps {
   exportCredential(said: string): Promise<string>;
   /** Sign a bound message with the member's cached signer. */
   sign(aid: string, message: string): Promise<string>;
+  /**
+   * Forget the cached signer for `aid`, so the next sign resolves afresh. Called
+   * when the door answers `signature`: the door verifies against the identity's
+   * newest key state, so a signer it refused must not sign the retry.
+   */
+  forgetSigner?(aid: string): void;
   /** POST the presentation to a URL and read the verdict. */
   present(presentUrl: string, body: PresentBody): Promise<PresentVerdict>;
   /** schema SAID → descriptor kind key (e.g. "membership"), for the label. */
@@ -171,6 +177,7 @@ function defaultDeps(): SigninDeps {
       const signer = await getSigner(aid);
       return signer.sign(message);
     },
+    forgetSigner: dropSigner,
     present: presentToDoor,
     async schemaKinds() {
       const descriptor = await getCommunityDescriptor();
@@ -472,6 +479,10 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     }
     if (verdict.outcome === 'refused') {
       refusal.value = refusalCopy(verdict.refusal);
+      // The signature did not verify against the identity's newest key state.
+      // Drop the signer so "try again" resolves one from the keys the identity
+      // holds now, rather than signing with the refused one again.
+      if (refusal.value.kind === 'signature') deps.forgetSigner?.(aid);
       // The door says the credential presented is not the one it asks for. A
       // wallet that reads `cred=` should never cause it; when it happens it is
       // the same screen as holding none (#683).
