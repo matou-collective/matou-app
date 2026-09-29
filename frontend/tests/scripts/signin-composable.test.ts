@@ -92,6 +92,31 @@ describe('useSignin', () => {
     expect(touch).toHaveBeenCalledWith('https://id.example.nz/login');
   });
 
+  it('a `signature` refusal forgets the signer, so the retry signs afresh', async () => {
+    // The door verifies against the identity's newest key state. Whatever left
+    // the wallet signing with another key, trying again with the same signer can
+    // only be refused again.
+    const forgetSigner = vi.fn();
+    const s = useSignin(
+      deps({ present: async () => ({ outcome: 'refused', refusal: 'signature' }), forgetSigner }),
+    );
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(forgetSigner).toHaveBeenCalledTimes(1);
+    expect(forgetSigner).toHaveBeenCalledWith('EHa');
+  });
+
+  it('any other refusal keeps the signer', async () => {
+    const forgetSigner = vi.fn();
+    const s = useSignin(
+      deps({ present: async () => ({ outcome: 'refused', refusal: 'revoked' }), forgetSigner }),
+    );
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(forgetSigner).not.toHaveBeenCalled();
+  });
+
   it('approve → refused renders the matching refusal copy', async () => {
     const s = useSignin(deps({ present: async () => ({ outcome: 'refused', refusal: 'revoked' }) }));
     await s.prepareFromLink(LINK);
