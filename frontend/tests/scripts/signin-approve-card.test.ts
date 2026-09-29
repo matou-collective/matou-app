@@ -390,6 +390,64 @@ describe('ApproveCard — the steward-unlock line (PU-A2u)', () => {
     expect(w.find('[data-field="approve-card"]').attributes('data-service')).toBe('panel');
     expect(w.find('[data-field="credential-to-show"]').attributes('data-kind')).toBe('administrator');
   });
+
+  // The wireframe draws the unlock line, what will be shown and the details
+  // INSIDE the approve card, so a selector written from it must match the
+  // built card.
+  it('holds the unlock line, the credential and the details inside the approve card', () => {
+    const card = mountPanel().find('[data-field="approve-card"]');
+    expect(card.find('[data-field="unlock-steward-actions-line"]').exists()).toBe(true);
+    expect(card.find('[data-action="toggle-unlock-steward-actions"]').exists()).toBe(true);
+    expect(card.find('[data-field="site"]').exists()).toBe(true);
+    expect(card.find('[data-field="credential-to-show"]').exists()).toBe(true);
+    expect(card.find('[data-action="approve"]').exists()).toBe(true);
+    expect(card.find('[data-action="details"]').exists()).toBe(true);
+    // Not now sits beneath the card, as drawn.
+    expect(card.find('[data-action="not-now"]').exists()).toBe(false);
+  });
+
+  it('is one approve card, and the headline stays above it', () => {
+    const w = mountPanel();
+    expect(w.findAll('[data-field="approve-card"]')).toHaveLength(1);
+    expect(w.find('[data-field="approve-card"] [data-field="ask"]').exists()).toBe(false);
+  });
+});
+
+// PU-A2u's own words: approving with the line on arms the handover, "so the app
+// stays open until Members appears". The handover happens AFTER the done face
+// shows, so an armed sign-in says so rather than only "Back to your browser".
+describe('ApproveCard — after an armed sign-in verifies (PU-A2u, line on)', () => {
+  function mountArmedDone(props: Record<string, unknown> = {}) {
+    return mount(ApproveCard, {
+      props: { view: panelView, phase: 'done', refusal: null, canApprove: true, unlockOn: true, armed: true, ...props },
+      global: { stubs },
+    });
+  }
+
+  it('says signed in, where to go, and to keep the app open until Members appears', () => {
+    const done = mountArmedDone().find('[data-status="done"]');
+    expect(done.text()).toContain('Signed in.');
+    expect(done.find('[data-field="done-body"]').text()).toBe(
+      'Go back to your browser, and keep this app open until Members appears.',
+    );
+  });
+
+  it('never says the computer is unlocked as a finished fact', () => {
+    expect(mountArmedDone().text()).not.toMatch(/\bunlocked\b/i);
+  });
+
+  it('offers Close', async () => {
+    const w = mountArmedDone();
+    await w.find('[data-action="close"]').trigger('click');
+    expect(w.emitted('close')).toHaveLength(1);
+  });
+
+  it('a sign-in that armed nothing ends on the plain line — the line switched off, or none offered', () => {
+    const w = mountArmedDone({ armed: false });
+    expect(w.find('[data-status="done"]').text()).toBe('Signed in. Back to your browser.');
+    expect(w.find('[data-field="done-body"]').exists()).toBe(false);
+    expect(mountCard({ phase: 'done' }).text()).not.toMatch(/keep this app open/i);
+  });
 });
 
 // A locked panel unlocks through the sign-in door (#688): the approve card in
@@ -546,6 +604,40 @@ describe('ApproveCard — the unlock form (PU-A4)', () => {
     );
     expect(c.actions).toEqual(expect.arrayContaining(['approve-unlock', 'details', 'not-now']));
     expect(c.statuses).toEqual(expect.arrayContaining(['home-site']));
+  });
+
+  // PU-A4 draws the credential — with the guard and Unlock at its foot — and the
+  // details INSIDE the unlock card.
+  it('holds the credential, Unlock and the details inside the unlock card', () => {
+    const w = mountUnlock();
+    expect(w.findAll('[data-field="unlock-card"]')).toHaveLength(1);
+    const card = w.find('[data-field="unlock-card"]');
+    expect(card.find('[data-field="credential-to-show"]').exists()).toBe(true);
+    expect(card.find('[data-field="credential-name"]').exists()).toBe(true);
+    expect(card.find('[data-field="unlock-guard"]').exists()).toBe(true);
+    expect(card.find('[data-action="approve-unlock"]').exists()).toBe(true);
+    expect(card.find('[data-action="details"]').exists()).toBe(true);
+    expect(card.find('[data-action="not-now"]').exists()).toBe(false);
+    expect(card.find('[data-field="ask"]').exists()).toBe(false);
+  });
+
+  it('draws the issuer line even when neither the credential nor the code names a community', () => {
+    const operator: HeldCredential = {
+      sad: { d: 'EOp', s: 'EMe', i: 'ECommunity', a: { i: 'EHa4mPq', role: 'operator', dt: '2026-08-12T00:00:00Z' } },
+      status: { s: '0', et: 'iss' },
+    };
+    const nameless: SigninAsk = { ...unlockAsk, community: '' };
+    const w = mountUnlock({
+      view: buildCardView(nameless, describeCredential(operator, KINDS, nameless.community), 'EHa4mPq', true, false, 'Administrator'),
+    });
+    expect(w.find('[data-field="credential-name"]').text()).toBe('Membership');
+    expect(w.find('[data-field="credential-issuer"]').text()).toBe('your community');
+  });
+
+  it('carries the contract while proving too', () => {
+    const card = mountUnlock({ phase: 'proving' }).find('[data-field="unlock-card"]');
+    expect(card.find('[data-field="credential-to-show"]').exists()).toBe(true);
+    expect(card.find('[data-field="site"]').exists()).toBe(true);
   });
 });
 

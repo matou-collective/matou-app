@@ -315,6 +315,13 @@ describe('credentialCard', () => {
     expect(card.footer).toBe('Issued 12 Aug 2026');
   });
 
+  // The approve card's contract names the issuer line (idss PU-A4,
+  // `credential-issuer`), so the card always has one to draw (#688).
+  it('names the community as the headline does when neither the credential nor the code names one', () => {
+    expect(credentialCard(membershipCred, { [MEMBERSHIP]: 'membership' }).description).toBe('your community');
+    expect(credentialCard(membershipCred, { [MEMBERSHIP]: 'membership' }, '  ').description).toBe('your community');
+  });
+
   it('uses the schema title the agent holds, as the wallet card does', () => {
     const titled: HeldCredential = { ...membershipCred, schema: { title: 'Mātou Membership' } };
     expect(credentialCard(titled, { [MEMBERSHIP]: 'membership' }, 'Home').name).toBe('Mātou Membership');

@@ -33,6 +33,7 @@
         :can-approve="canApprove"
         :unlock-on="signin.unlockOn.value"
         :form="signin.form.value"
+        :armed="signin.armed.value"
         @approve="signin.approve"
         @not-now="onNotNow"
         @try-again="signin.tryAgain"
@@ -75,11 +76,12 @@ const shownKomitiName = computed(() => {
 
 /**
  * Close the card after a beat once the door answers VERIFIED (WS-A2d). Not
- * after an unlock (PU-A4d): its face carries the one instruction that matters —
- * keep this app open until Members appears — so it stays until it is closed.
+ * after an unlock (PU-A4d) or a sign-in that armed (PU-A2u, the line on): that
+ * face carries the one instruction that matters — keep this app open until
+ * Members appears — so it stays until it is closed.
  */
 watch(signin.phase, (p) => {
-  if (p === 'done' && signin.form.value !== 'unlock') setTimeout(onClose, 1500);
+  if (p === 'done' && !signin.keepOpen.value) setTimeout(onClose, 1500);
 });
 
 /**

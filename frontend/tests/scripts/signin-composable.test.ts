@@ -477,6 +477,82 @@ describe('useSignin — the steward-unlock line (#663, #688)', () => {
 // The credential the door names (#683, idss ADR 0289). The control panel's door
 // asks for Administrator by slug; the wallet presents that credential, else an
 // operator's Membership, else nothing.
+// The handover happens AFTER the done face shows — the panel lands, binds its
+// key and asks; the armed wallet seals and answers. So a sign-in that armed says
+// to keep the app open, and its face stays until it is closed (PU-A2u: "the app
+// stays open until Members appears").
+describe('useSignin — after an armed sign-in verifies (#688)', () => {
+  it('says it armed, and keeps its done face open', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(PANEL_LINK);
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(s.armed.value).toBe(true);
+    expect(s.keepOpen.value).toBe(true);
+  });
+
+  it('armed nothing with the line switched off: the card closes after a beat, as any sign-in', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(PANEL_LINK);
+    s.setUnlock(false);
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+  });
+
+  it('armed nothing on an ordinary service sign-in', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+  });
+
+  it('armed nothing when arming threw', async () => {
+    const s = useSignin(
+      deps({
+        listCredentials: async () => [stewardCred],
+        arm: () => {
+          throw new Error('no passcode');
+        },
+      }),
+    );
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+  });
+
+  it('a refused armed sign-in is not an armed one', async () => {
+    const s = useSignin(
+      deps({
+        listCredentials: async () => [stewardCred],
+        present: async () => ({ outcome: 'refused', refusal: 'signature' }),
+      }),
+    );
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+  });
+
+  it('a fresh code starts unarmed', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    expect(s.armed.value).toBe(true);
+    await s.prepareFromLink(LINK);
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+  });
+});
+
 describe('useSignin — the credential the door names (#683)', () => {
   const financeCred: HeldCredential = {
     sad: { d: 'EFinance', s: 'ECo', i: 'ECommunity', a: { i: 'EHa', committee: 'finance', dt: '2026-09-01T00:00:00Z' } },
@@ -854,6 +930,8 @@ describe('useSignin — a code that says it is an unlock (#688)', () => {
     // PU-A4d: the done face of an unlock.
     expect(s.phase.value).toBe('done');
     expect(s.form.value).toBe('unlock');
+    // It carries the one instruction that matters, so it stays until closed.
+    expect(s.keepOpen.value).toBe(true);
   });
 
   it('arms whatever the switch was left at — an unlock has none', async () => {

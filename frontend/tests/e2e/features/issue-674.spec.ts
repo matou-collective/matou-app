@@ -77,6 +77,11 @@ test.describe('#674 panel unlock — the wallet arms at approve, seals when the 
     await adminPage.locator('[data-action="approve"]').click();
 
     await expect(adminPage.locator('[data-status="done"]')).toContainText('Signed in.');
+    // The handover is still to come, so the armed sign-in says to keep the app
+    // open, and its face does not close itself (#688).
+    await expect(adminPage.locator('[data-field="done-body"]')).toContainText(
+      'keep this app open until Members appears',
+    );
     // The wallet armed for the panel's later request rather than sealing here:
     // the present request carries NO sealed_passcode, only `armed: true` so the
     // door mints the handover capability, and the passcode is never on screen.

@@ -13,7 +13,7 @@
  */
 
 import { boundMessage } from './present';
-import type { CredentialToShow } from './credential';
+import { UNNAMED_COMMUNITY, type CredentialToShow } from './credential';
 import type { SigninAsk } from './link';
 
 /** The whole approve-card face plus its details disclosure (WS-A2). */
@@ -80,7 +80,7 @@ export function buildCardView(
   unlockLine = false,
   askedName = '',
 ): ApproveCardView {
-  const community = ask.community || 'your community';
+  const community = ask.community || UNNAMED_COMMUNITY;
   return {
     // The real bridge always names the service; a link that omits it keeps the
     // sentence grammatical rather than dropping a blank into the headline.

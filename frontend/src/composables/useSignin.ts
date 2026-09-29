@@ -283,6 +283,22 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
    *  the consent, so there is no second confirm (#663). Meaningless when
    *  {@link unlockAvailable} is false. */
   const unlockOn = ref(true);
+  /**
+   * Whether the sign-in that verified ARMED the wallet to answer the panel — a
+   * steward's control-panel sign-in approved with the line on, or an unlock.
+   * True only once the door has verified it; false for every other sign-in.
+   */
+  const armed = ref(false);
+  /**
+   * Whether the done face must stay until it is closed, rather than close
+   * itself after a beat (WS-A2d). True after an armed sign-in or an unlock
+   * verifies: the handover happens AFTER that face appears — the panel lands,
+   * binds its key and asks; the wallet seals and answers — so the face carries
+   * the one instruction that matters, to keep the app open until Members
+   * appears (PU-A2u, PU-A4d). An app closed at once leaves the panel signed in
+   * and locked.
+   */
+  const keepOpen = computed(() => phase.value === 'done' && (armed.value || form.value === 'unlock'));
 
   /**
    * Parse a `matou://signin` link and prepare the card, or return false when
@@ -313,6 +329,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     steward.value = false;
     unlockAvailable.value = false;
     unlockOn.value = true;
+    armed.value = false;
 
     try {
       await deps.ready();
@@ -424,6 +441,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
 
     phase.value = 'proving';
     refusal.value = null;
+    armed.value = false;
 
     // Arm on approve, in the same act as the presentation: a steward's
     // control-panel sign-in with the line on, or a steward's Unlock — which has
@@ -435,11 +453,11 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     // verifies, when the wallet reads the verkey the panel bound at the door
     // and seals to it (answerHandover, idss #1961). Any other card, or the
     // line switched off, arms nothing.
-    let armed = false;
+    let arming = false;
     if (unlocking ? steward.value : unlockAvailable.value && unlockOn.value) {
       try {
         deps.arm(a.challenge, deps.now() + ARMING_TTL_MS);
-        armed = true;
+        arming = true;
       } catch {
         if (unlocking) {
           // An unlock that cannot arm has nothing to do: presenting unarmed
@@ -469,7 +487,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
           // Only a wallet that actually armed rides `armed: true`, so the door
           // mints the handover capability only when there is a passcode ready to
           // seal. An arm that threw degrades to an ordinary locked seat.
-          armed,
+          armed: arming,
         },
         {
           sign: (message) => deps.sign(aid, message),
@@ -487,15 +505,17 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     if (verdict.outcome === 'verified') {
       // Only the known-doors entry changes on a completed sign-in (story 17).
       await knownDoors.touch(a.door);
+      // Said before the done face shows, so the face it shows is the right one.
+      armed.value = arming;
       phase.value = 'done';
       // Answer the panel's later request in the background (#674): read the
       // verkey the panel bound to the door and seal the passcode to it, once.
-      // Fire-and-forget — the sign-in is already done (the app shows "Signed
-      // in", or after an unlock "Unlocking that computer"), the box arrives a
-      // moment later, and a panel that never lands just leaves the poll
-      // unanswered. It never blocks or fails the sign-in, and nothing but the
-      // sealed ciphertext ever leaves.
-      if (armed) {
+      // Fire-and-forget — the sign-in is already done (the app says "Signed
+      // in" and to keep it open, or after an unlock "Unlocking that computer"),
+      // the box arrives a moment later, and a panel that never lands just
+      // leaves the poll unanswered. It never blocks or fails the sign-in, and
+      // nothing but the sealed ciphertext ever leaves.
+      if (arming) {
         void deps.answerHandover(a.present, a.challenge, aid).catch(() => {
           /* the answer is best-effort; a failure never touches the sign-in */
         });
@@ -568,6 +588,8 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     posted,
     staleCode,
     form,
+    armed,
+    keepOpen,
     unlockAvailable,
     unlockOn,
     setUnlock,
