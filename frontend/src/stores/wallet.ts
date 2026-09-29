@@ -2,37 +2,13 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
-import {
-  parseCredentialDisplay,
-  type CredentialDisplay,
-} from 'src/lib/credentialAppearance';
+import { toWalletCredential, type WalletCredential } from 'src/lib/walletCredential';
 
 // --- Types ---
 
-export interface WalletCredential {
-  said: string;
-  schemaSaid: string;
-  schemaTitle: string;
-  schemaDescription: string;
-  issuerAid: string;
-  issueeAid: string;
-  communityName: string;
-  role: string;
-  permissions: string[];
-  joinedAt: string;
-  issuedAt: string;
-  status: string;
-  // Endorsement-specific
-  claim: string;
-  endorsementType: string;
-  // Event attendance-specific
-  eventName: string;
-  eventType: string;
-  // IDSS committee slug (a.committee), if any
-  committee: string;
-  // IDSS "look" (a.display), if the community styled the credential
-  display?: CredentialDisplay;
-}
+// The credential's shape and its mapping from the agent's raw record live in
+// `src/lib/walletCredential`, shared with the sign-in approve card (#683).
+export type { WalletCredential };
 
 export interface TokenBalance {
   type: 'GOV' | 'UTIL';
@@ -111,32 +87,7 @@ export const useWalletStore = defineStore('wallet', () => {
     cred: Record<string, unknown>,
     schemaMap: Map<string, { title: string; description: string }>,
   ): WalletCredential {
-    const sad = cred.sad as Record<string, unknown> | undefined;
-    const attrs = (sad?.a || {}) as Record<string, unknown>;
-    const statusObj = cred.status as Record<string, unknown> | undefined;
-    const schemaSaid = (sad?.s as string) || '';
-    const schema = schemaMap.get(schemaSaid);
-
-    return {
-      said: (sad?.d as string) || '',
-      schemaSaid,
-      schemaTitle: schema?.title || '',
-      schemaDescription: schema?.description || '',
-      issuerAid: (sad?.i as string) || '',
-      issueeAid: (attrs.i as string) || identityStore.currentAID?.prefix || '',
-      communityName: (attrs.communityName as string) || '',
-      role: (attrs.role as string) || '',
-      permissions: (attrs.permissions as string[]) || [],
-      joinedAt: (attrs.joinedAt as string) || '',
-      issuedAt: (attrs.dt as string) || '',
-      status: (statusObj?.s as string) || 'unknown',
-      claim: (attrs.claim as string) || '',
-      endorsementType: (attrs.endorsementType as string) || '',
-      eventName: (attrs.eventName as string) || '',
-      eventType: (attrs.eventType as string) || '',
-      committee: (attrs.committee as string) || '',
-      display: parseCredentialDisplay(attrs.display),
-    };
+    return toWalletCredential(cred, schemaMap, identityStore.currentAID?.prefix || '');
   }
 
   async function fetchSchemas(

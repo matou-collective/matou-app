@@ -6,8 +6,19 @@
         v-if="signin.phase.value === 'first-contact' && signin.view.value"
         :address="signin.view.value.siteAddress"
         :claimed-name="signin.ask.value?.community ?? ''"
+        :credential-name="shownKomitiName"
         @trust="signin.trust"
         @dont="onDont"
+      />
+      <!-- The wallet holds nothing this door asks for (#683): a screen of its
+           own, with no Approve. -->
+      <NoCredential
+        v-else-if="signin.phase.value === 'no-credential' && signin.view.value"
+        :service="signin.view.value.service"
+        :community="signin.view.value.community"
+        :credential-name="signin.view.value.askedName"
+        :posted="signin.posted.value"
+        @close="onClose"
       />
       <ApproveCard
         v-else
@@ -35,10 +46,11 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import ApproveCard from 'src/components/signin/ApproveCard.vue';
 import FirstContact from 'src/components/signin/FirstContact.vue';
+import NoCredential from 'src/components/signin/NoCredential.vue';
 import { useSignin } from 'src/composables/useSignin';
 import { useKnownDoorsStore } from 'src/stores/knownDoors';
 import { getCommunityDescriptor } from 'src/lib/clientConfig';
-import type { SigninAsk } from 'src/lib/signin/link';
+import { signinAskFromQuery, type SigninAsk } from 'src/lib/signin/link';
 
 const route = useRoute();
 const router = useRouter();
@@ -47,6 +59,12 @@ const knownDoors = useKnownDoorsStore();
 
 const notALink = ref(false);
 const canApprove = computed(() => !!signin.view.value && !!signin.chosen.value?.sad?.d);
+/** The name of the komiti credential about to be shown (e.g. "Administrator"),
+ *  for the first-contact disclosure; blank when it is a Membership (#683). */
+const shownKomitiName = computed(() => {
+  const shown = signin.view.value?.credential;
+  return shown?.slug ? shown.name : '';
+});
 
 /** Close the card after a beat once the door answers VERIFIED (WS-A2d). */
 watch(signin.phase, (p) => {
@@ -93,36 +111,12 @@ onMounted(async () => {
 
 /**
  * Build the ask from the route query. The OS deep-link handler and the scanner
- * both route here with the `matou://signin` params (`door`, `present`, `c`,
- * `s`, `name`, `service`) carried as query params. A missing `present` is a
- * door this app cannot answer, so the ask is refused (never a guessed path).
+ * both route here with the `matou://signin` params carried as query params. A
+ * missing `present` is a door this app cannot answer, so the ask is refused
+ * (never a guessed path).
  */
 function askFromRoute(): SigninAsk | null {
-  const q = route.query;
-  const door = str(q.door);
-  const present = str(q.present);
-  const challenge = str(q.c);
-  if (!door || !present || !challenge) return null;
-  const ask: SigninAsk = {
-    door,
-    present,
-    challenge,
-    schemas: str(q.s)
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0),
-    community: str(q.name),
-    service: str(q.service) || str(q.svc),
-  };
-  // `ek=` rides only a control-panel sign-in that offered a passcode handover;
-  // carry it only when present so an ordinary sign-in is unchanged (#663).
-  const sealingKey = str(q.ek);
-  if (sealingKey) ask.sealingKey = sealingKey;
-  return ask;
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : Array.isArray(v) && typeof v[0] === 'string' ? v[0] : '';
+  return signinAskFromQuery(route.query);
 }
 
 function onNotNow(): void {

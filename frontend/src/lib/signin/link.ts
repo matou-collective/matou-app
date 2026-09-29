@@ -36,6 +36,16 @@
  *              which is a display name). An ordinary service sign-in carries the
  *              other six params and no `ek`. A public key by design — it travels
  *              in the URL; the passcode never does.
+ *  - `cred`    the **credential the door asks for**, by its definition slug
+ *              (idss ADR 0289, app-door-golden `panel.administrator`; #683). It
+ *              rides ONLY a control-panel challenge, as `cred=administrator`:
+ *              Administrator is issued on the committee schema, which it shares
+ *              with every komiti credential, so `s` alone cannot name it. The
+ *              wallet presents the held credential of an asked schema whose
+ *              `a.committee` equals this slug; failing that, at this door only,
+ *              an operator's Membership; failing that, nothing (see
+ *              `chooseCredential`). An ordinary service sign-in carries no
+ *              `cred` and is answered as it always was.
  *
  * The scanner accepts this beside the existing `matou://pair?…` pairing link;
  * `isSigninLink` is the cheap discriminator the scan/paste paths use.
@@ -66,6 +76,15 @@ export interface SigninAsk {
    * seat on this computer (#663). Absent (undefined) on every ordinary sign-in.
    */
   sealingKey?: string;
+  /**
+   * The definition slug of the credential the door asks for, from `cred=` (e.g.
+   * `administrator` at the control panel's door — idss ADR 0289, #683). When set,
+   * the wallet presents the held credential of an asked schema whose
+   * `a.committee` equals it — never merely the first credential of an asked
+   * schema (`chooseCredential` has the rule, and its one fallback). Absent
+   * (undefined) on every service sign-in.
+   */
+  credential?: string;
 }
 
 /**
@@ -90,29 +109,53 @@ export function isSigninLink(text: string): boolean {
 export function parseSigninLink(text: string): SigninAsk | null {
   if (!isSigninLink(text)) return null;
   const params = new URLSearchParams(text.slice(SIGNIN_PREFIX.length));
+  return buildAsk((key) => params.get(key) ?? '');
+}
 
-  const door = (params.get('door') ?? '').trim();
-  const challenge = (params.get('c') ?? '').trim();
-  const present = (params.get('present') ?? '').trim();
+/**
+ * Rebuild the ask from the approve card's route query. The scanner and the OS
+ * deep-link handler both route there with the code's params carried as query
+ * (`signinLinkToLocation`), so this reads the same keys {@link parseSigninLink}
+ * does and yields the same ask — a repeated param takes its first value. `null`
+ * when the query carries no door, challenge or `present` URL.
+ */
+export function signinAskFromQuery(query: Record<string, unknown>): SigninAsk | null {
+  return buildAsk((key) => {
+    const v = query[key];
+    if (typeof v === 'string') return v;
+    return Array.isArray(v) && typeof v[0] === 'string' ? v[0] : '';
+  });
+}
+
+/** Build the ask from one param reader, shared by the link and the route query. */
+function buildAsk(get: (key: string) => string): SigninAsk | null {
+  const door = get('door').trim();
+  const challenge = get('c').trim();
+  const present = get('present').trim();
   if (!door || !challenge || !present) return null;
 
   // `s` is one SAID today but may be comma-separated for a multi-schema ask;
   // split, trim and drop blanks so an empty `s` yields no schema rather than [''].
-  const schemas = (params.get('s') ?? '')
+  const schemas = get('s')
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
-  const community = (params.get('name') ?? '').trim();
-  const service = (params.get('service') ?? params.get('svc') ?? '').trim();
+  const community = get('name').trim();
+  const service = (get('service') || get('svc')).trim();
 
   const ask: SigninAsk = { door, present, challenge, schemas, community, service };
 
   // `ek` rides only a control-panel challenge that offered a sealing key; carry
   // it only when present so an ordinary sign-in's ask is byte-identical to what
   // it was before #663 (the panel path keys off `sealingKey` being set).
-  const sealingKey = (params.get('ek') ?? '').trim();
+  const sealingKey = get('ek').trim();
   if (sealingKey) ask.sealingKey = sealingKey;
+
+  // `cred` names the credential the door asks for (#683). Carried only when
+  // present, so an ask with no `cred` is exactly the ask it was.
+  const credential = get('cred').trim();
+  if (credential) ask.credential = credential;
 
   return ask;
 }

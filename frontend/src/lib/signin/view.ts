@@ -21,13 +21,21 @@ export interface ApproveCardView {
   siteAddress: string;
   /** True → the "your community" chip and no first-contact (home site). */
   isHome: boolean;
-  /** The single-match credential line, or null when nothing matches. */
+  /** The credential that will be presented — drawn as its card, with Approve
+   *  at the card's foot (#683) — or null when the wallet holds none that match. */
   credential: CredentialToShow | null;
   /**
+   * What the door asked for, in words ("Administrator", "Membership"), for the
+   * no-credential screen (#683). Blank when the ask can be given no name.
+   */
+  askedName: string;
+  /** The one honest line shown while proving (WS-A2p): what is being proved is
+   *  what is being presented. */
+  provingLine: string;
+  /**
    * The steward-unlock region (PU-A2u, #663), present ONLY when the sign-in is
-   * to the control panel AND the presented credential makes the holder a
-   * steward; null on every other card, which is therefore untouched. When
-   * present, the card shows the unlock line (default on) under the headline, and
+   * to the control panel AND the member presenting is a steward; null on every
+   * other card, which is therefore untouched. When present, the card shows the unlock line (default on) under the headline, and
    * the sealing-key fingerprint inside the details disclosure — never the face.
    */
   unlock: {
@@ -47,8 +55,9 @@ export interface ApproveCardView {
 /**
  * Build the card view model. `aid` is the signing member's AID. `unlock` is the
  * steward-unlock region (or null) — supplied only when the sign-in is to the
- * control panel and the presented credential makes the holder a steward (#663);
- * every ordinary card passes null and is untouched.
+ * control panel and the member presenting is a steward (#663);
+ * every ordinary card passes null and is untouched. `askedName` is what the
+ * door asked for, in words (see `askedCredentialName`).
  */
 export function buildCardView(
   ask: SigninAsk,
@@ -56,6 +65,7 @@ export function buildCardView(
   aid: string,
   isHome: boolean,
   unlock: ApproveCardView['unlock'] = null,
+  askedName = '',
 ): ApproveCardView {
   const community = ask.community || 'your community';
   return {
@@ -67,6 +77,12 @@ export function buildCardView(
     siteAddress: siteAddress(ask.door),
     isHome,
     credential,
+    askedName,
+    // Say what is being proved: a komiti credential such as Administrator is
+    // its holder's to show whether or not they are a member (idss ADR 0289); a
+    // Membership — the operator's fallback at the panel included — proves
+    // membership, as it always did.
+    provingLine: credential?.slug ? `Proving you hold ${credential.name}…` : "Proving you're a member…",
     unlock,
     details: {
       aid,

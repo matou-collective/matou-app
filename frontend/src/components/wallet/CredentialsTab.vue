@@ -181,6 +181,11 @@ import { useIdentityStore } from 'stores/identity';
 import { useAppStore } from 'stores/app';
 import { getFileUrl } from 'src/lib/api/client';
 import { credentialTitle as resolveCredentialTitle } from 'src/lib/credentialAppearance';
+import {
+  credentialCardServiceName as credentialServiceName,
+  credentialStatusLabel as statusLabel,
+  isRevokedStatus as isRevoked,
+} from 'src/lib/walletCredential';
 import { isCoaBuild } from 'src/kit/build';
 import { KIT } from 'src/generated/kit';
 import kitLogo from 'src/assets/kit/logo.png';
@@ -198,11 +203,6 @@ const viewMode = ref<'cards' | 'graph'>('cards');
 const showGraph = computed(() => !isCoa && viewMode.value === 'graph');
 const selectedCredential = ref<WalletCredential | null>(null);
 const showRevoked = ref(false);
-
-function isRevoked(status: string): boolean {
-  const s = status.toLowerCase();
-  return s === '1' || s === 'revoked';
-}
 
 const filteredCredentials = computed(() => {
   if (showRevoked.value) return walletStore.credentials;
@@ -321,13 +321,6 @@ function credentialSubtitle(cred: WalletCredential): string {
   // Membership: show role if both title and role exist
   if (cred.schemaTitle && cred.role) return cred.role;
   return '';
-}
-
-// An IDSS credential names the slug services gate on — the panel card's
-// "services know it as" line. Legacy (Mātou-schema) credentials have none.
-function credentialServiceName(cred: WalletCredential): string {
-  if (!cred.display && !cred.committee) return '';
-  return cred.committee || cred.role || '';
 }
 
 function credentialDescription(cred: WalletCredential): string {
@@ -460,13 +453,6 @@ function isIssuedByMe(cred: WalletCredential): boolean {
 /** For graph: the "other party" AID — issuee for issued creds, issuer for received */
 function counterpartyAid(cred: WalletCredential): string {
   return isIssuedByMe(cred) ? cred.issueeAid : cred.issuerAid;
-}
-
-function statusLabel(status: string): string {
-  const s = status.toLowerCase();
-  if (s === '0' || s === 'issued' || s === 'valid') return 'Active';
-  if (s === '1' || s === 'revoked') return 'Revoked';
-  return status || 'Pending';
 }
 
 function formatDate(dateStr: string): string {

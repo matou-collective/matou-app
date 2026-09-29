@@ -10,6 +10,10 @@
     · muted monospace body lines
     · muted footer line, then a dark square OPEN button
 
+  The foot's button is the `action` slot, OPEN by default. The sign-in approve
+  screen draws the credential it is about to present as this card and puts
+  Approve there instead (#683), so what is pressed is visibly the thing shown.
+
   DESIGN SOURCE — keep in sync with the IDSS panel card. When the panel card
   changes, this file is its named counterpart to update:
     Matou/idss  dashboard/src/components/members/CredentialsSurface.vue (.oc-cred-card)
@@ -45,7 +49,9 @@
 
     <footer class="cred-foot">
       <span class="cred-date">{{ footer }}</span>
-      <button type="button" class="cred-open" @click="$emit('open')">OPEN</button>
+      <slot name="action" :painted="painted">
+        <button type="button" class="cred-open" @click="$emit('open')">OPEN</button>
+      </slot>
     </footer>
   </article>
 </template>
@@ -75,7 +81,8 @@ defineEmits<{ (e: 'open'): void }>();
 // A credential with a `display.background` paints the whole card; the ink is the
 // WCAG contrast pick, applied via `color` so the name, tag and body (all
 // currentColor-based) follow it. `--cred-paint-bg` carries the background back
-// down so the OPEN button and white chip can invert against the painted card.
+// down so the OPEN button and white chip can invert against the painted card,
+// and `--cred-paint-ink` the ink, for an `action` slot that inverts the pair.
 const background = computed(() => props.credential.display?.background ?? null);
 const painted = computed(() => !!background.value);
 const ink = computed(() => (background.value ? pickInk(background.value) : null));
@@ -86,6 +93,7 @@ const cardStyle = computed(() =>
         background: background.value!,
         color: ink.value!,
         '--cred-paint-bg': background.value!,
+        '--cred-paint-ink': ink.value!,
       }
     : undefined,
 );

@@ -33,6 +33,11 @@ export function signinLinkToLocation(text: string): RouteLocationRaw | null {
       ...(ask.schemas.length ? { s: ask.schemas.join(',') } : {}),
       ...(ask.community ? { name: ask.community } : {}),
       ...(ask.service ? { service: ask.service } : {}),
+      // A control-panel code's two extras: the panel tab's sealing key (#663)
+      // and the credential the door asks for (#683). Dropping either would have
+      // the card answer a different ask than the one the door made.
+      ...(ask.sealingKey ? { ek: ask.sealingKey } : {}),
+      ...(ask.credential ? { cred: ask.credential } : {}),
     },
   };
 }

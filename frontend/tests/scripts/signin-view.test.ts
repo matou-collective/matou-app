@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildCardView, siteAddress } from 'src/lib/signin/view';
 import type { SigninAsk } from 'src/lib/signin/link';
-import type { CredentialToShow } from 'src/lib/signin/credential';
+import { describeCredential, type CredentialToShow } from 'src/lib/signin/credential';
 
 const ask: SigninAsk = {
   door: 'https://id.example.nz/login',
@@ -17,13 +17,11 @@ const ask: SigninAsk = {
   service: 'Files',
 };
 
-const shown: CredentialToShow = {
-  said: 'ECredSAID',
-  schema: 'EMe',
-  kindLabel: 'Membership',
-  role: 'Member',
-  issuedOn: '12 Aug 2026',
-};
+const shown: CredentialToShow = describeCredential(
+  { sad: { d: 'ECredSAID', s: 'EMe', a: { i: 'EHa4mPq', role: 'Member', dt: '2026-08-12T00:00:00Z' } } },
+  { EMe: 'membership' },
+  'Te Rūnanga o Example',
+);
 
 describe('buildCardView', () => {
   it('names the service, community, site line and home mark', () => {
@@ -67,6 +65,49 @@ describe('buildCardView — the steward-unlock region (#663)', () => {
   it('has no unlock region by default (every ordinary card is untouched)', () => {
     const v = buildCardView(ask, shown, 'EHa4mPq', true);
     expect(v.unlock).toBeNull();
+  });
+});
+
+// What the door asked for, in words (#683): the no-credential screen names it,
+// and the proving line says what is being proved.
+describe('buildCardView — the credential the door asked for (#683)', () => {
+  const panelAsk: SigninAsk = {
+    ...ask,
+    schemas: ['ECo', 'EMe'],
+    service: 'the control panel',
+    credential: 'administrator',
+  };
+
+  it('carries the asked credential\'s name, with or without a credential to show', () => {
+    expect(buildCardView(panelAsk, null, 'EHa4mPq', true, null, 'Administrator').askedName).toBe('Administrator');
+    expect(buildCardView(ask, shown, 'EHa4mPq', true, null, 'Membership').askedName).toBe('Membership');
+    expect(buildCardView(ask, shown, 'EHa4mPq', true).askedName).toBe('');
+  });
+
+  const administrator = describeCredential(
+    { sad: { d: 'EAdmin', s: 'ECo', a: { i: 'EHa4mPq', committee: 'administrator', dt: '2026-09-28T00:00:00Z' } } },
+    { ECo: 'committee' },
+    'Te Rūnanga o Example',
+  );
+
+  it('proves what is presented: holding the named credential, else membership as before', () => {
+    expect(buildCardView(panelAsk, administrator, 'EHa4mPq', true, null, 'Administrator').provingLine).toBe(
+      'Proving you hold Administrator…',
+    );
+    expect(buildCardView(ask, shown, 'EHa4mPq', true, null, 'Membership').provingLine).toBe(
+      "Proving you're a member…",
+    );
+  });
+
+  it('an operator answering the panel with their Membership is proving membership', () => {
+    // The door asked for Administrator; what is shown is the fallback Membership.
+    const v = buildCardView(panelAsk, shown, 'EHa4mPq', true, null, 'Administrator');
+    expect(v.askedName).toBe('Administrator');
+    expect(v.provingLine).toBe("Proving you're a member…");
+  });
+
+  it('carries the card of the credential to show', () => {
+    expect(buildCardView(ask, shown, 'EHa4mPq', true).credential?.card.name).toBe('Membership');
   });
 });
 

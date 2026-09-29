@@ -7,8 +7,17 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
+
+// The credential card's mark reads two schema constants off a composable that
+// pulls in the whole admin surface; the card needs only the constants.
+vi.mock('src/composables/useAdminActions', () => ({
+  ENDORSEMENT_SCHEMA_SAID: 'EENDORSESCHEMA',
+  EVENT_ATTENDANCE_SCHEMA_SAID: 'EEVENTSCHEMA',
+}));
+
 import ApproveCard from 'src/components/signin/ApproveCard.vue';
 import { buildCardView } from 'src/lib/signin/view';
+import { describeCredential, type HeldCredential } from 'src/lib/signin/credential';
 import { refusalCopy } from 'src/lib/signin/refusal';
 import type { SigninAsk } from 'src/lib/signin/link';
 
@@ -20,15 +29,19 @@ const ask: SigninAsk = {
   community: 'Te Rūnanga o Example',
   service: 'Files',
 };
-const view = buildCardView(
-  ask,
-  { said: 'EMe7Qzr', schema: 'EMe', kindLabel: 'Membership', role: 'Member', issuedOn: '12 Aug 2026' },
-  'EHa4mPq',
-  true,
-);
+const KINDS = { EMe: 'membership', ECo: 'committee' };
+const membership: HeldCredential = {
+  sad: { d: 'EMe7Qzr', s: 'EMe', i: 'ECommunity', a: { i: 'EHa4mPq', role: 'Member', dt: '2026-08-12T00:00:00Z' } },
+  status: { s: '0', et: 'iss' },
+};
+const view = buildCardView(ask, describeCredential(membership, KINDS, ask.community), 'EHa4mPq', true, null, 'Membership');
 
-// MBtn forwards fallthrough attrs (data-action) and click to a plain button.
-const stubs = { MBtn: { template: '<button v-bind="$attrs"><slot/></button>' } };
+// MBtn forwards fallthrough attrs (data-action) and click to a plain button; the
+// credential card's legacy mark is a Quasar icon.
+const stubs = {
+  MBtn: { template: '<button v-bind="$attrs"><slot/></button>' },
+  'q-icon': { template: '<i />' },
+};
 
 function mountCard(props: Record<string, unknown>) {
   return mount(ApproveCard, {
@@ -48,7 +61,6 @@ describe('ApproveCard — WS-A2 the card', () => {
     expect(site.text()).toContain('id.example.nz');
     expect(w.find('[data-field="home-mark"]').text()).toBe('your community');
     expect(w.find('[data-field="credential-to-show"]').text()).toContain('Membership');
-    expect(w.find('[data-field="credential-to-show"]').text()).toContain('Member since 12 Aug 2026');
   });
 
   it('keeps the AID, SAID, nonce and bound message off the face, only in details', () => {
@@ -70,8 +82,157 @@ describe('ApproveCard — WS-A2 the card', () => {
     expect(w.emitted('approve')).toHaveLength(1);
     expect(w.emitted('not-now')).toHaveLength(1);
 
-    const noCred = mountCard({ canApprove: false });
-    expect(noCred.find('[data-action="approve"]').attributes('disabled')).toBeDefined();
+    const held = mountCard({ canApprove: false });
+    expect(held.find('[data-action="approve"]').attributes('disabled')).toBeDefined();
+  });
+});
+
+// #683 (Ben, 2026-09-28): the approve screen shows the credential that will be
+// presented AS ITS CARD — the card the wallet draws for a held credential — and
+// Approve sits at the foot of that card, so what is pressed is visibly the thing
+// being shown.
+describe('ApproveCard — the credential card, with Approve at its foot (#683)', () => {
+  const administrator: HeldCredential = {
+    sad: {
+      d: 'EAdministratorSAID',
+      s: 'ECo',
+      i: 'ECommunity',
+      a: { i: 'EHa4mPq', committee: 'administrator', communityName: 'Whakatōhea', dt: '2026-09-28T00:00:00Z' },
+    },
+    status: { s: '0', et: 'iss' },
+  };
+  const panelAsk: SigninAsk = {
+    ...ask,
+    schemas: ['ECo', 'EMe'],
+    community: 'Whakatōhea',
+    service: 'the control panel',
+    credential: 'administrator',
+  };
+  const adminView = buildCardView(
+    panelAsk,
+    describeCredential(administrator, KINDS, panelAsk.community),
+    'EHa4mPq',
+    true,
+    null,
+    'Administrator',
+  );
+
+  it('draws a Membership ask as the Membership card: name, role, community, issue date', () => {
+    const w = mountCard({});
+    const credCard = w.find('[data-field="credential-to-show"] .wallet-cred-card');
+    expect(credCard.exists()).toBe(true);
+    expect(w.find('[data-field="credential-to-show"]').attributes('data-kind')).toBe('membership');
+    expect(credCard.find('.cred-name').text()).toBe('Membership');
+    expect(credCard.find('.cred-subtitle').text()).toBe('Member');
+    expect(credCard.text()).toContain('Te Rūnanga o Example');
+    expect(credCard.find('.cred-date').text()).toBe('Issued 12 Aug 2026');
+    expect(credCard.find('.cred-chip').text()).toBe('Active');
+    expect(credCard.find('.cred-tile').exists()).toBe(true);
+  });
+
+  it('draws an Administrator ask as the Administrator card', () => {
+    const w = mountCard({ view: adminView });
+    const credCard = w.find('[data-field="credential-to-show"] .wallet-cred-card');
+    expect(w.find('[data-field="credential-to-show"]').attributes('data-kind')).toBe('administrator');
+    expect(credCard.find('.cred-name').text()).toBe('Administrator');
+    expect(credCard.text()).toContain('Whakatōhea');
+    expect(credCard.find('.cred-date').text()).toBe('Issued 28 Sep 2026');
+    // The headline still names the service first, and the site line stays.
+    expect(w.find('[data-field="service"]').text()).toBe('the control panel');
+    expect(w.find('[data-field="site"]').text()).toContain('id.example.nz');
+  });
+
+  it("draws an operator's fallback at the control panel as their Membership card, Approve at its foot", () => {
+    // #683 as amended: the door asked for Administrator, the wallet holds none,
+    // and the operator's Membership is what will be shown.
+    const operator: HeldCredential = {
+      ...membership,
+      sad: { ...membership.sad, a: { ...membership.sad!.a, role: 'operator' } },
+    };
+    const w = mountCard({
+      view: buildCardView(panelAsk, describeCredential(operator, KINDS, 'Whakatōhea'), 'EHa4mPq', true, null, 'Administrator'),
+    });
+    expect(w.find('[data-field="credential-to-show"]').attributes('data-kind')).toBe('membership');
+    const credCard = w.find('.wallet-cred-card');
+    expect(credCard.find('.cred-name').text()).toBe('Membership');
+    expect(credCard.find('.cred-subtitle').text()).toBe('operator');
+    expect(credCard.find('.cred-foot [data-action="approve"]').exists()).toBe(true);
+  });
+
+  it('paints the card with the look the credential was issued with', () => {
+    const branded: HeldCredential = {
+      ...administrator,
+      sad: {
+        ...administrator.sad,
+        a: { ...administrator.sad!.a, display: { name: 'Kaiwhakahaere', background: '#1a4d3a' } },
+      },
+    };
+    const w = mountCard({
+      view: buildCardView(panelAsk, describeCredential(branded, KINDS, 'Whakatōhea'), 'EHa4mPq', true, null, 'Administrator'),
+    });
+    const credCard = w.find('.wallet-cred-card');
+    expect(credCard.classes()).toContain('painted');
+    expect(credCard.find('.cred-name').text()).toBe('Kaiwhakahaere');
+    // What the credential IS does not change with what its community calls it.
+    expect(w.find('[data-field="credential-to-show"]').attributes('data-kind')).toBe('administrator');
+    // Approve inverts the card's own pair — the ink as its ground, the card's
+    // colour as its label — so it stands off whatever colour the community chose.
+    const style = credCard.attributes('style') ?? '';
+    expect(style).toContain('--cred-paint-bg: #1a4d3a');
+    expect(style).toContain('--cred-paint-ink: #ffffff');
+    expect(credCard.find('[data-action="approve"]').classes()).toContain('on-painted');
+  });
+
+  it('an unpainted card leaves Approve in the app\'s own colours', () => {
+    const w = mountCard({ view: adminView });
+    expect(w.find('.wallet-cred-card').classes()).not.toContain('painted');
+    expect(w.find('[data-action="approve"]').classes()).not.toContain('on-painted');
+  });
+
+  it('puts Approve at the foot of the credential card — and nowhere else', async () => {
+    const w = mountCard({ view: adminView });
+    const approves = w.findAll('[data-action="approve"]');
+    expect(approves).toHaveLength(1);
+    const foot = w.find('.wallet-cred-card .cred-foot');
+    expect(foot.element.contains(approves[0]!.element)).toBe(true);
+    expect(approves[0]!.text()).toBe('Approve');
+    // It is the last thing in the card: nothing of the card sits beneath it.
+    expect(foot.element.lastElementChild).toBe(approves[0]!.element);
+    expect(w.find('.wallet-cred-card').element.lastElementChild).toBe(foot.element);
+    // The wallet's own OPEN is not on a card that is being presented.
+    expect(w.find('.cred-open').exists()).toBe(false);
+
+    await approves[0]!.trigger('click');
+    expect(w.emitted('approve')).toHaveLength(1);
+  });
+
+  it('Not now stays beneath the card, outside it', () => {
+    const w = mountCard({ view: adminView });
+    const notNow = w.find('[data-action="not-now"]');
+    expect(notNow.exists()).toBe(true);
+    expect(w.find('.wallet-cred-card').element.contains(notNow.element)).toBe(false);
+  });
+
+  it('keeps the identifiers off the card face — the SAID is in details only', () => {
+    const w = mountCard({ view: adminView });
+    expect(w.find('.wallet-cred-card').text()).not.toContain('EAdministratorSAID');
+    expect(w.find('[data-field="credential-said"]').text()).toBe('EAdministratorSAID');
+  });
+
+  it('never offers Approve without a credential to show', () => {
+    const w = mountCard({
+      view: buildCardView(panelAsk, null, 'EHa4mPq', true, null, 'Administrator'),
+      canApprove: false,
+    });
+    expect(w.find('[data-action="approve"]').exists()).toBe(false);
+    expect(w.find('.wallet-cred-card').exists()).toBe(false);
+  });
+
+  it('while proving, the card stays and says what is being proved; Approve is gone', () => {
+    const w = mountCard({ view: adminView, phase: 'proving' });
+    expect(w.find('.wallet-cred-card').exists()).toBe(true);
+    expect(w.find('[data-action="approve"]').exists()).toBe(false);
+    expect(w.find('[data-status="proving"]').text()).toContain('Proving you hold Administrator…');
   });
 });
 
@@ -79,7 +240,11 @@ describe('ApproveCard — WS-A2 the card', () => {
 // buildCardView so the ordinary card above proves it stays untouched.
 const panelView = buildCardView(
   ask,
-  { said: 'EMe7Qzr', schema: 'EMe', kindLabel: 'Membership', role: 'operator', issuedOn: '12 Aug 2026' },
+  describeCredential(
+    { ...membership, sad: { ...membership.sad, a: { ...membership.sad!.a, role: 'operator' } } },
+    KINDS,
+    ask.community,
+  ),
   'EHa4mPq',
   true,
   { sealingKeyFingerprint: 'eff1·63d6' },

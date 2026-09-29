@@ -12,6 +12,7 @@ import {
   RECORDS_UNREACHABLE_TEXT,
   SITE_UNREACHABLE_TEXT,
   STALE_CODE_TEXT,
+  NO_CREDENTIAL_TEXT,
 } from 'src/lib/signin/refusal';
 
 describe('refusalCopy — verification refusals', () => {
@@ -75,6 +76,27 @@ describe('refusalCopy — the stale-code lines (#574)', () => {
       expect(c.showContact).toBe(false);
     },
   );
+});
+
+// The door's `no-credential` (#683, idss ADR 0289, app-door-golden
+// `present.no_credential`): the presented credential is not the one this door
+// asks for. A wallet that reads `cred=` should never cause it; when it happens
+// it wears the same sentence as the wallet's own no-credential screen.
+describe('refusalCopy — no-credential (#683)', () => {
+  it('wears the required-credential sentence, with no opener, retry or operator line', () => {
+    const c = refusalCopy('no-credential');
+    expect(c.kind).toBe('no-credential');
+    expect(c.text).toBe('You do not have the required credential to sign into this service');
+    expect(c.text).toBe(NO_CREDENTIAL_TEXT);
+    expect(c.text.startsWith(REFUSAL_OPENER)).toBe(false);
+    // Trying again presents the same credential to the same door.
+    expect(c.showTryAgain).toBe(false);
+    expect(c.showContact).toBe(false);
+  });
+
+  it('is a slug the wallet knows, not one folded to signature', () => {
+    expect(normalizeRefusal('no-credential')).toBe('no-credential');
+  });
 });
 
 describe('normalizeRefusal', () => {
