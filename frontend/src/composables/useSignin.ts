@@ -10,9 +10,10 @@
  * Not now signs and posts nothing.
  *
  * When the door answers `revoked`, the wallet remembers it of the credential it
- * presented and passes over that credential from then on (#690). The refused
- * code is spent, so nothing more is presented on it: what the wallet holds
- * instead — at the control panel, a steward's Membership — rides the next code.
+ * presented and passes over that credential at that sign-in site from then on
+ * (#690). The refused code is spent, so nothing more is presented on it: what
+ * the wallet holds instead — at the control panel, a steward's Membership —
+ * rides the next code.
  *
  * The card has two forms, and the code says which (#688; idss ADR 0282 as
  * amended 2026-09-29). A **sign-in** is the card above — with the unlock line,
@@ -37,11 +38,18 @@ import { parseSigninLink, isUnlockAsk, offersSeatUnlock, type SigninAsk } from '
 import {
   askedCredentialName,
   chooseCredential,
-  credentialCard,
+  credentialSpokenName,
   describeCredential,
+  isRevoked,
   type HeldCredential,
 } from 'src/lib/signin/credential';
-import { forgetRevoked, rememberRevoked } from 'src/lib/signin/revokedMemory';
+import {
+  answeredByTheDoor,
+  asTheDoorReadThem,
+  forgetRevoked,
+  rememberRevoked,
+} from 'src/lib/signin/revokedMemory';
+import { heldCode, holdCode, type HeldCodeKind } from 'src/lib/signin/heldCodes';
 import { identityIsSteward } from 'src/lib/signin/steward';
 import { sealPasscode } from 'src/lib/signin/sealedPasscode';
 import { armForChallenge, type PasscodeSealer } from 'src/lib/signin/armedPasscode';
@@ -243,32 +251,48 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
   const phase = ref<SigninPhase>('loading');
   const refusal = ref<RefusalCopy | null>(null);
   /**
-   * The challenge id the door answered as a stale code (`spent`, `expired` or
-   * `unknown`, #675). A sign-in code is single-use, so once the door has spent
-   * or expired one, re-presenting it can only be refused again. We remember it
-   * so the card waits for a freshly-minted code rather than re-posting the dead
-   * one on "try again" — the newest challenge always wins.
-   *
-   * A code the door answered `revoked` on is held the same way (#690): the
-   * attempt spent it, and the credential the wallet would present instead must
-   * ride a fresh code, never this one.
+   * Counts the codes this card has held, so {@link staleCode} reads the held
+   * codes again when one is added — they live outside the card (heldCodes.ts).
    */
-  const spentChallenge = shallowRef<string | null>(null);
+  const holds = ref(0);
   /**
-   * Whether the challenge the wallet is currently holding is that dead code.
-   * Derived, so a fresh `prepare` carrying a *different* challenge clears it
-   * automatically (the newest code wins) while a re-navigation to the same
-   * spent code keeps Approve held (#675).
+   * Whether the code the wallet is holding is one its door will not take again:
+   * the door answered it as a stale code (`spent`, `expired` or `unknown`,
+   * #675), or answered `revoked` to what was presented on it (#690) — the
+   * attempt spent it, and the credential the wallet would present instead must
+   * ride a fresh code, never this one. A sign-in code is single-use, so
+   * re-presenting it can only be refused again; the card waits for a
+   * freshly-minted code rather than re-posting the dead one.
+   *
+   * Read from the wallet's held codes, not from this card: a refusal that was
+   * left and a code opened again reach a card opened afresh, which holds the
+   * code just the same. Derived, so a fresh `prepare` carrying a *different*
+   * challenge clears it automatically (the newest code wins) while a
+   * re-navigation to the same dead code keeps it held.
    */
-  const staleCode = computed(
-    () => spentChallenge.value !== null && ask.value?.challenge === spentChallenge.value,
-  );
+  const staleCode = computed(() => {
+    void holds.value;
+    const a = ask.value;
+    return !!a && heldCode(a.door, a.challenge) !== null;
+  });
+  /** Hold the code of this sign-in: nothing more is presented on it. */
+  function hold(a: SigninAsk, kind: HeldCodeKind): void {
+    holdCode(a.door, a.challenge, kind);
+    holds.value += 1;
+  }
   /** The credential the wallet will present (null → nothing matches; no Approve). */
   const chosen = shallowRef<HeldCredential | null>(null);
   /**
-   * What the card was built from — every credential the wallet held and the
-   * community's names for their kinds — kept so a `revoked` answer can say what
-   * the wallet will present next without asking the agent again (#690).
+   * Whether Approve — Unlock, in the unlock form — can be pressed: the card is
+   * built, there is a credential to present, and the code is not one the door
+   * will not take again. A dead code never wears a live-looking act.
+   */
+  const canApprove = computed(() => !!view.value && !!chosen.value?.sad?.d && !staleCode.value);
+  /**
+   * What the card was built from — every credential the wallet held, as this
+   * sign-in site read them, and the community's names for their kinds — kept so
+   * a `revoked` answer can say what the wallet will present next without asking
+   * the agent again (#690).
    */
   const held = shallowRef<readonly HeldCredential[]>([]);
   const schemaKinds = shallowRef<Record<string, string>>({});
@@ -356,15 +380,17 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
       await knownDoors.load();
 
       const aid = identity.aidPrefix ?? '';
-      let creds = await deps.listCredentials();
+      // What the wallet holds, as this sign-in site read it: a credential the
+      // site answered `revoked` to is read as revoked from here on (#690).
+      let creds = asTheDoorReadThem(await deps.listCredentials(), parsed.door);
       // The credential the door asked for: the one it named (`cred=`), else
-      // the first of an asked schema as before (#683).
+      // the first live one of an asked schema (#683).
       let cred = chooseCredential(creds, parsed.schemas, aid, parsed.credential) ?? null;
       if (!cred && deps.admitPending) {
         // It may have been issued and be waiting to be accepted (#685).
         try {
           await deps.admitPending();
-          creds = await deps.listCredentials();
+          creds = asTheDoorReadThem(await deps.listCredentials(), parsed.door);
           cred = chooseCredential(creds, parsed.schemas, aid, parsed.credential) ?? null;
         } catch (err) {
           console.warn('[Signin] Could not admit pending credentials:', err);
@@ -407,6 +433,16 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
       return;
     }
 
+    // A code its door will not take again, opened again — on this card or one
+    // opened afresh: say so, rather than draw a card whose act does nothing.
+    // Nothing is presented on it (#675, #690).
+    const dead = heldCode(parsed.door, parsed.challenge);
+    if (dead) {
+      refusal.value = refusalCopy(dead);
+      phase.value = 'refused';
+      return;
+    }
+
     // An unlock this identity cannot make: say so, on its own screen (PU-A4n).
     // Nothing is presented and nothing is posted — so, as with no-credential,
     // there is nothing to trust an unmet site with.
@@ -433,16 +469,19 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
    * What the wallet will present on the NEXT code, now that the door has
    * answered `revoked` to `refused` — named for the refusal's copy (#690). Null
    * when it holds nothing else this door admits: the choice is
-   * `chooseCredential`'s, which passes over what the door called revoked, and
-   * on an unlock only a steward has anything to present.
+   * `chooseCredential`'s, made from the credentials as the door now reads
+   * them, and on an unlock only a steward has anything to present. A credential
+   * that is itself revoked is never promised — a service's door is still shown
+   * a member's only Membership, revoked or not, so that the door says why.
    */
   function fallbackAfter(a: SigninAsk, refused: HeldCredential, aid: string): RevokedFallback | null {
-    const next = chooseCredential(held.value, a.schemas, aid, a.credential);
-    if (!next?.sad?.d || next.sad.d === refused.sad?.d) return null;
-    if (isUnlockAsk(a) && !identityIsSteward(next, held.value, a.schemas, aid)) return null;
+    const now = asTheDoorReadThem(held.value, a.door);
+    const next = chooseCredential(now, a.schemas, aid, a.credential);
+    if (!next?.sad?.d || next.sad.d === refused.sad?.d || isRevoked(next)) return null;
+    if (isUnlockAsk(a) && !identityIsSteward(next, now, a.schemas, aid)) return null;
     return {
-      revoked: credentialCard(refused, schemaKinds.value, a.community).name,
-      next: credentialCard(next, schemaKinds.value, a.community).name,
+      revoked: credentialSpokenName(refused, schemaKinds.value),
+      next: credentialSpokenName(next, schemaKinds.value),
     };
   }
 
@@ -471,9 +510,9 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     // An identity that is not a steward cannot unlock, and posts nothing
     // (PU-A4n). It has no card to press; this holds even if called.
     if (phase.value === 'not-a-steward') return;
-    // Never re-present a code the door has already spent or expired — it can
-    // only be refused again. The card waits for a freshly-minted challenge
-    // instead (#675).
+    // Never re-present a code the door has already spent or expired, or refused
+    // `revoked` on — it can only be refused again. The card waits for a
+    // freshly-minted challenge instead (#675, #690).
     if (staleCode.value) return;
     const aid = identity.aidPrefix ?? '';
     const unlocking = isUnlockAsk(a);
@@ -543,8 +582,9 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
 
     if (verdict.outcome === 'verified') {
       // The door read this credential as live on the witnessed ledger, so
-      // anything remembered of an earlier `revoked` answer to it is cleared.
-      forgetRevoked(cred.sad.d);
+      // anything remembered of an earlier `revoked` answer to it is cleared —
+      // when it is the sign-in site itself that answered.
+      if (answeredByTheDoor(a.door, a.present)) forgetRevoked(cred.sad.d);
       // Only the known-doors entry changes on a completed sign-in (story 17).
       await knownDoors.touch(a.door);
       // Said before the done face shows, so the face it shows is the right one.
@@ -579,15 +619,17 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
         return;
       }
       // The door read the witnessed ledger and found this credential revoked;
-      // the wallet's own view is older. Remember it of this ONE credential, so
-      // the next code passes over it (#690) — and only for this refusal: no
-      // other kind says anything about the credential's standing. The attempt
-      // spent the code, so it is held like any dead one, and the copy says what
-      // the next code will present when the wallet holds something else this
-      // door admits.
+      // the wallet's own view is older. Remember it of this ONE credential, at
+      // this ONE sign-in site, so the site's next code passes over it (#690) —
+      // and only for this refusal: no other kind says anything about the
+      // credential's standing. Only the site's own answer is remembered: one
+      // posted anywhere else teaches the wallet nothing. The attempt spent the
+      // code either way, so it is held like any dead one, and the copy says
+      // what the next code will present when the wallet holds something else
+      // this door admits.
       if (refusal.value.kind === 'revoked') {
-        rememberRevoked(cred.sad.d);
-        spentChallenge.value = a.challenge;
+        hold(a, 'spent');
+        if (answeredByTheDoor(a.door, a.present)) rememberRevoked(a.door, cred.sad.d);
         refusal.value = refusalCopy(verdict.refusal, fallbackAfter(a, cred, aid));
       }
       // A stale-code refusal (the door said this challenge is spent/expired/
@@ -598,7 +640,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
         refusal.value.kind === 'expired' ||
         refusal.value.kind === 'unknown'
       ) {
-        spentChallenge.value = a.challenge;
+        hold(a, refusal.value.kind);
       }
     } else {
       refusal.value = refusalCopy('site-unreachable');
@@ -640,6 +682,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     phase,
     refusal,
     chosen,
+    canApprove,
     posted,
     staleCode,
     form,

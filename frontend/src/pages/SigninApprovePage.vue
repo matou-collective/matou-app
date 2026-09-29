@@ -30,7 +30,7 @@
         :view="signin.view.value"
         :phase="signin.phase.value"
         :refusal="signin.refusal.value"
-        :can-approve="canApprove"
+        :can-approve="signin.canApprove.value"
         :unlock-on="signin.unlockOn.value"
         :form="signin.form.value"
         :armed="signin.armed.value"
@@ -66,7 +66,6 @@ const signin = useSignin();
 const knownDoors = useKnownDoorsStore();
 
 const notALink = ref(false);
-const canApprove = computed(() => !!signin.view.value && !!signin.chosen.value?.sad?.d);
 /** The name of the komiti credential about to be shown (e.g. "Administrator"),
  *  for the first-contact disclosure; blank when it is a Membership (#683). */
 const shownKomitiName = computed(() => {

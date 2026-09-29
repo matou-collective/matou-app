@@ -139,6 +139,15 @@ describe('refusalCopy — revoked, with a credential to fall back on (#690)', ()
     expect(refusalCopy('revoked', none).text).toBe(REFUSAL_OPENER + 'your membership here has been revoked.');
   });
 
+  it.each([
+    ['MATOU Membership Credential', 'your MATOU Membership Credential has been revoked.'],
+    ['Finance credential', 'your Finance credential has been revoked.'],
+  ])('never says "credential" twice of one whose name already ends with it (%s)', (revoked, sentence) => {
+    const text = refusalCopy('revoked', { revoked, next: 'Membership' }).text;
+    expect(text).toContain(sentence);
+    expect(text.toLowerCase()).not.toContain('credential credential');
+  });
+
   it('speaks of "that credential" when the revoked one has no name', () => {
     expect(refusalCopy('revoked', { revoked: '', next: 'Membership' }).text).toContain(
       'that credential has been revoked. Try again',

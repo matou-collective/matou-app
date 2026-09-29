@@ -1,7 +1,7 @@
 /**
- * What a door said of a credential never outlives the unlocked session (#690):
- * the identity store drops it on lock or exit, as it drops the sign-in signer
- * and any arming.
+ * What a door said of a credential, and the codes it will not take again, never
+ * outlive the unlocked session (#690): the identity store drops them on lock or
+ * exit, as it drops the sign-in signer and any arming.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
@@ -29,19 +29,32 @@ vi.mock('quasar', () => ({ Notify: { create: vi.fn() } }));
 
 import { useIdentityStore } from 'src/stores/identity';
 import { isRememberedRevoked, rememberRevoked } from 'src/lib/signin/revokedMemory';
+import { heldCode, holdCode } from 'src/lib/signin/heldCodes';
 
-describe('the revoked memory, on lock or exit', () => {
+const DOOR = 'https://id.example.nz/login';
+
+describe('what the sign-in remembers, on lock or exit', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
   });
 
-  it('is dropped when the identity disconnects', async () => {
+  it('the revoked memory is dropped when the identity disconnects', async () => {
     const identity = useIdentityStore();
-    rememberRevoked('EAdministratorSAID');
-    expect(isRememberedRevoked('EAdministratorSAID')).toBe(true);
+    rememberRevoked(DOOR, 'EAdministratorSAID');
+    expect(isRememberedRevoked(DOOR, 'EAdministratorSAID')).toBe(true);
 
     await identity.disconnect();
 
-    expect(isRememberedRevoked('EAdministratorSAID')).toBe(false);
+    expect(isRememberedRevoked(DOOR, 'EAdministratorSAID')).toBe(false);
+  });
+
+  it('the held codes are dropped when the identity disconnects', async () => {
+    const identity = useIdentityStore();
+    holdCode(DOOR, 'c_refused', 'spent');
+    expect(heldCode(DOOR, 'c_refused')).toBe('spent');
+
+    await identity.disconnect();
+
+    expect(heldCode(DOOR, 'c_refused')).toBeNull();
   });
 });

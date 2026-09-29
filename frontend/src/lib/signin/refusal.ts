@@ -99,7 +99,9 @@ export interface RevokedFallback {
  */
 export function revokedWithFallbackText(fallback: RevokedFallback): string {
   const revoked = fallback.revoked.trim();
-  const subject = revoked ? `your ${revoked} credential` : 'that credential';
+  // A name that already ends with the word is not given it twice.
+  const named = /\bcredential$/i.test(revoked) ? revoked : `${revoked} credential`;
+  const subject = revoked ? `your ${named}` : 'that credential';
   return (
     `${REFUSAL_OPENER}${subject} has been revoked. ` +
     `Try again with a fresh code from the sign-in page, and you will sign in with your ${fallback.next.trim()}.`
