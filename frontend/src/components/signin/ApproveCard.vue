@@ -9,7 +9,16 @@
        wallet draws for it — with Approve at the foot of that card, so what is
        pressed is visibly the thing being shown (#683; Ben, 2026-09-28). A
        wallet that holds nothing the door asks for never reaches this card: it
-       shows the no-credential screen instead (NoCredential.vue). -->
+       shows the no-credential screen instead (NoCredential.vue).
+
+       The card has TWO FORMS, and the code says which (#688; idss ADR 0282 as
+       amended 2026-09-29). `signin` is the card above — carrying the unlock
+       line when the code offers a seat unlock and the identity is a steward
+       (PU-A2u). `unlock` is the same card with the unlock as its act (PU-A4): a
+       locked panel unlocks through the sign-in door, so it asks to unlock, says
+       the person is already signed in, shows the same credential, reads Unlock
+       at the card's foot, and has NO switch. Its done face is PU-A4d. An
+       identity that is not a steward never reaches it (NotASteward.vue). -->
   <div class="approve-card max-w-md mx-auto p-6 space-y-5 text-center">
     <!-- Loading: the wallet is still restoring its session or reading the
          credentials. No actions until the card has its details. -->
@@ -21,7 +30,7 @@
       aria-live="polite"
     >
       <span class="spin inline-block w-3 h-3 border-2 border-primary/30 border-t-transparent rounded-full animate-spin"></span>
-      Getting this sign-in ready…
+      {{ unlocking ? 'Getting this unlock ready…' : 'Getting this sign-in ready…' }}
     </div>
 
     <!-- Unavailable: the card could not be built. The try-again fallback;
@@ -32,7 +41,8 @@
         data-status="unavailable"
         role="alert"
       >
-        <b>Couldn't load this sign-in.</b> Your app may still be connecting. Try again.
+        <b>{{ unlocking ? "Couldn't load this unlock." : "Couldn't load this sign-in." }}</b>
+        Your app may still be connecting. Try again.
       </div>
       <div class="space-y-2">
         <MBtn class="w-full" data-action="retry" @click="$emit('retry')">Try again</MBtn>
@@ -40,60 +50,73 @@
       </div>
     </div>
 
+    <!-- PU-A4's headline: what this does, plainly. Never "sign in to" — the
+         person is already signed in, and an unlock must never read as having
+         been signed out. Shown with the card only. -->
+    <p v-if="view && unlocking && onCard" class="text-lg font-medium" data-field="ask">
+      Unlock steward actions on <b data-field="where">this computer</b>?
+    </p>
     <!-- Headline: the service first — that is what the person is trying to do. -->
-    <p v-if="view" class="text-lg font-medium" data-field="ask">
+    <p v-else-if="view && !unlocking" class="text-lg font-medium" data-field="ask">
       Sign in to <b data-field="service">{{ view.service }}</b> at
       <b data-field="community">{{ view.community }}</b>?
     </p>
 
-    <!-- PU-A2u: the steward-unlock line (#663). Present ONLY on a steward's
-         control-panel sign-in (view.unlock set), under the headline, on by
-         default. The line IS the consent — switching it on is the whole gesture,
-         there is no second confirm and the passcode never appears. On approve
-         with it on, the wallet seals the passcode to the panel's key in the same
-         act as the presentation; off gives an ordinary locked-seat session. -->
+    <!-- PU-A2u: the steward-unlock line (#663, #688). Present ONLY when the
+         code offers a seat unlock and the identity is a steward
+         (view.unlockLine), under the headline, on by default. The line IS the
+         consent — switching it is the whole gesture, there is no second confirm
+         and the passcode never appears. On approve with it on, the wallet
+         presents and ARMS in one act, and seals when the landed panel asks; off
+         gives an ordinary locked-seat session. The unlock form has no line: it
+         has no switch. -->
     <div
-      v-if="view && view.unlock && (phase === 'card' || phase === 'proving')"
+      v-if="view && view.unlockLine && !unlocking && onCard"
       class="unlock text-left border border-border rounded-lg p-4 space-y-2 bg-card"
       :class="{ 'opacity-40 pointer-events-none': phase === 'proving' }"
-      data-field="unlock-line"
+      data-field="unlock-steward-actions-line"
     >
       <label class="flex items-start gap-3 cursor-pointer">
         <input
           type="checkbox"
+          role="switch"
           class="mt-0.5 shrink-0"
-          data-action="toggle-unlock"
+          data-action="toggle-unlock-steward-actions"
           :checked="unlockOn"
+          :aria-checked="unlockOn ? 'true' : 'false'"
           @change="$emit('toggle-unlock', ($event.target as HTMLInputElement).checked)"
         />
         <span class="text-sm font-medium">Also unlock steward actions on this computer until you sign out</span>
       </label>
-      <p
-        v-if="unlockOn"
-        class="text-xs text-muted-foreground pl-7"
-        data-status="unlock-on"
-      >
+      <p v-if="unlockOn" class="text-xs text-muted-foreground pl-7" data-field="unlock-guard">
         This computer will be able to approve people, issue and revoke credentials, and see who's
         waiting — without typing your twelve words. You can end it from your app at any time.
       </p>
-      <p
-        v-else
-        class="text-xs text-muted-foreground pl-7"
-        data-status="unlock-off"
-      >
+      <p v-else class="text-xs text-muted-foreground pl-7" data-field="unlock-guard" data-status="off">
         You'll be signed in, but this computer won't be able to approve people or issue credentials.
         You can unlock it later from the Members tab.
       </p>
     </div>
 
     <!-- The sign-in site, and the details disclosure. Kept visible through
-         Proving (dimmed) and hidden once done/refused. -->
+         Proving (dimmed) and hidden once done/refused. In the unlock form it is
+         the unlock card (PU-A4): WHERE first, then the site, then the note that
+         the person is already signed in. -->
     <div
-      v-if="view && (phase === 'card' || phase === 'proving')"
+      v-if="view && onCard"
       class="card text-left border border-border rounded-lg p-4 space-y-3 bg-card"
       :class="{ 'opacity-40 pointer-events-none': phase === 'proving' }"
-      data-field="approve-card"
+      :data-field="unlocking ? 'unlock-card' : 'approve-card'"
+      :data-service="view.panel ? 'panel' : undefined"
+      :data-offer="unlocking ? 'unlock' : undefined"
     >
+      <!-- By name only: the code carries no address for the panel, and none is
+           guessed from the sign-in site's. -->
+      <div v-if="unlocking" class="kv">
+        <div class="text-xs uppercase tracking-wide text-muted-foreground">Where</div>
+        <div class="text-sm" data-field="panel-site">{{ view.panelName }}</div>
+      </div>
+
       <div class="kv">
         <div class="text-xs uppercase tracking-wide text-muted-foreground">Sign-in site</div>
         <div
@@ -110,8 +133,15 @@
         </div>
       </div>
 
+      <div v-if="unlocking" class="kv">
+        <div class="text-xs uppercase tracking-wide text-muted-foreground">Already signed in</div>
+        <div class="text-sm" data-field="session-note">
+          You're already signed in on that computer. This only unlocks steward actions.
+        </div>
+      </div>
+
       <!-- The details disclosure — for the curious and the auditor, never the
-           face (WS-A2). -->
+           face (WS-A2). No sealing key is among them: no code carries one. -->
       <details class="det text-xs text-muted-foreground border-t border-dashed border-border pt-2" data-action="details">
         <summary class="cursor-pointer font-semibold">details</summary>
         <dl class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 mt-1.5 font-mono break-all">
@@ -119,25 +149,22 @@
           <dd data-field="aid">{{ view.details.aid }}</dd>
           <dt class="text-muted-foreground">credential</dt>
           <dd data-field="credential-said">{{ view.details.credentialSaid }}</dd>
-          <dt class="text-muted-foreground">this sign-in</dt>
+          <dt class="text-muted-foreground">{{ unlocking ? 'this unlock' : 'this sign-in' }}</dt>
           <dd data-field="challenge-id">{{ view.details.challengeId }}</dd>
           <dt class="text-muted-foreground">signs over</dt>
           <dd data-field="bound-message">{{ view.details.boundMessage }}</dd>
-          <!-- The panel tab's sealing-key fingerprint — in details only, for a
-               careful steward to compare with what the panel shows (#663). -->
-          <template v-if="view.unlock">
-            <dt class="text-muted-foreground">this computer's key</dt>
-            <dd data-field="sealing-key-fingerprint">{{ view.unlock.sealingKeyFingerprint }}</dd>
-          </template>
         </dl>
       </details>
     </div>
 
     <!-- What will be shown: the credential, as the card the wallet draws for it,
          with Approve at the foot of the card (#683). Kept visible through
-         Proving (dimmed, Approve gone) and hidden once done/refused. -->
+         Proving (dimmed, Approve gone) and hidden once done/refused. In the
+         unlock form the act reads Unlock and the guard sentence sits above it —
+         what that computer will be able to do, for how long, and where to end
+         it (PU-A4). -->
     <div
-      v-if="view && view.credential && (phase === 'card' || phase === 'proving')"
+      v-if="view && view.credential && onCard"
       class="shown text-left space-y-2"
       :class="{ 'opacity-40 pointer-events-none': phase === 'proving' }"
       data-field="credential-to-show"
@@ -146,16 +173,20 @@
       <div class="text-xs uppercase tracking-wide text-muted-foreground">What will be shown</div>
       <WalletCredentialCard v-bind="view.credential.card">
         <template #action="{ painted }">
+          <p v-if="unlocking" class="cred-guard" data-field="unlock-guard">
+            That computer will be able to approve people, issue and revoke credentials, and see who's
+            waiting, until you sign out or the page is closed. You can end it from your app at any time.
+          </p>
           <button
             v-if="phase === 'card'"
             type="button"
             class="cred-approve"
             :class="{ 'on-painted': painted }"
             :disabled="!canApprove"
-            data-action="approve"
+            :data-action="unlocking ? 'approve-unlock' : 'approve'"
             @click="$emit('approve')"
           >
-            Approve
+            {{ unlocking ? 'Unlock' : 'Approve' }}
           </button>
         </template>
       </WalletCredentialCard>
@@ -174,9 +205,27 @@
       {{ view?.provingLine }}
     </div>
 
+    <!-- PU-A4d: after Unlock verifies. The door verified the presentation and
+         the browser is on its way back to the panel; the wallet is armed and
+         answers the panel's request a moment later — so the app must stay open
+         for that moment. Never "Unlocked" as a finished fact: the app cannot
+         know the panel opened the box, only that it will hand one over. -->
+    <div v-if="phase === 'done' && unlocking" class="space-y-4">
+      <div
+        class="status ok border border-primary/30 bg-primary/10 rounded-md px-3 py-2 text-sm text-left flex flex-col gap-1"
+        data-field="unlock-card"
+        data-status="done"
+        role="status"
+      >
+        <b data-field="done-title">Unlocking that computer</b>
+        <span data-field="done-body">Go back to your browser — Members will open in a moment. Keep this app open until it does.</span>
+      </div>
+      <MBtn variant="outline" class="w-full" data-action="close" @click="$emit('close')">Close</MBtn>
+    </div>
+
     <!-- WS-A2d: Signed in. The card closes after a beat; on a same-device
          sign-in the browser has already redirected. No claims, timings or AID. -->
-    <div v-if="phase === 'done'" class="space-y-4">
+    <div v-else-if="phase === 'done'" class="space-y-4">
       <div
         class="status ok border border-primary/30 bg-primary/10 rounded-md px-3 py-2 text-sm text-left"
         data-status="done"
@@ -221,9 +270,10 @@
       </div>
     </div>
 
-    <!-- The way out (WS-A2). Approve is at the foot of the credential card
-         above; Not now sits beneath the card, present only on the card face and
-         only once the card has its service details. -->
+    <!-- The way out (WS-A2). Approve — Unlock, in the unlock form — is at the
+         foot of the credential card above; Not now sits beneath the card,
+         present only on the card face and only once the card has its service
+         details. Not now sends nothing. -->
     <div v-if="phase === 'card' && view" class="space-y-2">
       <MBtn variant="ghost" class="w-full" data-action="not-now" @click="$emit('not-now')">
         Not now
@@ -233,29 +283,39 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import MBtn from '../base/MBtn.vue';
 import WalletCredentialCard from '../wallet/WalletCredentialCard.vue';
 import type { ApproveCardView } from 'src/lib/signin/view';
 import type { RefusalCopy } from 'src/lib/signin/refusal';
-import type { SigninPhase } from 'src/composables/useSignin';
+import type { SigninForm, SigninPhase } from 'src/composables/useSignin';
 
-defineProps<{
+const props = defineProps<{
   view: ApproveCardView | null;
   phase: SigninPhase;
   refusal: RefusalCopy | null;
   canApprove: boolean;
   /** Whether the steward-unlock line is switched on (default on; only rendered
-   *  when `view.unlock` is set, #663). */
+   *  when `view.unlockLine` is set, #663). */
   unlockOn?: boolean;
+  /** The card's form, which the code decides: an ordinary `signin` (the
+   *  default), or an `unlock` — a code that says it is one (PU-A4, #688). */
+  form?: SigninForm;
 }>();
 
+/** The card is in its unlock form (PU-A4 / PU-A4d). */
+const unlocking = computed(() => props.form === 'unlock');
+/** The card itself is on screen: its face, or its face dimmed while proving. */
+const onCard = computed(() => props.phase === 'card' || props.phase === 'proving');
+
 defineEmits<{
+  /** The card's one act: Approve — or, in the unlock form, Unlock. */
   approve: [];
   'not-now': [];
   'try-again': [];
   retry: [];
   close: [];
-  /** The steward toggled the unlock line (PU-A2u, #663). */
+  /** The steward switched the unlock line (PU-A2u, #663). */
   'toggle-unlock': [on: boolean];
 }>();
 </script>
@@ -307,6 +367,20 @@ defineEmits<{
 
 .cred-approve.on-painted:focus-visible {
   outline-color: var(--cred-paint-ink);
+}
+
+/* The unlock form's guard sentence, above Unlock at the card's foot. It takes
+   the card's own ink, so it reads on a painted card as the card's lines do. */
+.cred-guard {
+  margin: 12px 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--matou-muted-foreground, #6b7280);
+}
+
+.shown :deep(.painted) .cred-guard {
+  color: currentColor;
+  opacity: 0.75;
 }
 
 /* On the approve screen the card is one card, not one of a grid of them. */

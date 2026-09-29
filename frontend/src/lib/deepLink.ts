@@ -7,10 +7,9 @@
  * and this pure function decides where it belongs before anything acts on it:
  *
  *  - `matou://signin?…`  the wallet's approve card (the sign-in page's "Open my
- *                        community app" button and its QR carry this).
- *  - `matou://unlock?…`  the wallet's unlock-only card (#664) — a locked but
- *                        signed-in control panel shows this; scanning it unlocks
- *                        the steward seat and nothing else.
+ *                        community app" button and its QR carry this). A locked
+ *                        control panel's unlock is one of these too — the code
+ *                        says it is an unlock (#688).
  *  - `matou://pair?…`    the existing linked-device pairing link — routed to the
  *                        link-device screen, never the sign-in card.
  *  - `matou://inbox`     the IDSS steward hand-off link (#599) — routed to the
@@ -23,12 +22,12 @@
  * {@link useDeepLink} handler) makes it unit-testable without the shell.
  */
 
-import { isSigninLink, isUnlockLink } from 'src/lib/signin/link';
+import { isSigninLink } from 'src/lib/signin/link';
 import { isPairingLink } from 'src/lib/pairing/link';
 import { isInboxLink } from 'src/lib/inbox/link';
 
 /** What an incoming `matou://…` link resolves to. */
-export type DeepLinkKind = 'signin' | 'unlock' | 'pair' | 'inbox' | 'unknown';
+export type DeepLinkKind = 'signin' | 'pair' | 'inbox' | 'unknown';
 
 /**
  * Classify a raw deep-link URL. Never throws on member/OS input; whitespace is
@@ -38,7 +37,6 @@ export type DeepLinkKind = 'signin' | 'unlock' | 'pair' | 'inbox' | 'unknown';
 export function classifyDeepLink(raw: string): DeepLinkKind {
   const text = (raw ?? '').trim();
   if (isSigninLink(text)) return 'signin';
-  if (isUnlockLink(text)) return 'unlock';
   if (isPairingLink(text)) return 'pair';
   if (isInboxLink(text)) return 'inbox';
   return 'unknown';

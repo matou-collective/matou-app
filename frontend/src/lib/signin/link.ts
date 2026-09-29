@@ -10,7 +10,7 @@
  * The link carries (the real bridge's deep-link params, app-door-golden.json
  * `deep_link_params`):
  *
- *   matou://signin?door=<site url>&c=<challenge>&present=<present url>&s=<schema SAID(s)>&name=<community>&svc=<service>
+ *   matou://signin?door=<site url>&c=<challenge>&present=<present url>&s=<schema SAID(s)>&name=<community>&svc=<service>[&cred=<slug>&offer=<what it offers>]
  *
  *  - `door`    the sign-in site's own address; the signature is bound to it so
  *              a signature harvested by a lookalike is worthless at the real
@@ -28,14 +28,18 @@
  *  - `service` the OIDC client that started the hop (Files, the Portal). The
  *              prototype omitted it; the real bridge carries it (spec story 4).
  *              Read from `service` or the short `svc`, tolerated absent.
- *  - `ek`      the control-panel tab's throwaway **Ed25519 sealing-key verkey**
- *              (qb64). It rides ONLY a control-panel challenge whose code offered
- *              a sealing key (app-door-golden `panel`), so its mere presence is
- *              the machine-readable signal that this is a control-panel sign-in
- *              expecting a passcode handover (#663; never string-match `svc`,
- *              which is a display name). An ordinary service sign-in carries the
- *              other six params and no `ek`. A public key by design — it travels
- *              in the URL; the passcode never does.
+ *  - `offer`   **what this sign-in offers**, in a field of its own (idss ADR
+ *              0282 as amended 2026-09-29, obligation 1a; app-door-golden
+ *              `offer_field`; #688). Three values, absent being one of them:
+ *              absent — an ordinary service sign-in, which offers no seat
+ *              unlock; `seat-unlock` — a control-panel sign-in, so a steward is
+ *              shown the unlock line (PU-A2u); `unlock` — a locked panel
+ *              unlocking through this same door, so a steward is shown the
+ *              approve card in its unlock form (PU-A4). The wallet reads THIS
+ *              field and nothing else for it: never the display name in `svc`,
+ *              never `cred`, and never a sealing key — no code carries one
+ *              (`ek=` is retired; the panel binds its key at the door after it
+ *              lands, and the wallet reads it there — `handover.ts`).
  *  - `cred`    the **credential the door asks for**, by its definition slug
  *              (idss ADR 0289, app-door-golden `panel.administrator`; #683). It
  *              rides ONLY a control-panel challenge, as `cred=administrator`:
@@ -48,11 +52,23 @@
  *              `cred` and is answered as it always was.
  *
  * The scanner accepts this beside the existing `matou://pair?…` pairing link;
- * `isSigninLink` is the cheap discriminator the scan/paste paths use.
+ * `isSigninLink` is the cheap discriminator the scan/paste paths use. It is the
+ * ONLY sign-in scheme: the panel's own unlock code, which had a scheme of its
+ * own, is retired — a locked panel unlocks through the sign-in door (#688).
  */
 
 /** The `matou://signin?…` scheme + host the wallet answers. */
 const SIGNIN_PREFIX = 'matou://signin?';
+
+/** The deep-link param that says what a sign-in offers (golden `offer_field`). */
+export const OFFER_PARAM = 'offer';
+/** A control-panel sign-in: a seat unlock is on offer (PU-A2u). */
+export const OFFER_SEAT_UNLOCK = 'seat-unlock';
+/** A locked panel unlocking through the sign-in door: this IS an unlock (PU-A4). */
+export const OFFER_UNLOCK = 'unlock';
+
+/** What a sign-in code can say it offers. Absent — nothing — is the third value. */
+export type SigninOffer = typeof OFFER_SEAT_UNLOCK | typeof OFFER_UNLOCK;
 
 /** One parsed sign-in ask — everything the approve card needs off the link. */
 export interface SigninAsk {
@@ -70,12 +86,13 @@ export interface SigninAsk {
   /** The service that started the sign-in (empty when the link omits it). */
   service: string;
   /**
-   * The control-panel tab's sealing-key verkey (qb64) from `ek=`, present ONLY
-   * on a control-panel sign-in that offered a passcode handover. Its presence —
-   * not the display-name `service` — is the signal that a steward may unlock the
-   * seat on this computer (#663). Absent (undefined) on every ordinary sign-in.
+   * What the code says it offers, from `offer=` (#688): `seat-unlock` on a
+   * control-panel sign-in, `unlock` on an unlock. Absent (undefined) on every
+   * ordinary service sign-in, and for any word this wallet does not know — it
+   * arms nothing for an offer it cannot name. Read with {@link offersSeatUnlock}
+   * and {@link isUnlockAsk}.
    */
-  sealingKey?: string;
+  offer?: SigninOffer;
   /**
    * The definition slug of the credential the door asks for, from `cred=` (e.g.
    * `administrator` at the control panel's door — idss ADR 0289, #683). When set,
@@ -146,11 +163,11 @@ function buildAsk(get: (key: string) => string): SigninAsk | null {
 
   const ask: SigninAsk = { door, present, challenge, schemas, community, service };
 
-  // `ek` rides only a control-panel challenge that offered a sealing key; carry
-  // it only when present so an ordinary sign-in's ask is byte-identical to what
-  // it was before #663 (the panel path keys off `sealingKey` being set).
-  const sealingKey = get('ek').trim();
-  if (sealingKey) ask.sealingKey = sealingKey;
+  // `offer` says what the code offers, in a field of its own (#688). Carried
+  // only when it is a value the golden names, so an ordinary sign-in's ask is
+  // exactly the ask it was and an unknown word offers nothing.
+  const offer = get(OFFER_PARAM).trim();
+  if (offer === OFFER_SEAT_UNLOCK || offer === OFFER_UNLOCK) ask.offer = offer;
 
   // `cred` names the credential the door asks for (#683). Carried only when
   // present, so an ask with no `cred` is exactly the ask it was.
@@ -160,105 +177,15 @@ function buildAsk(get: (key: string) => string): SigninAsk | null {
   return ask;
 }
 
-/** True when the ask is a control-panel sign-in that offered a passcode handover
- *  (it carried `ek=`). The steward-unlock line appears only for these (#663). */
-export function isPanelSignin(ask: SigninAsk): boolean {
-  return !!ask.sealingKey;
+/** True when the code offers a seat unlock — a control-panel sign-in. A steward
+ *  is shown the unlock line for these, and only these (PU-A2u). */
+export function offersSeatUnlock(ask: SigninAsk): boolean {
+  return ask.offer === OFFER_SEAT_UNLOCK;
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
- * The control-panel UNLOCK code (idss #1929 story 13–16, ADR 0282 d.3, wireframe
- * PU-M0q/PU-A4; matou-app #664).
- *
- * A panel that is signed in but LOCKED (a reload, a tab close, an explicit Lock,
- * or the unlock line switched off at sign-in) shows an *unlock code*, not a
- * sign-in code. It is a DIFFERENT scheme, `matou://unlock?…`, because scanning it
- * unlocks the seat and nothing else — no session is minted, no credential is
- * presented, and a reload must never look like being signed out (PU-A4). The
- * panel mints a FRESH sealing keypair for every unlock (the old one died with the
- * page), so the key carried here differs from the one at sign-in by construction.
- *
- * The code carries (PU-M0q's QR + the #664 wire ruling on this ticket):
- *
- *   matou://unlock?panel=<url>&present=<relay>&u=<challenge>&ek=<key>&name=<community>&t=<time>&exp=<expiry>
- *
- *  - `panel`    the panel site's address (`admin.<apex>`), for the WHERE line.
- *  - `present`  the bridge relay URL the sealed box is POSTed to, verbatim —
- *              never derived from `panel` (the #574 principle the sign-in link
- *              already holds). A code with no `present` cannot be answered, so it
- *              is refused rather than guessed at.
- *  - `u`        the unlock challenge id (the nonce the sealed box is bound to).
- *  - `ek`       the tab's FRESH Ed25519 sealing verkey (qb64). A public key by
- *              design — it rides the URL; the passcode never does. Without it
- *              there is nothing to seal to, so the code is refused.
- *  - `name`     the community name, for "‹community›'s control panel".
- *  - `t`        the time the steward signed in on this computer, for the
- *              "You signed in on this computer at ‹time›" line. Tolerated absent.
- *  - `exp`      the challenge's expiry as unix epoch seconds. When present and
- *              already past, the card refuses cleanly at read time rather than
- *              sealing to a dead challenge (the door's 410 is handled too).
- * ──────────────────────────────────────────────────────────────────────────── */
-
-/** The `matou://unlock?…` scheme + host the wallet answers for a panel unlock. */
-const UNLOCK_PREFIX = 'matou://unlock?';
-
-/** One parsed unlock ask — everything the unlock-only card (PU-A4) needs. */
-export interface UnlockAsk {
-  /** The panel site's address, for the WHERE line (`admin.<apex>`). */
-  panel: string;
-  /** The exact relay URL the sealed box is POSTed to (verbatim, never derived). */
-  present: string;
-  /** The unlock challenge id / nonce the sealed box is bound to. */
-  challenge: string;
-  /** The tab's FRESH sealing-key verkey (qb64) the passcode is sealed to. */
-  sealingKey: string;
-  /** The community name for "‹community›'s control panel" (may be empty). */
-  community: string;
-  /** The time the steward signed in on this computer (empty when absent). */
-  signedInAt: string;
-  /** The challenge expiry as unix epoch **milliseconds**, or null when the code
-   *  carried no `exp`. Parsed from `exp` (unix seconds) so the card can refuse a
-   *  dead challenge at read time. */
-  expiresAt: number | null;
-}
-
-/**
- * Cheap client-side shape check before the wallet acts on an unlock code: a
- * `matou://unlock` link must at least carry a `panel`, a challenge `u` and the
- * sealing key `ek`. A random string gets a plain "not an unlock code" rather
- * than a half-built card. Mirrors {@link isSigninLink}.
- */
-export function isUnlockLink(text: string): boolean {
-  if (!text.startsWith(UNLOCK_PREFIX)) return false;
-  const params = new URLSearchParams(text.slice(UNLOCK_PREFIX.length));
-  return !!(params.get('panel') && params.get('u') && params.get('ek'));
-}
-
-/**
- * Parse a `matou://unlock?…` link into an {@link UnlockAsk}, or `null` when the
- * text is not a well-formed unlock link (wrong scheme, or missing the panel,
- * challenge, sealing key or `present` URL). Like the sign-in link, a code with no
- * `present` is refused rather than answered by guessing a path (#574). Never
- * throws on member input.
- */
-export function parseUnlockLink(text: string): UnlockAsk | null {
-  if (!isUnlockLink(text)) return null;
-  const params = new URLSearchParams(text.slice(UNLOCK_PREFIX.length));
-
-  const panel = (params.get('panel') ?? '').trim();
-  const challenge = (params.get('u') ?? '').trim();
-  const sealingKey = (params.get('ek') ?? '').trim();
-  const present = (params.get('present') ?? '').trim();
-  if (!panel || !challenge || !sealingKey || !present) return null;
-
-  const community = (params.get('name') ?? '').trim();
-  const signedInAt = (params.get('t') ?? '').trim();
-
-  // `exp` is unix seconds (JWT convention); carry it as millis for a direct
-  // compare with Date.now(), and drop a blank or non-numeric value to null so a
-  // malformed exp never reads as "already expired".
-  const expRaw = Number.parseInt((params.get('exp') ?? '').trim(), 10);
-  const expiresAt = Number.isFinite(expRaw) && expRaw > 0 ? expRaw * 1000 : null;
-
-  return { panel, present, challenge, sealingKey, community, signedInAt, expiresAt };
+/** True when the code says it IS an unlock — a locked panel unlocking through
+ *  the sign-in door. A steward is shown the approve card in its unlock form
+ *  (PU-A4); anyone else is told they cannot, and nothing is posted (PU-A4n). */
+export function isUnlockAsk(ask: SigninAsk): boolean {
+  return ask.offer === OFFER_UNLOCK;
 }

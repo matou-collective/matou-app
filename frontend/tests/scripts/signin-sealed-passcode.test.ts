@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { ready, Signer, Decrypter, MtrDex } from 'signify-ts';
-import { sealPasscode, saltQb64FromBran, fingerprintOf } from 'src/lib/signin/sealedPasscode';
+import { sealPasscode, saltQb64FromBran } from 'src/lib/signin/sealedPasscode';
 
 // A 21-char bran (the KERI passcode shape) with distinctive characters, so an
 // off-by-one recovery would be caught.
@@ -16,7 +16,8 @@ const BRAN = 'Abc123Def456Ghi789Jkl';
 describe('sealPasscode — the wallet seals, the tab opens', () => {
   it('seals to the tab verkey a box the tab reopens to the exact bran', async () => {
     await ready();
-    // The tab's side: mint a throwaway Ed25519 signer; its verkey rides `ek=`.
+    // The tab's side: mint a throwaway Ed25519 signer; the panel binds its
+    // verkey at the door after it lands (no code carries a sealing key).
     const signer = new Signer({ transferable: true });
     const verkeyQb64 = signer.verfer.qb64;
     const seedQb64b = signer.qb64b;
@@ -54,16 +55,5 @@ describe('sealPasscode — the wallet seals, the tab opens', () => {
     const verkey = new Signer({ transferable: true }).verfer.qb64;
     await expect(sealPasscode('', verkey)).rejects.toThrow(/no passcode/);
     await expect(sealPasscode(BRAN, '')).rejects.toThrow(/no sealing key/);
-  });
-});
-
-describe('fingerprintOf — the same short mark the panel prints', () => {
-  it('is a stable xxxx·xxxx hex of the verkey, matching idss #1938', async () => {
-    await ready();
-    const verkeyQb64 = new Signer({ transferable: true }).verfer.qb64;
-    const fp = await fingerprintOf(verkeyQb64);
-    expect(fp).toMatch(/^[0-9a-f]{4}·[0-9a-f]{4}$/);
-    // Stable: the same verkey always yields the same fingerprint.
-    expect(await fingerprintOf(verkeyQb64)).toBe(fp);
   });
 });

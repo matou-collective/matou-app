@@ -6,11 +6,12 @@ import type { Page } from '@playwright/test';
  * asks (ADR 0282 d.2/d.6 + its armed-consent amendment, idss #1961/#1967,
  * option B).
  *
- * #663 sealed the steward's passcode ONCE during approve, to the verkey that
- * rode the sign-in code (`ek=`). But that key belongs to the bridge's door page
- * at `id.<apex>`, which the OIDC hop tears down; the control panel at
- * `admin.<apex>` never minted it and cannot open the box. So a control-panel
- * sign-in approved with the unlock line ON now ARMS the wallet for that one
+ * #663 sealed the steward's passcode ONCE during approve, to a verkey that rode
+ * the sign-in code. But that key belonged to the bridge's door page at
+ * `id.<apex>`, which the OIDC hop tears down; the control panel at
+ * `admin.<apex>` never minted it and cannot open the box — and since #688 no
+ * code carries a sealing key at all. So a control-panel sign-in approved with
+ * the unlock line ON ARMS the wallet for that one
  * challenge and seals NOTHING at approve — the present request carries no
  * `sealed_passcode`, only `armed: true` so the door mints the handover
  * capability. The box the panel can open is minted only when the panel later
@@ -33,16 +34,15 @@ const PRESENT = `${DOOR}/login/app/present`;
 // The door's wallet-facing handover routes (siblings of the present route).
 const HANDOVER_KEY = /\/login\/app\/handover\/key/;
 const HANDOVER_SEAL = /\/login\/app\/handover\/seal$/;
-// A real Ed25519 verkey qb64 — the throwaway sealing key the panel tab would
-// mint and echo on `ek=` at sign-in. Under #674 the wallet no longer seals to
-// it at approve; it is only the machine-readable signal that this is a
-// control-panel sign-in offering an unlock.
+// A real Ed25519 verkey qb64 — the key the panel tab mints AFTER it lands and
+// binds at the door; the wallet reads it off the handover key route. It rides
+// no sign-in code (#688).
 const SEALING_KEY = 'DBZ1SAiVRxNccKMVT_2AaRp5Lb4Xlwg391IspBl0BRog';
 
 /**
- * Navigate a page to the approve card. When `panel` is set the code carries
- * `ek=` (a control-panel sign-in offering a passcode handover); otherwise it is
- * an ordinary service sign-in. The schema is left off so the sole held
+ * Navigate a page to the approve card. When `panel` is set the code says it
+ * offers a seat unlock (`offer=seat-unlock`, a control-panel sign-in); otherwise
+ * it is an ordinary service sign-in. The schema is left off so the sole held
  * credential is chosen.
  */
 async function openCard(page: Page, challenge: string, opts: { panel?: boolean } = {}): Promise<void> {
@@ -53,7 +53,7 @@ async function openCard(page: Page, challenge: string, opts: { panel?: boolean }
     name: 'Te Rūnanga o Example',
     svc: opts.panel ? 'the control panel' : 'Files',
   };
-  if (opts.panel) params.ek = SEALING_KEY;
+  if (opts.panel) params.offer = 'seat-unlock';
   const q = new URLSearchParams(params);
   await page.goto(`/signin?${q.toString()}`);
   await expect(page.locator('[data-field="ask"]')).toBeVisible();
@@ -72,7 +72,7 @@ test.describe('#674 panel unlock — the wallet arms at approve, seals when the 
 
     await openCard(adminPage, 'c_panel_arm', { panel: true });
     // The unlock line is on by default (unchanged from #663).
-    await expect(adminPage.locator('[data-action="toggle-unlock"]')).toBeChecked();
+    await expect(adminPage.locator('[data-action="toggle-unlock-steward-actions"]')).toBeChecked();
     await expect(adminPage.locator('[data-action="approve"]')).toBeEnabled();
     await adminPage.locator('[data-action="approve"]').click();
 
@@ -90,7 +90,7 @@ test.describe('#674 panel unlock — the wallet arms at approve, seals when the 
     adminPage,
     snap,
   }) => {
-    // The verkey the panel binds to the door AFTER it lands (never rode `ek=`).
+    // The verkey the panel binds to the door AFTER it lands (it rode no code).
     // A known-good Ed25519 verkey qb64 so signify's Encrypter seals to it; in
     // production the panel mints a fresh one in its tab post-landing.
     const PANEL_BOUND_KEY = SEALING_KEY;
@@ -143,7 +143,7 @@ test.describe('#674 panel unlock — the wallet arms at approve, seals when the 
     });
 
     await openCard(adminPage, 'c_panel_off', { panel: true });
-    await adminPage.locator('[data-action="toggle-unlock"]').uncheck();
+    await adminPage.locator('[data-action="toggle-unlock-steward-actions"]').uncheck();
     await adminPage.locator('[data-action="approve"]').click();
 
     await expect(adminPage.locator('[data-status="done"]')).toContainText('Signed in.');
@@ -165,7 +165,7 @@ test.describe('#674 panel unlock — the wallet arms at approve, seals when the 
     });
 
     await openCard(adminPage, 'c_service', {});
-    await expect(adminPage.locator('[data-field="unlock-line"]')).toHaveCount(0);
+    await expect(adminPage.locator('[data-field="unlock-steward-actions-line"]')).toHaveCount(0);
     await adminPage.locator('[data-action="approve"]').click();
 
     await expect(adminPage.locator('[data-status="done"]')).toContainText('Signed in.');

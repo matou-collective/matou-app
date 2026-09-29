@@ -159,15 +159,6 @@ const routes: RouteRecordRaw[] = [
     name: 'signin-approve',
     component: () => import('pages/SigninApprovePage.vue'),
   },
-  {
-    // The wallet's unlock-only card (idss #1929, #664). Reached when the scanner
-    // reads a `matou://unlock` code or the OS opens one; a locked-but-signed-in
-    // control panel shows it, and scanning it unlocks the seat and nothing else.
-    // Standalone (no dashboard chrome) so it works as a door.
-    path: '/unlock',
-    name: 'signin-unlock',
-    component: () => import('pages/SigninUnlockPage.vue'),
-  },
   // Always leave this as last one
   {
     path: '/:catchAll(.*)*',

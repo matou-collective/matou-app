@@ -34,13 +34,12 @@ import type { Page } from '@playwright/test';
 
 const DOOR = 'https://door.test';
 const PRESENT = `${DOOR}/login/app/present`;
-// A real Ed25519 verkey qb64, as the panel tab would echo on `ek=`.
-const SEALING_KEY = 'DBZ1SAiVRxNccKMVT_2AaRp5Lb4Xlwg391IspBl0BRog';
 const NO_CREDENTIAL = 'You do not have the required credential to sign into this service';
 
 /** Open a sign-in code in the wallet. `panel` makes it the control panel's ask:
- *  it names Administrator and carries the panel tab's sealing key. The schemas
- *  are left off, so any schema the wallet holds is an asked one. */
+ *  it names Administrator and says it offers a seat unlock (#688 — no code
+ *  carries a sealing key). The schemas are left off, so any schema the wallet
+ *  holds is an asked one. */
 async function openCode(page: Page, challenge: string, opts: { panel?: boolean } = {}): Promise<void> {
   const params: Record<string, string> = {
     door: DOOR,
@@ -51,7 +50,7 @@ async function openCode(page: Page, challenge: string, opts: { panel?: boolean }
   };
   if (opts.panel) {
     params.cred = 'administrator';
-    params.ek = SEALING_KEY;
+    params.offer = 'seat-unlock';
   }
   await page.goto(`/#/signin?${new URLSearchParams(params).toString()}`);
 }
@@ -106,7 +105,7 @@ async function notPresentedAtThePanel(page: Page, who: 'member' | 'founder', sna
   await expect(page.locator('[data-field="service"]')).toHaveText('Files');
   await expect(page.locator('[data-field="site"]')).toContainText('door.test');
   await expect(page.locator('[data-action="details"]')).toBeVisible();
-  await expect(page.locator('[data-field="unlock-line"]')).toHaveCount(0);
+  await expect(page.locator('[data-field="unlock-steward-actions-line"]')).toHaveCount(0);
   // The credential the card is for, read from the details disclosure.
   const heldSaid = (await page.locator('[data-field="credential-said"]').textContent())?.trim() ?? '';
   expect(heldSaid).not.toBe('');
@@ -129,7 +128,7 @@ async function notPresentedAtThePanel(page: Page, who: 'member' | 'founder', sna
   // A screen of its own: no approve card, no Approve, no unlock line.
   await expect(page.locator('[data-action="approve"]')).toHaveCount(0);
   await expect(page.locator('[data-field="credential-to-show"]')).toHaveCount(0);
-  await expect(page.locator('[data-field="unlock-line"]')).toHaveCount(0);
+  await expect(page.locator('[data-field="unlock-steward-actions-line"]')).toHaveCount(0);
   await snap(page, `${who}-no-credential-at-the-control-panel`);
 
   // 3. Back at a service's door, Approve presents the Membership — and that

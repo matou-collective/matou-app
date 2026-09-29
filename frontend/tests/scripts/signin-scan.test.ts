@@ -36,22 +36,34 @@ describe('signinLinkToLocation', () => {
 });
 
 // A control-panel code carries `cred=` (the credential the door asks for, #683)
-// and `ek=` (the panel tab's sealing key, #663). Both must survive the hop from
-// the scanned code to the approve card's route, or the card answers a different
-// ask than the one the door made.
+// and `offer=` (what the code offers, #688). Both must survive the hop from the
+// scanned code to the approve card's route, or the card answers a different ask
+// than the one the door made.
 describe('signinLinkToLocation — a control-panel code', () => {
   const PANEL =
-    'matou://signin?c=nonce-PANEL&cred=administrator&door=https://d.nz&ek=DVERKEY&name=Home&present=https://d.nz/p&s=ECommittee,EMembership&svc=the%20control%20panel';
+    'matou://signin?c=nonce-PANEL&cred=administrator&door=https://d.nz&name=Home&offer=seat-unlock&present=https://d.nz/p&s=ECommittee,EMembership&svc=the%20control%20panel';
+  const UNLOCK = PANEL.replace('offer=seat-unlock', 'offer=unlock').replace('nonce-PANEL', 'nonce-UNLOCK');
 
-  it('carries cred and ek onto the approve-card route', () => {
+  it('carries cred and offer onto the approve-card route', () => {
     const loc = signinLinkToLocation(PANEL) as { query: Record<string, string> };
     expect(loc.query.cred).toBe('administrator');
-    expect(loc.query.ek).toBe('DVERKEY');
+    expect(loc.query.offer).toBe('seat-unlock');
   });
 
-  it('the ask the approve card rebuilds from the route is the ask the code carried', () => {
-    const loc = signinLinkToLocation(PANEL) as { query: Record<string, string> };
-    expect(signinAskFromQuery(loc.query)).toEqual(parseSigninLink(PANEL));
+  it('an unlock code opens the SAME approve-card route, saying it is an unlock', () => {
+    const loc = signinLinkToLocation(UNLOCK) as { name: string; query: Record<string, string> };
+    expect(loc.name).toBe('signin-approve');
+    expect(loc.query.offer).toBe('unlock');
+  });
+
+  it('carries no sealing key, even off a code that still has one', () => {
+    const loc = signinLinkToLocation(`${PANEL}&ek=DVERKEY`) as { query: Record<string, string> };
+    expect(loc.query).not.toHaveProperty('ek');
+  });
+
+  it.each([PANEL, UNLOCK])('the ask the approve card rebuilds from the route is the ask the code carried', (code) => {
+    const loc = signinLinkToLocation(code) as { query: Record<string, string> };
+    expect(signinAskFromQuery(loc.query)).toEqual(parseSigninLink(code));
   });
 });
 
@@ -71,6 +83,17 @@ describe('routeSigninText', () => {
     const push = vi.fn(async () => undefined);
     const router = { push } as unknown as Router;
     const outcome = await routeSigninText(router, 'hello');
+    expect(outcome).toEqual({ status: 'not-a-code' });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('does not answer the retired matou://unlock code — it is not a code (#688)', async () => {
+    const push = vi.fn(async () => undefined);
+    const router = { push } as unknown as Router;
+    const outcome = await routeSigninText(
+      router,
+      'matou://unlock?panel=https://admin.example.nz&present=https://id.example.nz/login/app/unlock&u=u_2d7&ek=DFRESHKEY',
+    );
     expect(outcome).toEqual({ status: 'not-a-code' });
     expect(push).not.toHaveBeenCalled();
   });

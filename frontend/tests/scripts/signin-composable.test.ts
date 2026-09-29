@@ -45,7 +45,6 @@ function deps(overrides: Partial<SigninDeps> = {}): SigninDeps {
     present: async () => ({ outcome: 'verified' }),
     schemaKinds: async () => ({ EMe: 'membership', ECo: 'committee' }),
     ready: async () => undefined,
-    sealingKeyFingerprint: async (verkey) => `fp(${verkey})`,
     now: () => 1_000_000,
     arm: () => undefined,
     answerHandover: async () => undefined,
@@ -53,13 +52,14 @@ function deps(overrides: Partial<SigninDeps> = {}): SigninDeps {
   };
 }
 
-// A steward's control-panel sign-in: the link carries `ek=` (a sealing key) and
-// the held credential's role is operator. #663.
+// A steward's control-panel sign-in: the code says it offers a seat unlock
+// (`offer=seat-unlock`, #688) and the held credential's role is operator. No
+// code carries a sealing key (`ek=`) any more.
 const stewardCred: HeldCredential = {
   sad: { d: 'ECred', s: 'EMe', i: 'ECommunity', a: { i: 'EHa', role: 'operator', dt: '2026-08-12T00:00:00Z' } },
 };
 const PANEL_LINK =
-  'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_panel&s=EMe&name=Home&svc=the%20control%20panel&ek=DVERKEY_EXAMPLE';
+  'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_panel&s=EMe&name=Home&svc=the%20control%20panel&offer=seat-unlock';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -333,26 +333,45 @@ describe('walletReady — the default readiness gate', () => {
   });
 });
 
-// The steward-unlock line and the passcode sealed to the panel's key (#663,
-// PU-A2u). The line appears ONLY for a steward's control-panel sign-in; on
-// approve with it on the passcode is sealed and posted once; every other card is
-// untouched and nothing is armed.
-describe('useSignin — the steward-unlock line (#663)', () => {
+// The steward-unlock line (#663, PU-A2u; read from the code's own offer field
+// since #688). The line appears ONLY when the code offers a seat unlock AND the
+// wallet's identity is a steward; on approve with it on the wallet arms and
+// posts `armed`; every other card is untouched and nothing is armed.
+describe('useSignin — the steward-unlock line (#663, #688)', () => {
   it('offers the unlock line, on by default, for a steward control-panel sign-in', async () => {
     const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
     await s.prepareFromLink(PANEL_LINK);
     expect(s.phase.value).toBe('card');
     expect(s.unlockAvailable.value).toBe(true);
     expect(s.unlockOn.value).toBe(true);
-    // The sealing-key fingerprint rides the details, off the face.
-    expect(s.view.value?.unlock).toEqual({ sealingKeyFingerprint: 'fp(DVERKEY_EXAMPLE)' });
+    expect(s.view.value?.unlockLine).toBe(true);
+    expect(s.form.value).toBe('signin');
+    // No sealing key rode the code, and none is shown.
+    expect(JSON.stringify(s.view.value)).not.toMatch(/fingerprint/i);
   });
 
-  it('offers no unlock line for an ordinary service sign-in (no ek)', async () => {
+  it('offers no unlock line for an ordinary service sign-in (no offer)', async () => {
     const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
     await s.prepareFromLink(LINK);
     expect(s.unlockAvailable.value).toBe(false);
-    expect(s.view.value?.unlock).toBeNull();
+    expect(s.view.value?.unlockLine).toBe(false);
+  });
+
+  it('offers no unlock line on a code with no offer, whatever else the code carries (#688)', async () => {
+    // Everything the old wallet keyed off — a sealing key, the control panel's
+    // display name, the Administrator ask — and no offer field.
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm }));
+    await s.prepareFromLink(
+      'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_old&s=EMe&name=Home&svc=the%20control%20panel&cred=administrator&ek=DVERKEY_EXAMPLE',
+    );
+    expect(s.phase.value).toBe('card');
+    expect(s.unlockAvailable.value).toBe(false);
+    expect(s.view.value?.unlockLine).toBe(false);
+    await s.approve();
+    expect(arm).not.toHaveBeenCalled();
+    expect(present.mock.calls[0]![1]).not.toHaveProperty('armed');
   });
 
   it('offers no unlock line to a non-steward on a control-panel sign-in', async () => {
@@ -360,12 +379,12 @@ describe('useSignin — the steward-unlock line (#663)', () => {
     const s = useSignin(deps({ listCredentials: async () => [cred] }));
     await s.prepareFromLink(PANEL_LINK);
     expect(s.unlockAvailable.value).toBe(false);
-    expect(s.view.value?.unlock).toBeNull();
+    expect(s.view.value?.unlockLine).toBe(false);
   });
 
   it('arms, posts armed:true and no box, and answers the panel later when the line is on (#674)', async () => {
     // Approve ARMS the wallet for the panel's later request rather than sealing
-    // to the sign-in code's `ek=`; the present request carries `armed: true` and
+    // at approve; the present request carries `armed: true` and
     // NO box, and the box the panel can open is minted only when it asks — so
     // after the sign-in verifies the wallet answers the panel's request in the
     // background (option B, idss #1961/#1967).
@@ -475,7 +494,7 @@ describe('useSignin — the credential the door names (#683)', () => {
   // The golden's panel ask: committee schema first, then membership; cred named.
   const ADMIN_LINK =
     'matou://signin?c=c_admin&cred=administrator&door=https://id.example.nz/login&name=Home&present=https://id.example.nz/login/app/present&s=ECo,EMe&svc=the%20control%20panel';
-  const ADMIN_PANEL_LINK = `${ADMIN_LINK}&ek=DVERKEY_EXAMPLE`;
+  const ADMIN_PANEL_LINK = `${ADMIN_LINK}&offer=seat-unlock`;
 
   it.each([
     ['Membership, Finance, Administrator', [cred, financeCred, administratorCred]],
@@ -672,7 +691,7 @@ describe('useSignin — the credential the door names (#683)', () => {
       expect(s.chosen.value).toBe(administratorCred);
       expect(s.unlockAvailable.value).toBe(true);
       expect(s.unlockOn.value).toBe(true);
-      expect(s.view.value?.unlock).toEqual({ sealingKeyFingerprint: 'fp(DVERKEY_EXAMPLE)' });
+      expect(s.view.value?.unlockLine).toBe(true);
 
       await s.approve();
       expect(arm).toHaveBeenCalledTimes(1);
@@ -711,7 +730,7 @@ describe('useSignin — the credential the door names (#683)', () => {
       await s.prepareFromLink(ADMIN_PANEL_LINK);
       expect(s.chosen.value).toBe(administratorCred);
       expect(s.unlockAvailable.value).toBe(false);
-      expect(s.view.value?.unlock).toBeNull();
+      expect(s.view.value?.unlockLine).toBe(false);
       await s.approve();
       expect(arm).not.toHaveBeenCalled();
       const body = present.mock.calls[0]![1] as Record<string, unknown>;
@@ -762,5 +781,192 @@ describe('useSignin — the credential the door names (#683)', () => {
       await s.prepareFromLink(ADMIN_PANEL_LINK);
       expect(s.unlockAvailable.value).toBe(false);
     });
+  });
+});
+
+// A locked panel unlocks THROUGH THE SIGN-IN DOOR (#688; idss ADR 0282 as
+// amended 2026-09-29, obligations 2b/2c; wireframes PU-A4, PU-A4d, PU-A4n). The
+// code is a sign-in code that says it is an unlock. Opened by a steward it is
+// the approve card in its unlock form — no switch, the act reads Unlock, and
+// Unlock presents and arms. Opened by anyone else, nothing is posted.
+describe('useSignin — a code that says it is an unlock (#688)', () => {
+  const administratorCred: HeldCredential = {
+    sad: {
+      d: 'EAdministrator',
+      s: 'ECo',
+      i: 'ECommunity',
+      a: { i: 'EHa', committee: 'administrator', dt: '2026-09-28T00:00:00Z' },
+    },
+    status: { s: '0', et: 'iss' },
+  };
+  // The golden's unlock code: the same ask as any control-panel sign-in, and
+  // `offer=unlock`.
+  const UNLOCK_LINK =
+    'matou://signin?c=c_unlock&cred=administrator&door=https://id.example.nz/login&name=Home&offer=unlock&present=https://id.example.nz/login/app/present&s=ECo,EMe&svc=the%20control%20panel';
+
+  function spies() {
+    return {
+      present: vi.fn(async (): Promise<PresentVerdict> => ({ outcome: 'verified' })),
+      arm: vi.fn((_challenge: string, _expiresAt: number) => undefined),
+      answerHandover: vi.fn(async () => undefined),
+      sign: vi.fn(async (_aid: string, m: string) => `sig(${m})`),
+      exportCredential: vi.fn(async (said: string) => `EXPORT:${said}`),
+    };
+  }
+
+  it('opened by a steward: the approve card in its unlock form, with no switch', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred] }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.form.value).toBe('unlock');
+    // The credential is the one the door always asks for, shown as its card.
+    expect(s.chosen.value).toBe(administratorCred);
+    expect(s.view.value?.credential?.card.name).toBe('Administrator');
+    // No switch: the unlock line belongs to a sign-in, not to an unlock.
+    expect(s.unlockAvailable.value).toBe(false);
+    expect(s.view.value?.unlockLine).toBe(false);
+  });
+
+  it('Unlock presents Administrator, posts armed:true and no passcode, and answers the panel', async () => {
+    const spy = spies();
+    const s = useSignin(
+      deps({ listCredentials: async () => [stewardCred, administratorCred], ...spy, now: () => 1_000_000 }),
+    );
+    await s.prepareFromLink(UNLOCK_LINK);
+    await s.approve();
+
+    expect(spy.arm).toHaveBeenCalledTimes(1);
+    expect(spy.arm.mock.calls[0]![0]).toBe('c_unlock');
+    expect(spy.arm.mock.calls[0]![1]).toBeGreaterThan(1_000_000);
+    expect(spy.present).toHaveBeenCalledTimes(1);
+    const [url, body] = spy.present.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(url).toBe('https://id.example.nz/login/app/present');
+    expect(body).toEqual({
+      aid: 'EHa',
+      challenge_id: 'c_unlock',
+      response: 'sig(idss-idp:https://id.example.nz/login:EHa:c_unlock)',
+      presentation: 'EXPORT:EAdministrator',
+      armed: true,
+    });
+    expect(body).not.toHaveProperty('sealed_passcode');
+    // The handover routes are answered exactly as at sign-in (#674, unchanged).
+    expect(spy.answerHandover).toHaveBeenCalledWith('https://id.example.nz/login/app/present', 'c_unlock', 'EHa');
+    // PU-A4d: the done face of an unlock.
+    expect(s.phase.value).toBe('done');
+    expect(s.form.value).toBe('unlock');
+  });
+
+  it('arms whatever the switch was left at — an unlock has none', async () => {
+    const spy = spies();
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    s.setUnlock(false);
+    await s.approve();
+    const [, body] = spy.present.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(body.armed).toBe(true);
+  });
+
+  it('an operator with no Administrator unlocks with their Membership', async () => {
+    const spy = spies();
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(stewardCred);
+    await s.approve();
+    const [, body] = spy.present.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(body.presentation).toBe('EXPORT:ECred');
+    expect(body.armed).toBe(true);
+  });
+
+  it('Not now posts nothing', async () => {
+    const spy = spies();
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    s.notNow();
+    expect(spy.arm).not.toHaveBeenCalled();
+    expect(spy.sign).not.toHaveBeenCalled();
+    expect(spy.exportCredential).not.toHaveBeenCalled();
+    expect(spy.present).not.toHaveBeenCalled();
+    expect(spy.answerHandover).not.toHaveBeenCalled();
+  });
+
+  it('opened by an administrator who is not a steward: says so, and posts nothing (PU-A4n)', async () => {
+    const spy = spies();
+    const s = useSignin(deps({ listCredentials: async () => [cred, administratorCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('not-a-steward');
+    expect(s.form.value).toBe('unlock');
+    // There is nothing to press; were Approve called anyway, nothing leaves.
+    await s.approve();
+    s.notNow();
+    expect(s.phase.value).toBe('not-a-steward');
+    expect(spy.arm).not.toHaveBeenCalled();
+    expect(spy.sign).not.toHaveBeenCalled();
+    expect(spy.exportCredential).not.toHaveBeenCalled();
+    expect(spy.present).not.toHaveBeenCalled();
+    expect(spy.answerHandover).not.toHaveBeenCalled();
+    expect(s.posted.value).toBe(false);
+  });
+
+  it.each([
+    ['a member', [cred]],
+    ['a wallet holding nothing', [] as HeldCredential[]],
+  ])('opened by %s: the same screen, nothing posted', async (_who, held) => {
+    const spy = spies();
+    const s = useSignin(deps({ listCredentials: async () => held, ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('not-a-steward');
+    await s.approve();
+    expect(spy.present).not.toHaveBeenCalled();
+  });
+
+  it('says so without first asking to trust an unmet site — nothing would be sent to it', async () => {
+    knownDoors.isKnown.mockReturnValue(false);
+    const s = useSignin(deps({ listCredentials: async () => [cred, administratorCred] }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('not-a-steward');
+  });
+
+  it('a steward at an unmet site still meets the first-contact prompt before the unlock card', async () => {
+    knownDoors.isKnown.mockReturnValue(false);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred] }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('first-contact');
+    await s.trust();
+    expect(s.phase.value).toBe('card');
+    expect(s.form.value).toBe('unlock');
+  });
+
+  it('a refused unlock shows the same refusal as any sign-in, and answers no panel request', async () => {
+    const spy = spies();
+    spy.present.mockResolvedValue({ outcome: 'refused', refusal: 'expired' });
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(s.refusal.value?.kind).toBe('expired');
+    expect(spy.answerHandover).not.toHaveBeenCalled();
+  });
+
+  it('an unlock that cannot arm posts nothing — an unarmed unlock is only a second sign-in', async () => {
+    const spy = spies();
+    spy.arm.mockImplementation(() => {
+      throw new Error('no passcode in this session');
+    });
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    await s.approve();
+    expect(spy.present).not.toHaveBeenCalled();
+    expect(spy.answerHandover).not.toHaveBeenCalled();
+    expect(s.phase.value).toBe('unavailable');
+  });
+
+  it('a sign-in code after an unlock code is an ordinary sign-in again', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred] }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.form.value).toBe('unlock');
+    await s.prepareFromLink(LINK);
+    expect(s.form.value).toBe('signin');
+    expect(s.phase.value).toBe('card');
   });
 });

@@ -35,23 +35,18 @@ export interface PresentBody {
   /** The exported CESR presentation (ACDC + iss). */
   presentation: string;
   /**
-   * Option B (app-door-golden `panel.present.request.armed`, idss #1967,
-   * matou-app #674): the steward approved a control-panel unlock with the line
-   * ON, so the wallet ARMS — it keeps the passcode ready to seal for this one
-   * challenge and sends NO box on present. On completing an armed panel sign-in
+   * The armed signal (app-door-golden `panel.present.request.armed`, idss #1967,
+   * matou-app #674): a steward approved a control-panel sign-in with the unlock
+   * line ON (PU-A2u), or pressed Unlock on an unlock (PU-A4, #688), so the
+   * wallet ARMS — it keeps the passcode ready to seal for this one challenge
+   * and sends NO box on present. On completing an armed control-panel sign-in
    * the door mints a single-use handover capability (delivered to the panel over
    * the OIDC channel), and the wallet seals to the verkey the panel binds on the
-   * `sign_in_armed_handover` routes. Present (`true`) ONLY on a steward
-   * control-panel unlock with the line on; omitted on every other sign-in.
+   * `sign_in_armed_handover` routes. Present (`true`) ONLY then; omitted on
+   * every other sign-in. No passcode, sealed or otherwise, rides any present
+   * (golden `panel.present.no_sealed_passcode`).
    */
   armed?: boolean;
-  /**
-   * The retiring option-A field (app-door-golden `panel.present.option_a_retiring`,
-   * idss #1933): the wallet sealed EAGERLY at Approve to whatever key rode `ek=`.
-   * Option B ({@link armed}) replaces it — the live wallet no longer sends it. It
-   * stays on the wire type so the door's dormant transitional path still parses.
-   */
-  sealed_passcode?: string;
 }
 
 /** The outcome the card acts on. */

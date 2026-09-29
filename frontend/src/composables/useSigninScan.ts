@@ -14,7 +14,7 @@
 
 import type { RouteLocationRaw, Router } from 'vue-router';
 import { scanPairingQr, ScanUnavailableError } from 'src/lib/barcode';
-import { parseSigninLink, parseUnlockLink } from 'src/lib/signin/link';
+import { parseSigninLink } from 'src/lib/signin/link';
 
 /**
  * Turn a `matou://signin?…` link into the approve-card route location, carrying
@@ -33,33 +33,12 @@ export function signinLinkToLocation(text: string): RouteLocationRaw | null {
       ...(ask.schemas.length ? { s: ask.schemas.join(',') } : {}),
       ...(ask.community ? { name: ask.community } : {}),
       ...(ask.service ? { service: ask.service } : {}),
-      // A control-panel code's two extras: the panel tab's sealing key (#663)
-      // and the credential the door asks for (#683). Dropping either would have
-      // the card answer a different ask than the one the door made.
-      ...(ask.sealingKey ? { ek: ask.sealingKey } : {}),
+      // A control-panel code's two extras: the credential the door asks for
+      // (#683) and what the code offers — a seat unlock, or an unlock (#688).
+      // Dropping either would have the card answer a different ask than the one
+      // the door made.
       ...(ask.credential ? { cred: ask.credential } : {}),
-    },
-  };
-}
-
-/**
- * Turn a `matou://unlock?…` link into the unlock-only card route location,
- * carrying the link's fields as query params, or `null` when the text is not an
- * unlock link (#664). `exp` is re-encoded as unix seconds, the shape it rode in.
- */
-export function unlockLinkToLocation(text: string): RouteLocationRaw | null {
-  const ask = parseUnlockLink(text);
-  if (!ask) return null;
-  return {
-    name: 'signin-unlock',
-    query: {
-      panel: ask.panel,
-      present: ask.present,
-      u: ask.challenge,
-      ek: ask.sealingKey,
-      ...(ask.community ? { name: ask.community } : {}),
-      ...(ask.signedInAt ? { t: ask.signedInAt } : {}),
-      ...(ask.expiresAt !== null ? { exp: String(Math.floor(ask.expiresAt / 1000)) } : {}),
+      ...(ask.offer ? { offer: ask.offer } : {}),
     },
   };
 }
@@ -90,11 +69,12 @@ export async function scanSigninCode(router: Router): Promise<ScanOutcome> {
   }
 }
 
-/** Route a scanned/pasted sign-in OR unlock link, or report it is not a code. A
- *  locked control panel shows an unlock code, which the same scanner reads (#664). */
+/** Route a scanned/pasted sign-in link, or report it is not a code. A locked
+ *  control panel's unlock is a sign-in code too — one that says it is an unlock
+ *  (#688) — so it takes the same route to the same card. */
 export async function routeSigninText(router: Router, text: string): Promise<ScanOutcome> {
   const trimmed = text.trim();
-  const location = signinLinkToLocation(trimmed) ?? unlockLinkToLocation(trimmed);
+  const location = signinLinkToLocation(trimmed);
   if (!location) return { status: 'not-a-code' };
   await router.push(location);
   return { status: 'navigated' };

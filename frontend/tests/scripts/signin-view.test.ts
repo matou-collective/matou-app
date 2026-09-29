@@ -53,18 +53,52 @@ describe('buildCardView', () => {
   });
 });
 
-describe('buildCardView — the steward-unlock region (#663)', () => {
-  it('carries the unlock region and the sealing-key fingerprint when supplied', () => {
-    const v = buildCardView(ask, shown, 'EHa4mPq', true, { sealingKeyFingerprint: 'eff1·63d6' });
-    expect(v.unlock).toEqual({ sealingKeyFingerprint: 'eff1·63d6' });
-    // The identifiers on the face are unchanged — the fingerprint is not among
-    // the details identifiers (it rides view.unlock, shown inside the disclosure).
-    expect(v.details).not.toHaveProperty('sealingKeyFingerprint');
+describe('buildCardView — the steward-unlock line (#663, #688)', () => {
+  const panelAsk: SigninAsk = { ...ask, service: 'the control panel', credential: 'administrator', offer: 'seat-unlock' };
+
+  it('carries the unlock line when it is offered, and nothing of a sealing key', () => {
+    const v = buildCardView(panelAsk, shown, 'EHa4mPq', true, true);
+    expect(v.unlockLine).toBe(true);
+    expect(v.panel).toBe(true);
+    expect(v).not.toHaveProperty('unlock');
+    expect(v.details).toEqual({
+      aid: 'EHa4mPq',
+      credentialSaid: 'ECredSAID',
+      challengeId: 'c_3f9',
+      boundMessage: 'idss-idp:https://id.example.nz/login:EHa4mPq:c_3f9',
+    });
   });
 
-  it('has no unlock region by default (every ordinary card is untouched)', () => {
+  it('has no unlock line by default (every ordinary card is untouched)', () => {
     const v = buildCardView(ask, shown, 'EHa4mPq', true);
-    expect(v.unlock).toBeNull();
+    expect(v.unlockLine).toBe(false);
+    expect(v.panel).toBe(false);
+  });
+
+  it('marks a control-panel card by what the code offers, never by the name in svc', () => {
+    expect(buildCardView({ ...ask, service: 'the control panel' }, shown, 'EHa4mPq', true).panel).toBe(false);
+    expect(buildCardView({ ...ask, service: 'Files', offer: 'unlock' }, shown, 'EHa4mPq', true).panel).toBe(true);
+  });
+});
+
+// PU-A4's WHERE line (#688): the community's control panel, by name. The code
+// carries no address for the panel, and none is guessed from the sign-in site's.
+describe('buildCardView — where an unlock unlocks (#688)', () => {
+  const unlockAsk: SigninAsk = { ...ask, service: 'the control panel', credential: 'administrator', offer: 'unlock' };
+
+  it("names the community's control panel", () => {
+    expect(buildCardView(unlockAsk, shown, 'EHa4mPq', true).panelName).toBe(
+      "Te Rūnanga o Example's control panel",
+    );
+    expect(buildCardView({ ...unlockAsk, community: '' }, shown, 'EHa4mPq', true).panelName).toBe(
+      "your community's control panel",
+    );
+  });
+
+  it('derives no panel address from the sign-in site', () => {
+    const v = buildCardView(unlockAsk, shown, 'EHa4mPq', true);
+    expect(v).not.toHaveProperty('panelAddress');
+    expect(JSON.stringify(v)).not.toContain('admin.');
   });
 });
 
@@ -79,8 +113,8 @@ describe('buildCardView — the credential the door asked for (#683)', () => {
   };
 
   it('carries the asked credential\'s name, with or without a credential to show', () => {
-    expect(buildCardView(panelAsk, null, 'EHa4mPq', true, null, 'Administrator').askedName).toBe('Administrator');
-    expect(buildCardView(ask, shown, 'EHa4mPq', true, null, 'Membership').askedName).toBe('Membership');
+    expect(buildCardView(panelAsk, null, 'EHa4mPq', true, false, 'Administrator').askedName).toBe('Administrator');
+    expect(buildCardView(ask, shown, 'EHa4mPq', true, false, 'Membership').askedName).toBe('Membership');
     expect(buildCardView(ask, shown, 'EHa4mPq', true).askedName).toBe('');
   });
 
@@ -91,17 +125,17 @@ describe('buildCardView — the credential the door asked for (#683)', () => {
   );
 
   it('proves what is presented: holding the named credential, else membership as before', () => {
-    expect(buildCardView(panelAsk, administrator, 'EHa4mPq', true, null, 'Administrator').provingLine).toBe(
+    expect(buildCardView(panelAsk, administrator, 'EHa4mPq', true, false, 'Administrator').provingLine).toBe(
       'Proving you hold Administrator…',
     );
-    expect(buildCardView(ask, shown, 'EHa4mPq', true, null, 'Membership').provingLine).toBe(
+    expect(buildCardView(ask, shown, 'EHa4mPq', true, false, 'Membership').provingLine).toBe(
       "Proving you're a member…",
     );
   });
 
   it('an operator answering the panel with their Membership is proving membership', () => {
     // The door asked for Administrator; what is shown is the fallback Membership.
-    const v = buildCardView(panelAsk, shown, 'EHa4mPq', true, null, 'Administrator');
+    const v = buildCardView(panelAsk, shown, 'EHa4mPq', true, false, 'Administrator');
     expect(v.askedName).toBe('Administrator');
     expect(v.provingLine).toBe("Proving you're a member…");
   });

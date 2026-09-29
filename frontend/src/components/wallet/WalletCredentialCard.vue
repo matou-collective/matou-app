@@ -13,6 +13,9 @@
   The foot's button is the `action` slot, OPEN by default. The sign-in approve
   screen draws the credential it is about to present as this card and puts
   Approve there instead (#683), so what is pressed is visibly the thing shown.
+  The card's name and the community that issued it carry the `data-field`s the
+  approve card's wireframe names for them (idss PU-A4: `credential-name`,
+  `credential-issuer`, #688).
 
   DESIGN SOURCE — keep in sync with the IDSS panel card. When the panel card
   changes, this file is its named counterpart to update:
@@ -37,13 +40,13 @@
     </header>
 
     <div class="cred-body">
-      <h4 class="cred-name">{{ name }}</h4>
+      <h4 class="cred-name" data-field="credential-name">{{ name }}</h4>
       <span class="cred-tag">{{ tag }}</span>
       <p v-if="serviceName" class="cred-line cred-prod">
         services know it as <code>{{ serviceName }}</code>
       </p>
       <p v-else-if="subtitle" class="cred-line cred-subtitle">{{ subtitle }}</p>
-      <p v-if="description" class="cred-line">{{ description }}</p>
+      <p v-if="description" class="cred-line" data-field="credential-issuer">{{ description }}</p>
       <p v-if="recipient" class="cred-line cred-recipient">{{ recipient }}</p>
     </div>
 
