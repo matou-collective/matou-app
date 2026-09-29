@@ -8,7 +8,8 @@ import { useIdentityStore } from 'stores/identity';
 import { getOrFetchOrgConfig } from 'src/api/config';
 import { getMembershipSchemaSaid, getMembershipSchemaOobi } from 'src/lib/clientConfig';
 import { useKERINotificationService, type KERINotification } from './useKERINotificationService';
-import { claimNotification, isGrantAlreadyAdmitted } from 'src/lib/keri/notifications';
+import { claimNotification } from 'src/lib/keri/notifications';
+import { admitGrant as admitSharedGrant, type GrantClient } from 'src/lib/keri/grantAdmission';
 import { BACKEND_URL } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { isSelfAgentOobi } from 'src/lib/selfAgentOobi';
@@ -578,55 +579,30 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     console.log('[CredentialPolling] Admitting grant:', grant.a.d);
 
     try {
-      // Get the grant exchange message to find the sender
-      const grantExn = await client.exchanges().get(grant.a.d);
-      const grantSender = grantExn.exn.i; // Issuer of the grant message
-
-      // Idempotency (issue #470): two signify clients on one agent both see
-      // this grant. If the credential is already in the wallet the other
-      // client (or a prior cycle) has admitted it — a second admit would be a
-      // redundant IPEX admit on an already-admitted grant. Mark read and stop.
-      if (await isGrantAlreadyAdmitted(client, grantExn)) {
-        await client.notifications().mark(grant.i);
+      // The admit itself — idempotent on the credential (issue #470), marked
+      // read only after it succeeds — is shared with the admission that runs
+      // after joining (issue #685).
+      const outcome = await admitSharedGrant(client as unknown as GrantClient, aidName, grant);
+      const grantSender = outcome.grantSender;
+      if (outcome.alreadyAdmitted) {
         console.debug('[CredentialPolling] Grant already admitted — skipping (idempotent)');
         return;
       }
-
-      // Submit admit with empty embeds. KERIA's sendAdmit() for single-sig
-      // AIDs does not process path labels — the Admitter background task
-      // retrieves ACDC/ISS/ANC data from the GRANT's cloned attachments.
-      const hab = await client.identifiers().get(aidName);
-      const [admit, sigs, atc] = await client.exchanges().createExchangeMessage(
-        hab,
-        '/ipex/admit',
-        { m: '' },
-        {},
-        grantSender,
-        undefined,
-        grant.a.d,
-      );
-
-      // Submit the admit
-      await client.ipex().submitAdmit(aidName, admit, sigs, atc, [grantSender]);
-
-      // Mark notification as read
-      await client.notifications().mark(grant.i);
 
       console.log('[CredentialPolling] Grant admitted successfully');
       lastGrantSender = grantSender || null;
       // Diagnostics for issue #51: which KEL event anchors this credential,
       // and how far our agent's copy of the issuer's KEL currently reaches.
-      const anc = (grantExn.exn as { e?: { anc?: { s?: string; d?: string } } }).e?.anc;
-      lastGrantAncSn = anc?.s ?? null;
+      lastGrantAncSn = outcome.ancSn;
       try {
         const ksList = await client.keyStates().get(grantSender);
         const ks = (Array.isArray(ksList) ? ksList[0] : ksList) as { s?: string } | undefined;
         console.log(
-          `[CredentialPolling] Grant anchor: issuer ${grantSender.slice(0, 12)}... anc sn=${anc?.s ?? '?'} d=${(anc?.d ?? '?').slice(0, 12)}; ` +
+          `[CredentialPolling] Grant anchor: issuer ${grantSender.slice(0, 12)}... anc sn=${outcome.ancSn ?? '?'}; ` +
           `our local KEL for issuer at sn=${ks?.s ?? 'none'}`,
         );
       } catch (ksErr) {
-        console.log(`[CredentialPolling] Grant anchor: anc sn=${anc?.s ?? '?'}; issuer key state not in our agent yet (${ksErr instanceof Error ? ksErr.message : ksErr})`);
+        console.log(`[CredentialPolling] Grant anchor: anc sn=${outcome.ancSn ?? '?'}; issuer key state not in our agent yet (${ksErr instanceof Error ? ksErr.message : ksErr})`);
       }
 
       // De-escrow: our agent may not know the grant issuer's key state yet

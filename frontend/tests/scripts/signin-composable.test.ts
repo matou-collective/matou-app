@@ -526,6 +526,50 @@ describe('useSignin — the credential the door names (#683)', () => {
     expect(s.phase.value).toBe('no-credential');
   });
 
+  // #685: a credential issued after joining waits in the agent as a grant. A
+  // code scanned cold opens the app on this card, not the dashboard, so the
+  // card admits what the community issued before it says there is nothing.
+  it('admits a credential the community issued but the wallet had not yet accepted, then shows it', async () => {
+    const wallet: HeldCredential[] = [cred];
+    const s = useSignin(
+      deps({
+        listCredentials: async () => [...wallet],
+        admitPending: async () => {
+          wallet.push(administratorCred);
+        },
+      }),
+    );
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(administratorCred);
+    expect(s.view.value?.credential?.card.name).toBe('Administrator');
+  });
+
+  it('admits nothing when the wallet already holds what the door asks for', async () => {
+    const admitPending = vi.fn(async () => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [administratorCred], admitPending }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(admitPending).not.toHaveBeenCalled();
+  });
+
+  it('lands on no-credential when the admission fails or finds nothing', async () => {
+    const failing = useSignin(
+      deps({
+        listCredentials: async () => [cred],
+        admitPending: async () => {
+          throw new Error('agent unreachable');
+        },
+      }),
+    );
+    await failing.prepareFromLink(ADMIN_LINK);
+    expect(failing.phase.value).toBe('no-credential');
+
+    const empty = useSignin(deps({ listCredentials: async () => [cred], admitPending: async () => undefined }));
+    await empty.prepareFromLink(ADMIN_LINK);
+    expect(empty.phase.value).toBe('no-credential');
+  });
+
   it('a service ask that names no credential shows and presents the Membership, as before', async () => {
     const present = vi.fn(async () => ({ outcome: 'verified' as const }));
     const s = useSignin(deps({ listCredentials: async () => [financeCred, administratorCred, cred], present }));
