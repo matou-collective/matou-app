@@ -78,6 +78,36 @@ export const STALE_CODE_TEXT: Record<'unknown' | 'spent' | 'expired', string> = 
  */
 export const NO_CREDENTIAL_TEXT = 'You do not have the required credential to sign into this service';
 
+/**
+ * What the wallet will present instead, when the door answered `revoked` and
+ * the wallet holds something else this door admits (#690) — at the control
+ * panel, a steward's Membership behind a revoked Administrator.
+ */
+export interface RevokedFallback {
+  /** The name of the credential the door called revoked ("Administrator"). */
+  revoked: string;
+  /** The name of the credential the next code will present ("Membership"). */
+  next: string;
+}
+
+/**
+ * The `revoked` sentence when there is a fallback (#690): it names the
+ * credential that was revoked — which is not the Membership, so the shared tail
+ * would be wrong — and says what happens next. The refused code is spent (a
+ * sign-in code is single-use), so trying again means a fresh code from the
+ * sign-in page; on that code the wallet presents the fallback.
+ */
+export function revokedWithFallbackText(fallback: RevokedFallback): string {
+  const revoked = fallback.revoked.trim();
+  // A name that already ends with the word is not given it twice.
+  const named = /\bcredential$/i.test(revoked) ? revoked : `${revoked} credential`;
+  const subject = revoked ? `your ${named}` : 'that credential';
+  return (
+    `${REFUSAL_OPENER}${subject} has been revoked. ` +
+    `Try again with a fresh code from the sign-in page, and you will sign in with your ${fallback.next.trim()}.`
+  );
+}
+
 /** The line beneath *Try again* on a verification refusal (story 25). */
 export const CONTACT_LINE = "or contact your community's operator";
 
@@ -98,8 +128,11 @@ export interface RefusalCopy {
  * to the wallet's copy. An unrecognised kind is treated as `signature`, the
  * least specific verification tail, so a new or garbled slug never leaks a
  * more specific reason nor renders blank.
+ *
+ * `fallback` is read for a `revoked` refusal only: when it names a credential
+ * the wallet will present next, the sentence says so (#690).
  */
-export function refusalCopy(raw: string | null | undefined): RefusalCopy {
+export function refusalCopy(raw: string | null | undefined, fallback?: RevokedFallback | null): RefusalCopy {
   const kind = normalizeRefusal(raw);
 
   if (kind === 'records-unreachable') {
@@ -115,6 +148,9 @@ export function refusalCopy(raw: string | null | undefined): RefusalCopy {
     // Trying again would present the same credential to the same door, so none
     // is offered; the screen itself says who can issue the credential.
     return { kind, text: NO_CREDENTIAL_TEXT, showTryAgain: false, showContact: false };
+  }
+  if (kind === 'revoked' && fallback?.next.trim()) {
+    return { kind, text: revokedWithFallbackText(fallback), showTryAgain: true, showContact: true };
   }
   return {
     kind,

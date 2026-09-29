@@ -11,6 +11,8 @@ import { useAppStore } from 'stores/app';
 import { toKeriAlias } from 'src/lib/keri/alias';
 import { clearSigners } from 'src/lib/signin/signer';
 import { clearArming } from 'src/lib/signin/armedPasscode';
+import { clearRevokedMemory } from 'src/lib/signin/revokedMemory';
+import { clearHeldCodes } from 'src/lib/signin/heldCodes';
 
 export interface AdminCredentialInfo extends CredentialInfo {
   role?: string;
@@ -502,6 +504,11 @@ export const useIdentityStore = defineStore('identity', () => {
     // Drop any armed passcode handover too — an arming must never outlive the
     // wallet's own unlocked session (#674).
     clearArming();
+    // And what a sign-in door said of a credential: it is remembered for the
+    // unlocked session only, and the next identity here may hold none of them
+    // (#690). The codes a door will not take again go with it.
+    clearRevokedMemory();
+    clearHeldCodes();
     currentAID.value = null;
     passcode.value = null;
     isConnected.value = false;

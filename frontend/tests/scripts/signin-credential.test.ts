@@ -4,7 +4,7 @@
  * issue date; the export is trimmed to the ACDC and its iss, dropping the KEL
  * noise the door reads from the witnessed ledger itself.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
@@ -12,6 +12,7 @@ import {
   describeCredential,
   credentialCard,
   askedCredentialName,
+  credentialSpokenName,
   ADMINISTRATOR_SLUG,
   trimPresentation,
   formatIssueDate,
@@ -20,6 +21,12 @@ import {
 import golden from './fixtures/app-door/app-door-golden.json';
 import { NO_CREDENTIAL_TEXT, normalizeRefusal } from 'src/lib/signin/refusal';
 import { parseSigninLink } from 'src/lib/signin/link';
+import { asTheDoorReadThem, rememberRevoked, forgetRevoked, clearRevokedMemory } from 'src/lib/signin/revokedMemory';
+
+// What a door said of one credential must never leak into the next test.
+beforeEach(() => {
+  clearRevokedMemory();
+});
 
 const MEMBERSHIP = 'EMembershipSchemaSAID';
 const HOLDER = 'EHolderAID';
@@ -231,6 +238,154 @@ describe('chooseCredential — the credential the door names (#683)', () => {
     expect(chooseCredential([financeCred, membershipCred], [MEMBERSHIP], HOLDER)).toBe(membershipCred);
     expect(chooseCredential([financeCred, membershipCred], [MEMBERSHIP], HOLDER, undefined)).toBe(membershipCred);
     expect(chooseCredential([financeCred, membershipCred], [MEMBERSHIP], HOLDER, '')).toBe(membershipCred);
+  });
+});
+
+// A credential the DOOR called revoked (#690). The door's answer is the witnessed
+// ledger's; the agent's record of a held credential is as old as the day it was
+// admitted, so a credential revoked since still reads as live there. What the
+// door said is remembered of that one SAID, at that one sign-in site, and the
+// credentials are read as that site read them before one is chosen — so it is
+// passed over exactly as one the agent reads as revoked.
+describe('chooseCredential — a credential the door called revoked (#690)', () => {
+  const DOOR = 'https://id.example.nz/login';
+  const operatorCred: HeldCredential = {
+    sad: { d: 'EOperatorSAID', s: MEMBERSHIP, i: 'EIssuer', a: { i: HOLDER, role: 'operator' } },
+    status: { s: '0', et: 'iss' },
+  };
+  /** The choice at DOOR, from the credentials as DOOR read them. */
+  const chooseAtDoor = (held: readonly HeldCredential[], schemas: readonly string[], credential?: string) =>
+    chooseCredential(asTheDoorReadThem(held, DOOR), schemas, HOLDER, credential);
+
+  it('is presented until the door has said so — the agent reads it as live', () => {
+    expect(chooseAtDoor([administratorCred, operatorCred], PANEL_SCHEMAS, 'administrator')).toBe(administratorCred);
+  });
+
+  it.each([
+    ['Administrator first', [administratorCred, operatorCred]],
+    ['Membership first', [operatorCred, financeCred, administratorCred]],
+  ])("passes over it for the steward's Membership (%s)", (_order, held) => {
+    rememberRevoked(DOOR, 'EAdministratorSAID');
+    expect(chooseAtDoor(held, PANEL_SCHEMAS, 'administrator')).toBe(operatorCred);
+  });
+
+  it('passes over it for nothing when the holder is not a steward', () => {
+    rememberRevoked(DOOR, 'EAdministratorSAID');
+    expect(
+      chooseAtDoor([administratorCred, financeCred, membershipCred], PANEL_SCHEMAS, 'administrator'),
+    ).toBeUndefined();
+  });
+
+  it('passes over it for the live one issued after it', () => {
+    const issuedAgain: HeldCredential = {
+      sad: { ...administratorCred.sad, d: 'EAdministratorAgainSAID' },
+      status: { s: '0', et: 'iss' },
+    };
+    rememberRevoked(DOOR, 'EAdministratorSAID');
+    expect(chooseAtDoor([administratorCred, operatorCred, issuedAgain], PANEL_SCHEMAS, 'administrator')).toBe(
+      issuedAgain,
+    );
+  });
+
+  it('is presented again once it is read as live', () => {
+    rememberRevoked(DOOR, 'EAdministratorSAID');
+    forgetRevoked('EAdministratorSAID');
+    expect(chooseAtDoor([administratorCred, operatorCred], PANEL_SCHEMAS, 'administrator')).toBe(administratorCred);
+  });
+
+  it('is what that one sign-in site said: at another site it is presented as the agent reads it', () => {
+    rememberRevoked('https://id.other.nz/login', 'EAdministratorSAID');
+    expect(chooseAtDoor([administratorCred, operatorCred], PANEL_SCHEMAS, 'administrator')).toBe(administratorCred);
+  });
+
+  it('is never read by the choice itself: what is chosen follows from the credentials it is given', () => {
+    rememberRevoked(DOOR, 'EAdministratorSAID');
+    expect(chooseCredential([administratorCred, operatorCred], PANEL_SCHEMAS, HOLDER, 'administrator')).toBe(
+      administratorCred,
+    );
+  });
+
+  describe('a Membership the door called revoked', () => {
+    const laterOperator: HeldCredential = {
+      sad: { ...operatorCred.sad, d: 'EOperatorLaterSAID' },
+      status: { s: '0', et: 'iss' },
+    };
+    const laterMembership: HeldCredential = {
+      sad: { ...membershipCred.sad, d: 'ECredLaterSAID' },
+      status: { s: '0', et: 'iss' },
+    };
+
+    // The wallet still holds the revoked one — an agent lists every credential
+    // it was ever issued — so the choice is made with both in hand.
+    it.each([
+      ['the revoked one first', [operatorCred, laterOperator]],
+      ['the later one first', [laterOperator, operatorCred]],
+    ])("at the control panel: the steward's later Membership is the fallback (%s)", (_order, held) => {
+      rememberRevoked(DOOR, 'EOperatorSAID');
+      expect(chooseAtDoor(held, PANEL_SCHEMAS, 'administrator')).toBe(laterOperator);
+    });
+
+    it('at the control panel: a steward whose only Membership it was has nothing to present', () => {
+      rememberRevoked(DOOR, 'EOperatorSAID');
+      expect(chooseAtDoor([operatorCred], PANEL_SCHEMAS, 'administrator')).toBeUndefined();
+    });
+
+    it.each([
+      ['the revoked one first', [membershipCred, laterMembership]],
+      ['the later one first', [laterMembership, membershipCred]],
+      ['the revoked one first, among others', [financeCred, membershipCred, administratorCred, laterMembership]],
+    ])("at a service's door: the later, live Membership is presented (%s)", (_order, held) => {
+      rememberRevoked(DOOR, 'ECredSAID');
+      expect(chooseAtDoor(held, [MEMBERSHIP])).toBe(laterMembership);
+    });
+
+    it("at a service's door: the agent's own reading is passed over the same way", () => {
+      const revoked: HeldCredential = { ...membershipCred, status: { s: '1', et: 'rev' } };
+      expect(chooseCredential([revoked, laterMembership], [MEMBERSHIP], HOLDER)).toBe(laterMembership);
+      expect(chooseCredential([laterMembership, revoked], [MEMBERSHIP], HOLDER)).toBe(laterMembership);
+    });
+
+    it("at a service's door: when it is the only one held it is still presented, so the door says why", () => {
+      rememberRevoked(DOOR, 'ECredSAID');
+      expect(chooseAtDoor([membershipCred], [MEMBERSHIP])?.sad?.d).toBe('ECredSAID');
+      expect(chooseAtDoor([financeCred, membershipCred], [MEMBERSHIP])?.sad?.d).toBe('ECredSAID');
+    });
+  });
+
+  it('wears the revoked status on its card', () => {
+    expect(credentialCard(administratorCred, {}).statusTone).toBe('healthy');
+    rememberRevoked(DOOR, 'EAdministratorSAID');
+    const card = credentialCard(asTheDoorReadThem([administratorCred], DOOR)[0]!, {});
+    expect(card.statusTone).toBe('warning');
+    expect(card.statusLabel).toBe(credentialCard({ ...administratorCred, status: { s: '1', et: 'rev' } }, {}).statusLabel);
+    expect(card.statusLabel).toBe('Revoked');
+  });
+});
+
+// What a credential is called in a sentence (#690) — the refusal that says
+// which credential was revoked and which will be presented next.
+describe('credentialSpokenName', () => {
+  const kinds = { [MEMBERSHIP]: 'membership', [COMMITTEE]: 'committee' };
+
+  it('calls a Membership by its kind, never by its schema title', () => {
+    // As the agent returns it: the schema rides beside the credential.
+    const asHeld: HeldCredential = { ...membershipCred, schema: { title: 'MATOU Membership Credential' } };
+    expect(credentialSpokenName(asHeld, kinds)).toBe('Membership');
+    expect(credentialSpokenName(membershipCred, kinds)).toBe('Membership');
+    expect(credentialSpokenName(membershipCred, {})).toBe('Membership');
+  });
+
+  it('calls a komiti credential by its own name', () => {
+    const asHeld: HeldCredential = { ...administratorCred, schema: { title: 'Committee Credential' } };
+    expect(credentialSpokenName(asHeld, kinds)).toBe('Administrator');
+    expect(credentialSpokenName(financeCred, kinds)).toBe('Finance');
+  });
+
+  it('uses the name its community gave it, when it gave one', () => {
+    const named: HeldCredential = {
+      sad: { ...administratorCred.sad, a: { ...administratorCred.sad!.a, display: { name: 'Kaiwhakahaere' } } },
+    };
+    expect(credentialSpokenName(named, kinds)).toBe('Kaiwhakahaere');
   });
 });
 

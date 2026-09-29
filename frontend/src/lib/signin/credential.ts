@@ -103,6 +103,11 @@ export interface CredentialToShow {
  * credential whose schema is in the requested set (or, when the ask names no
  * schema either, the sole/first credential — the prototype's fallback). v1 never
  * surfaces a picker — one community issues one Membership.
+ *
+ * A revoked credential is never the match for a door that names what it asks
+ * for. For one that names none, a live credential is always the match before a
+ * revoked one; a member whose only Membership is revoked still presents it, so
+ * the door — not a blank screen — tells them it was revoked (#687).
  */
 export function chooseCredential(
   creds: readonly HeldCredential[],
@@ -111,10 +116,13 @@ export function chooseCredential(
   credential?: string,
 ): HeldCredential | undefined {
   const named = (credential ?? '').trim();
-  if (!named) return creds.find((c) => isAsked(c, schemas, holderAid));
-
   // A revoked credential is passed over, so one that was revoked and issued
   // again presents the live one rather than being refused on the dead one.
+  if (!named) {
+    const asked = creds.filter((c) => isAsked(c, schemas, holderAid));
+    return asked.find((c) => !isRevoked(c)) ?? asked[0];
+  }
+
   const asked = creds.find((c) => isAsked(c, schemas, holderAid) && !isRevoked(c) && credentialSlug(c) === named);
   if (asked || named !== ADMINISTRATOR_SLUG) return asked;
 
@@ -163,8 +171,14 @@ export function credentialSlug(cred: HeldCredential): string {
   return typeof slug === 'string' ? slug.trim() : '';
 }
 
-/** Whether the agent last read this credential as revoked. */
-function isRevoked(cred: HeldCredential): boolean {
+/**
+ * Whether this credential reads as revoked, from the standing it carries. The
+ * agent's record is as old as the day the credential was admitted; a sign-in
+ * site that answered `revoked` to it read the witnessed ledger since, and the
+ * sign-in reads the held credentials as that site read them before it asks
+ * here (#690, `asTheDoorReadThem`).
+ */
+export function isRevoked(cred: HeldCredential): boolean {
   return cred.status?.et === 'rev' || isRevokedStatus(String(cred.status?.s ?? ''));
 }
 
@@ -265,6 +279,20 @@ export function credentialCard(
     description: credential.communityName || community.trim() || UNNAMED_COMMUNITY,
     footer: issuedOn ? `Issued ${issuedOn}` : '',
   };
+}
+
+/**
+ * What to call a held credential in a sentence (#690) — the refusal that says
+ * which credential was revoked and which the next code will present. A komiti
+ * credential goes by its own name, as on its card: the name its community gave
+ * it, else its title-cased slug ("Administrator"). A Membership goes by its
+ * kind ("Membership") unless its community named it — never by its schema's
+ * title, which is the schema's name and not the credential's ("MATOU Membership
+ * Credential").
+ */
+export function credentialSpokenName(cred: HeldCredential, schemaKinds: Record<string, string> = {}): string {
+  const credential = toWalletCredential(asRecord(cred));
+  return credentialTitle(credential, kindLabelFor(schemaKinds[credential.schemaSaid] ?? ''));
 }
 
 /**
