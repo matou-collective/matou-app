@@ -43,7 +43,7 @@ function deps(overrides: Partial<SigninDeps> = {}): SigninDeps {
     exportCredential: async (said) => `EXPORT:${said}`,
     sign: async (_aid, m) => `sig(${m})`,
     present: async () => ({ outcome: 'verified' }),
-    schemaKinds: async () => ({ EMe: 'membership' }),
+    schemaKinds: async () => ({ EMe: 'membership', ECo: 'committee' }),
     ready: async () => undefined,
     sealingKeyFingerprint: async (verkey) => `fp(${verkey})`,
     now: () => 1_000_000,
@@ -427,5 +427,271 @@ describe('useSignin — the steward-unlock line (#663)', () => {
     await s.approve();
     expect(s.phase.value).toBe('refused');
     expect(answerHandover).not.toHaveBeenCalled();
+  });
+});
+
+// The credential the door names (#683, idss ADR 0289). The control panel's door
+// asks for Administrator by slug; the wallet presents that credential, else an
+// operator's Membership, else nothing.
+describe('useSignin — the credential the door names (#683)', () => {
+  const financeCred: HeldCredential = {
+    sad: { d: 'EFinance', s: 'ECo', i: 'ECommunity', a: { i: 'EHa', committee: 'finance', dt: '2026-09-01T00:00:00Z' } },
+    status: { s: '0', et: 'iss' },
+  };
+  const administratorCred: HeldCredential = {
+    sad: {
+      d: 'EAdministrator',
+      s: 'ECo',
+      i: 'ECommunity',
+      a: { i: 'EHa', committee: 'administrator', dt: '2026-09-28T00:00:00Z' },
+    },
+    status: { s: '0', et: 'iss' },
+  };
+  // The golden's panel ask: committee schema first, then membership; cred named.
+  const ADMIN_LINK =
+    'matou://signin?c=c_admin&cred=administrator&door=https://id.example.nz/login&name=Home&present=https://id.example.nz/login/app/present&s=ECo,EMe&svc=the%20control%20panel';
+  const ADMIN_PANEL_LINK = `${ADMIN_LINK}&ek=DVERKEY_EXAMPLE`;
+
+  it.each([
+    ['Membership, Finance, Administrator', [cred, financeCred, administratorCred]],
+    ['Finance, Administrator, Membership', [financeCred, administratorCred, cred]],
+  ])('shows and presents Administrator whatever order the wallet holds them in (%s)', async (_order, held) => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const exportCredential = vi.fn(async (said: string) => `EXPORT:${said}`);
+    const s = useSignin(deps({ listCredentials: async () => held, present, exportCredential }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(administratorCred);
+    expect(s.view.value?.credential?.name).toBe('Administrator');
+    expect(s.view.value?.credential?.card.name).toBe('Administrator');
+
+    await s.approve();
+    expect(exportCredential).toHaveBeenCalledTimes(1);
+    expect(exportCredential).toHaveBeenCalledWith('EAdministrator');
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body.presentation).toBe('EXPORT:EAdministrator');
+    expect(s.phase.value).toBe('done');
+  });
+
+  // #683 as amended (Ben, 2026-09-28): the founding operator, and any steward
+  // still on the legacy role, is never shown the no-credential screen at the
+  // control panel — the gateway admits them on their Membership.
+  it.each([
+    ['alone', [stewardCred]],
+    ['after a komiti credential', [financeCred, stewardCred]],
+    ['before a komiti credential', [stewardCred, financeCred]],
+  ])('an operator with no Administrator is shown and presents their Membership (%s)', async (_case, held) => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const s = useSignin(deps({ listCredentials: async () => held, present }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(stewardCred);
+    expect(s.view.value?.credential?.card.name).toBe('Membership');
+    expect(s.view.value?.provingLine).toBe("Proving you're a member…");
+    await s.approve();
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body.presentation).toBe('EXPORT:ECred');
+    expect(s.phase.value).toBe('done');
+  });
+
+  it('an operator who also holds Administrator is shown and presents Administrator', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred], present }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.chosen.value).toBe(administratorCred);
+    await s.approve();
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body.presentation).toBe('EXPORT:EAdministrator');
+  });
+
+  it('a wallet holding Membership only lands on no-credential and posts nothing', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const exportCredential = vi.fn(async (said: string) => `EXPORT:${said}`);
+    const sign = vi.fn(async (_aid: string, m: string) => `sig(${m})`);
+    const s = useSignin(deps({ listCredentials: async () => [cred], present, exportCredential, sign }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('no-credential');
+    expect(s.chosen.value).toBeNull();
+    // The screen can name what the door asked for, and who asked.
+    expect(s.view.value?.askedName).toBe('Administrator');
+    expect(s.view.value?.service).toBe('the control panel');
+    expect(s.view.value?.credential).toBeNull();
+    expect(s.posted.value).toBe(false);
+
+    // There is no Approve; were it called anyway, nothing is signed or posted.
+    await s.approve();
+    expect(sign).not.toHaveBeenCalled();
+    expect(exportCredential).not.toHaveBeenCalled();
+    expect(present).not.toHaveBeenCalled();
+    expect(s.phase.value).toBe('no-credential');
+  });
+
+  it('a service ask that names no credential shows and presents the Membership, as before', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const s = useSignin(deps({ listCredentials: async () => [financeCred, administratorCred, cred], present }));
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(cred);
+    expect(s.view.value?.credential?.card.name).toBe('Membership');
+    await s.approve();
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body.presentation).toBe('EXPORT:ECred');
+  });
+
+  it('a wallet holding nothing the service asks for lands on no-credential too', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [financeCred] }));
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('no-credential');
+    expect(s.view.value?.askedName).toBe('Membership');
+  });
+
+  it('no-credential is shown without first asking to trust an unmet site — nothing would be shown to it', async () => {
+    knownDoors.isKnown.mockReturnValue(false);
+    const s = useSignin(deps({ listCredentials: async () => [cred] }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('no-credential');
+  });
+
+  it("the door's own no-credential refusal lands on the same screen, marked as posted", async () => {
+    const s = useSignin(
+      deps({
+        listCredentials: async () => [administratorCred],
+        present: async () => ({ outcome: 'refused', refusal: 'no-credential' }),
+      }),
+    );
+    await s.prepareFromLink(ADMIN_LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('no-credential');
+    expect(s.posted.value).toBe(true);
+    expect(touch).not.toHaveBeenCalled();
+  });
+
+  it('a fresh code after no-credential starts clean', async () => {
+    const s = useSignin(
+      deps({
+        listCredentials: async () => [cred, administratorCred],
+        present: async () => ({ outcome: 'refused', refusal: 'no-credential' }),
+      }),
+    );
+    await s.prepareFromLink(ADMIN_LINK);
+    await s.approve();
+    expect(s.posted.value).toBe(true);
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.posted.value).toBe(false);
+  });
+
+  // The handover rides the same card (#663/#674). What is presented changes;
+  // who may unlock, and how the wallet arms, do not.
+  describe('the panel handover is unchanged', () => {
+    it('a steward presenting Administrator is still offered the unlock line, and arms exactly as before', async () => {
+      const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+      const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+      const answerHandover = vi.fn(async () => undefined);
+      const s = useSignin(
+        deps({
+          // The steward's standing is on their Membership; what they present at
+          // this door is their Administrator.
+          listCredentials: async () => [stewardCred, financeCred, administratorCred],
+          present,
+          arm,
+          answerHandover,
+          now: () => 1_000_000,
+        }),
+      );
+      await s.prepareFromLink(ADMIN_PANEL_LINK);
+      expect(s.chosen.value).toBe(administratorCred);
+      expect(s.unlockAvailable.value).toBe(true);
+      expect(s.unlockOn.value).toBe(true);
+      expect(s.view.value?.unlock).toEqual({ sealingKeyFingerprint: 'fp(DVERKEY_EXAMPLE)' });
+
+      await s.approve();
+      expect(arm).toHaveBeenCalledTimes(1);
+      expect(arm.mock.calls[0]![0]).toBe('c_admin');
+      expect(arm.mock.calls[0]![1]).toBeGreaterThan(1_000_000);
+      const body = present.mock.calls[0]![1] as Record<string, unknown>;
+      expect(body.presentation).toBe('EXPORT:EAdministrator');
+      expect(body.armed).toBe(true);
+      expect(body).not.toHaveProperty('sealed_passcode');
+      expect(answerHandover).toHaveBeenCalledWith('https://id.example.nz/login/app/present', 'c_admin', 'EHa');
+      expect(s.phase.value).toBe('done');
+    });
+
+    it('an operator answering with their Membership arms exactly as before', async () => {
+      const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+      const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+      const answerHandover = vi.fn(async () => undefined);
+      const s = useSignin(deps({ listCredentials: async () => [financeCred, stewardCred], present, arm, answerHandover }));
+      await s.prepareFromLink(ADMIN_PANEL_LINK);
+      expect(s.chosen.value).toBe(stewardCred);
+      expect(s.unlockAvailable.value).toBe(true);
+      await s.approve();
+      expect(arm).toHaveBeenCalledTimes(1);
+      const body = present.mock.calls[0]![1] as Record<string, unknown>;
+      expect(body.presentation).toBe('EXPORT:ECred');
+      expect(body.armed).toBe(true);
+      expect(answerHandover).toHaveBeenCalledWith('https://id.example.nz/login/app/present', 'c_admin', 'EHa');
+    });
+
+    it('an administrator who is not a steward is offered no unlock line and arms nothing', async () => {
+      // Administrator grants the panel, not signing (idss ADR 0286 d.2): holding
+      // it does not make its holder a steward.
+      const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+      const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+      const s = useSignin(deps({ listCredentials: async () => [cred, administratorCred], present, arm }));
+      await s.prepareFromLink(ADMIN_PANEL_LINK);
+      expect(s.chosen.value).toBe(administratorCred);
+      expect(s.unlockAvailable.value).toBe(false);
+      expect(s.view.value?.unlock).toBeNull();
+      await s.approve();
+      expect(arm).not.toHaveBeenCalled();
+      const body = present.mock.calls[0]![1] as Record<string, unknown>;
+      expect(body).not.toHaveProperty('armed');
+    });
+
+    it.each([
+      [
+        'revoked',
+        { sad: stewardCred.sad, status: { s: '1', et: 'rev' } } as HeldCredential,
+      ],
+      [
+        'of a schema the door did not ask for',
+        { sad: { ...stewardCred.sad, s: 'ESomeOtherCommunity' } } as HeldCredential,
+      ],
+      [
+        'a komiti credential that claims the role',
+        { sad: { d: 'EKomiti', s: 'ECo', a: { i: 'EHa', committee: 'finance', role: 'operator' } } } as HeldCredential,
+      ],
+    ])("an administrator's operator standing does not count when it is %s", async (_case, notStanding) => {
+      const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+      const s = useSignin(deps({ listCredentials: async () => [notStanding, administratorCred], arm }));
+      await s.prepareFromLink(ADMIN_PANEL_LINK);
+      expect(s.chosen.value).toBe(administratorCred);
+      expect(s.unlockAvailable.value).toBe(false);
+      await s.approve();
+      expect(arm).not.toHaveBeenCalled();
+    });
+
+    it('when a Membership is presented, its own role decides — as it always did', async () => {
+      // A door that names no credential (a gateway that predates `cred=`): the
+      // first Membership is presented, and a second credential the wallet also
+      // holds never lends it a steward's standing.
+      const alsoHeld: HeldCredential = {
+        sad: { d: 'EOtherOperator', s: 'EMe', i: 'ECommunity', a: { i: 'EHa', role: 'operator' } },
+      };
+      const s = useSignin(deps({ listCredentials: async () => [cred, alsoHeld] }));
+      await s.prepareFromLink(PANEL_LINK);
+      expect(s.chosen.value).toBe(cred);
+      expect(s.unlockAvailable.value).toBe(false);
+    });
+
+    it("a steward's standing is never read off someone else's credential", async () => {
+      const someoneElses: HeldCredential = {
+        sad: { d: 'EOther', s: 'EMe', i: 'ECommunity', a: { i: 'ESomeoneElse', role: 'operator' } },
+      };
+      const s = useSignin(deps({ listCredentials: async () => [someoneElses, cred, administratorCred] }));
+      await s.prepareFromLink(ADMIN_PANEL_LINK);
+      expect(s.unlockAvailable.value).toBe(false);
+    });
   });
 });

@@ -20,7 +20,14 @@ import { getCommunityDescriptor } from 'src/lib/clientConfig';
 import { useIdentityStore } from 'src/stores/identity';
 import { useKnownDoorsStore } from 'src/stores/knownDoors';
 import { parseSigninLink, isPanelSignin, type SigninAsk } from 'src/lib/signin/link';
-import { chooseCredential, describeCredential, type HeldCredential } from 'src/lib/signin/credential';
+import {
+  askedCredentialName,
+  chooseCredential,
+  credentialSlug,
+  describeCredential,
+  isOperatorMembership,
+  type HeldCredential,
+} from 'src/lib/signin/credential';
 import { STEWARD_ROLE } from 'src/lib/spaces/steward';
 import { fingerprintOf, sealPasscode } from 'src/lib/signin/sealedPasscode';
 import { armForChallenge, type PasscodeSealer } from 'src/lib/signin/armedPasscode';
@@ -35,10 +42,19 @@ import { refusalCopy, type RefusalCopy } from 'src/lib/signin/refusal';
  * The card's faces. `loading` holds until the wallet is ready and the card is
  * built; `unavailable` is the try-again fallback when it could not be.
  * `first-contact` (WS-A1) comes *before* the card when the ask names a sign-in
- * site the wallet has never met (#535); the rest are the approve card and its
- * follow-ons (WS-A2/A2p/A2d/A2r).
+ * site the wallet has never met (#535); `no-credential` replaces the card when
+ * the wallet holds nothing the door asks for (#683); the rest are the approve
+ * card and its follow-ons (WS-A2/A2p/A2d/A2r).
  */
-export type SigninPhase = 'loading' | 'unavailable' | 'first-contact' | 'card' | 'proving' | 'done' | 'refused';
+export type SigninPhase =
+  | 'loading'
+  | 'unavailable'
+  | 'first-contact'
+  | 'no-credential'
+  | 'card'
+  | 'proving'
+  | 'done'
+  | 'refused';
 
 /** How long a sign-in waits for the wallet's session restore before giving up. */
 const READY_TIMEOUT_MS = 45_000;
@@ -181,13 +197,29 @@ function makeSealPasscodeLive(identity: { readonly passcode: string | null }): P
 }
 
 /**
- * Whether the presented credential makes its holder a steward — its `role` is
- * `operator` (case-insensitive), the same rule that gates every steward surface
- * (ADR 0226; {@link STEWARD_ROLE}). A missing credential or role is not a
+ * Whether the member presenting is a steward — the rule that gates every
+ * steward surface (ADR 0226; {@link STEWARD_ROLE}). Nothing presented, no
  * steward, so the unlock line is never offered without one (#663).
+ *
+ * When a **Membership** is presented, its own role decides, as it always did:
+ * `operator` (case-insensitive) is a steward. When a **komiti credential** is
+ * presented — Administrator, at the control panel's door (#683, idss ADR 0289)
+ * — the credential carries no role, and holding it makes nobody a steward (idss
+ * ADR 0286 d.2): the standing is read where it still lives, on the member's own
+ * live operator Membership of an asked schema. So who is offered the unlock
+ * line is who was offered it before.
  */
-function presenterIsSteward(cred: HeldCredential | null): boolean {
-  return (cred?.sad?.a?.role ?? '').trim().toLowerCase() === STEWARD_ROLE;
+function presenterIsSteward(
+  presented: HeldCredential | null,
+  held: readonly HeldCredential[],
+  schemas: readonly string[],
+  holderAid: string,
+): boolean {
+  if (!presented) return false;
+  if (!credentialSlug(presented)) {
+    return (presented.sad?.a?.role ?? '').trim().toLowerCase() === STEWARD_ROLE;
+  }
+  return held.some((c) => isOperatorMembership(c, schemas, holderAid));
 }
 
 export function useSignin(deps: SigninDeps = defaultDeps()) {
@@ -218,10 +250,17 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
   /** The credential the wallet will present (null → nothing matches; no Approve). */
   const chosen = shallowRef<HeldCredential | null>(null);
   /**
+   * Whether anything was posted to the door for this sign-in. The no-credential
+   * screen is usually the wallet's own finding — nothing presented, nothing
+   * posted — and says so; it must not say so when the door itself answered
+   * `no-credential` to a presentation (#683).
+   */
+  const posted = ref(false);
+  /**
    * Whether the steward-unlock line is offered on this card (#663): true ONLY
    * when the sign-in is to the control panel (the code carried `ek=`) AND the
-   * presented credential makes the holder a steward. Every other card leaves it
-   * false and nothing is ever armed.
+   * member presenting is a steward ({@link presenterIsSteward}). Every other
+   * card leaves it false and nothing is ever armed.
    */
   const unlockAvailable = ref(false);
   /** Whether the offered unlock line is switched on. On by default; the line IS
@@ -252,6 +291,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     refusal.value = null;
     view.value = null;
     chosen.value = null;
+    posted.value = false;
     // Start disarmed and default-on for every fresh sign-in — arming is decided
     // below, only for a steward's control-panel sign-in.
     unlockAvailable.value = false;
@@ -263,27 +303,44 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
 
       const aid = identity.aidPrefix ?? '';
       const creds = await deps.listCredentials();
-      const cred = chooseCredential(creds, parsed.schemas, aid) ?? null;
+      // The credential the door asked for: the one it named (`cred=`), else
+      // the first of an asked schema as before (#683).
+      const cred = chooseCredential(creds, parsed.schemas, aid, parsed.credential) ?? null;
 
       const kinds = await deps.schemaKinds();
-      const toShow = cred ? describeCredential(cred, kinds) : null;
+      const toShow = cred ? describeCredential(cred, kinds, parsed.community) : null;
       chosen.value = cred;
 
       // The unlock line appears ONLY when the sign-in is to the control panel
-      // (the code carried `ek=`) AND the presented credential makes the holder a
-      // steward (its role is operator). The fingerprint rides the details
+      // (the code carried `ek=`), there is a credential to present, AND the
+      // member presenting it is a steward. The fingerprint rides the details
       // disclosure so a careful steward can compare it with the panel; it is
       // never on the face, and nothing is armed on any other card.
       let unlock: ApproveCardView['unlock'] = null;
-      if (isPanelSignin(parsed) && presenterIsSteward(cred)) {
+      if (isPanelSignin(parsed) && presenterIsSteward(cred, creds, parsed.schemas, aid)) {
         const fingerprint = await deps.sealingKeyFingerprint(parsed.sealingKey ?? '');
         unlock = { sealingKeyFingerprint: fingerprint };
         unlockAvailable.value = true;
       }
-      view.value = buildCardView(parsed, toShow, aid, knownDoors.isHome(parsed.door), unlock);
+      view.value = buildCardView(
+        parsed,
+        toShow,
+        aid,
+        knownDoors.isHome(parsed.door),
+        unlock,
+        askedCredentialName(parsed.credential, parsed.schemas, kinds),
+      );
     } catch (err) {
       console.warn('[Signin] Could not prepare the sign-in:', err);
       phase.value = 'unavailable';
+      return;
+    }
+
+    // The wallet holds nothing this door asks for: say so, on its own screen
+    // (#683). Nothing is presented and nothing is posted — so there is nothing
+    // to trust an unmet site with, and the first-contact prompt is skipped.
+    if (!chosen.value) {
+      phase.value = 'no-credential';
       return;
     }
 
@@ -393,6 +450,14 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     }
     if (verdict.outcome === 'refused') {
       refusal.value = refusalCopy(verdict.refusal);
+      // The door says the credential presented is not the one it asks for. A
+      // wallet that reads `cred=` should never cause it; when it happens it is
+      // the same screen as holding none (#683).
+      if (refusal.value.kind === 'no-credential') {
+        posted.value = true;
+        phase.value = 'no-credential';
+        return;
+      }
       // A stale-code refusal (the door said this challenge is spent/expired/
       // unknown) means the held code is dead: remember it so "try again" waits
       // for a fresh one rather than re-posting it (#675).
@@ -417,6 +482,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
 
   /** Not now: nothing was signed or posted; the page keeps waiting (story 15). */
   function notNow(): void {
+    if (phase.value === 'no-credential') return;
     phase.value = 'card';
     refusal.value = null;
   }
@@ -439,6 +505,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     phase,
     refusal,
     chosen,
+    posted,
     staleCode,
     unlockAvailable,
     unlockOn,

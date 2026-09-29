@@ -6,6 +6,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { signinLinkToLocation, routeSigninText } from 'src/composables/useSigninScan';
 import type { Router } from 'vue-router';
+import { parseSigninLink, signinAskFromQuery } from 'src/lib/signin/link';
 
 describe('signinLinkToLocation', () => {
   it('maps a signin link to the approve-card route with its fields as query', () => {
@@ -31,6 +32,26 @@ describe('signinLinkToLocation', () => {
     expect(signinLinkToLocation('matou://pair?id=x&pk=y&s=z')).toBeNull();
     // A link with no present is a door this app cannot answer — refused, never guessed.
     expect(signinLinkToLocation('matou://signin?door=https://d.nz&c=n1')).toBeNull();
+  });
+});
+
+// A control-panel code carries `cred=` (the credential the door asks for, #683)
+// and `ek=` (the panel tab's sealing key, #663). Both must survive the hop from
+// the scanned code to the approve card's route, or the card answers a different
+// ask than the one the door made.
+describe('signinLinkToLocation — a control-panel code', () => {
+  const PANEL =
+    'matou://signin?c=nonce-PANEL&cred=administrator&door=https://d.nz&ek=DVERKEY&name=Home&present=https://d.nz/p&s=ECommittee,EMembership&svc=the%20control%20panel';
+
+  it('carries cred and ek onto the approve-card route', () => {
+    const loc = signinLinkToLocation(PANEL) as { query: Record<string, string> };
+    expect(loc.query.cred).toBe('administrator');
+    expect(loc.query.ek).toBe('DVERKEY');
+  });
+
+  it('the ask the approve card rebuilds from the route is the ask the code carried', () => {
+    const loc = signinLinkToLocation(PANEL) as { query: Record<string, string> };
+    expect(signinAskFromQuery(loc.query)).toEqual(parseSigninLink(PANEL));
   });
 });
 

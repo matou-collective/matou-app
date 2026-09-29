@@ -17,7 +17,10 @@
  * challenge-lifecycle kinds the app door reports by HTTP code (app-door-golden,
  * #574): `unknown` (404), `spent` (409) and `expired` (410 / status expired) —
  * these are stale-code problems the member fixes with a fresh code, not a
- * credential fault.
+ * credential fault. And `no-credential` (#683, idss ADR 0289, app-door-golden
+ * `present.no_credential`): the presented credential is not the one this door
+ * asks for — a wallet that reads `cred=` should never cause it, and when it
+ * happens it wears the same sentence as the wallet's own no-credential screen.
  */
 export type RefusalKind =
   | 'no-membership'
@@ -25,6 +28,7 @@ export type RefusalKind =
   | 'untrusted-issuer'
   | 'signature'
   | 'wrong-holder'
+  | 'no-credential'
   | 'records-unreachable'
   | 'site-unreachable'
   | 'unknown'
@@ -66,6 +70,14 @@ export const STALE_CODE_TEXT: Record<'unknown' | 'spent' | 'expired', string> = 
   expired: 'This sign-in code has expired. Start the sign-in again to get a fresh code.',
 };
 
+/**
+ * The no-credential sentence (#683; Ben, 2026-09-28). The wallet says it on its
+ * own screen when it holds nothing the door asks for — before anything is
+ * presented — and wears the same words if the door itself answers
+ * `no-credential`.
+ */
+export const NO_CREDENTIAL_TEXT = 'You do not have the required credential to sign into this service';
+
 /** The line beneath *Try again* on a verification refusal (story 25). */
 export const CONTACT_LINE = "or contact your community's operator";
 
@@ -74,7 +86,7 @@ export interface RefusalCopy {
   kind: RefusalKind;
   /** The full sentence the region shows. */
   text: string;
-  /** Whether *Try again* is offered (every refusal here offers it). */
+  /** Whether *Try again* is offered (every refusal but `no-credential`). */
   showTryAgain: boolean;
   /** Whether the "or contact your community's operator" line shows — only the
    * five verification refusals, never the two outage/network lines. */
@@ -99,6 +111,11 @@ export function refusalCopy(raw: string | null | undefined): RefusalCopy {
   if (kind === 'unknown' || kind === 'spent' || kind === 'expired') {
     return { kind, text: STALE_CODE_TEXT[kind], showTryAgain: true, showContact: false };
   }
+  if (kind === 'no-credential') {
+    // Trying again would present the same credential to the same door, so none
+    // is offered; the screen itself says who can issue the credential.
+    return { kind, text: NO_CREDENTIAL_TEXT, showTryAgain: false, showContact: false };
+  }
   return {
     kind,
     text: REFUSAL_OPENER + TAILS[kind],
@@ -120,6 +137,7 @@ export function normalizeRefusal(raw: string | null | undefined): RefusalKind {
     case 'untrusted-issuer':
     case 'signature':
     case 'wrong-holder':
+    case 'no-credential':
     case 'records-unreachable':
     case 'site-unreachable':
     case 'unknown':

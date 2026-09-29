@@ -7,7 +7,14 @@
  * it is refused rather than answered by guessing a path (#574).
  */
 import { describe, it, expect } from 'vitest';
-import { parseSigninLink, isSigninLink, isPanelSignin, parseUnlockLink, isUnlockLink } from 'src/lib/signin/link';
+import {
+  parseSigninLink,
+  signinAskFromQuery,
+  isSigninLink,
+  isPanelSignin,
+  parseUnlockLink,
+  isUnlockLink,
+} from 'src/lib/signin/link';
 import golden from './fixtures/app-door/app-door-golden.json';
 
 const PRESENT = 'https%3A%2F%2Fid.example.nz%2Flogin%2Fapp%2Fpresent';
@@ -93,6 +100,93 @@ describe('parseSigninLink — the control-panel sealing key (#663)', () => {
     expect(golden.panel.challenge.adds_to_ask_response.sealing_key).toBeTruthy();
     expect(golden.panel.present.request.armed).toBe(true);
     expect(golden.panel.present.request).not.toHaveProperty('sealed_passcode');
+  });
+});
+
+// The credential the door asks for, `cred=` (#683, idss ADR 0289, app-door-golden
+// `panel.administrator`). The control panel's door names the Administrator
+// credential by its definition slug, because the committee schema it is issued
+// on is shared with every komiti credential and so cannot name it.
+describe('parseSigninLink — the credential the door names (#683)', () => {
+  const PANEL =
+    'matou://signin?c=nonce-PANEL&cred=administrator&door=https://d.nz&ek=DVERKEY&name=Home&present=https://d.nz/p&s=ECommittee,EMembership&svc=the%20control%20panel';
+
+  it('reads cred= onto credential, beside the schemas in the order the door sent them', () => {
+    const ask = parseSigninLink(PANEL);
+    expect(ask?.credential).toBe('administrator');
+    expect(ask?.schemas).toEqual(['ECommittee', 'EMembership']);
+    // The handover's signal is untouched by the new field.
+    expect(ask?.sealingKey).toBe('DVERKEY');
+  });
+
+  it('leaves credential unset on a service sign-in, so the ask is what it was before', () => {
+    const ask = parseSigninLink(LINK);
+    expect(ask).not.toHaveProperty('credential');
+  });
+
+  it('treats a blank cred= as absent', () => {
+    const ask = parseSigninLink('matou://signin?door=https://d.nz&present=https://d.nz/p&c=n1&s=EA&cred=%20');
+    expect(ask).not.toHaveProperty('credential');
+  });
+
+  it('the wire contract lists cred among the deep-link params and names administrator (golden)', () => {
+    expect(golden.deep_link_params).toContain('cred');
+    expect(golden.panel.administrator.adds_to_ask_response.credential).toBe('administrator');
+    expect(golden.panel.challenge.deep_link).toContain('cred=administrator');
+    // The ordinary service ask carries neither — the negative is contract too.
+    expect(golden.ask.response).not.toHaveProperty('credential');
+    expect(golden.ask.response.deep_link).not.toContain('cred=');
+    expect(golden.present.no_credential.body).toEqual({ status: 'refused', refusal: 'no-credential' });
+  });
+});
+
+// The approve page rebuilds the ask from its route query (the scanner and the OS
+// deep-link handler both route there with the code's params as query).
+describe('signinAskFromQuery', () => {
+  it('rebuilds a panel ask, carrying cred and ek', () => {
+    expect(
+      signinAskFromQuery({
+        door: 'https://d.nz',
+        present: 'https://d.nz/p',
+        c: 'n1',
+        s: 'ECommittee,EMembership',
+        name: 'Home',
+        svc: 'the control panel',
+        cred: 'administrator',
+        ek: 'DVERKEY',
+      }),
+    ).toEqual({
+      door: 'https://d.nz',
+      present: 'https://d.nz/p',
+      challenge: 'n1',
+      schemas: ['ECommittee', 'EMembership'],
+      community: 'Home',
+      service: 'the control panel',
+      credential: 'administrator',
+      sealingKey: 'DVERKEY',
+    });
+  });
+
+  it('rebuilds a service ask with neither cred nor ek', () => {
+    expect(
+      signinAskFromQuery({ door: 'https://d.nz', present: 'https://d.nz/p', c: 'n1', s: 'EA', service: 'Files' }),
+    ).toEqual({
+      door: 'https://d.nz',
+      present: 'https://d.nz/p',
+      challenge: 'n1',
+      schemas: ['EA'],
+      community: '',
+      service: 'Files',
+    });
+  });
+
+  it('takes the first value of a repeated param and refuses a query with no door, challenge or present', () => {
+    expect(signinAskFromQuery({ door: ['https://d.nz', 'https://x.nz'], present: 'https://d.nz/p', c: 'n1' })?.door).toBe(
+      'https://d.nz',
+    );
+    expect(signinAskFromQuery({ present: 'https://d.nz/p', c: 'n1' })).toBeNull();
+    expect(signinAskFromQuery({ door: 'https://d.nz', c: 'n1' })).toBeNull();
+    expect(signinAskFromQuery({ door: 'https://d.nz', present: 'https://d.nz/p' })).toBeNull();
   });
 });
 

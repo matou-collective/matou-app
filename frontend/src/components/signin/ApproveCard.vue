@@ -3,7 +3,13 @@
        13–16/28, wireframe WS-A2/A2p/A2d/A2r). A CONSENT screen, not a
        code-matching one: everything on the face is what a forgery would fake —
        which service, which site, what is disclosed. No AID, SAID, nonce or
-       words on the face; those live only in the details disclosure. -->
+       words on the face; those live only in the details disclosure.
+
+       What is disclosed is drawn as THE CREDENTIAL'S OWN CARD — the card the
+       wallet draws for it — with Approve at the foot of that card, so what is
+       pressed is visibly the thing being shown (#683; Ben, 2026-09-28). A
+       wallet that holds nothing the door asks for never reaches this card: it
+       shows the no-credential screen instead (NoCredential.vue). -->
   <div class="approve-card max-w-md mx-auto p-6 space-y-5 text-center">
     <!-- Loading: the wallet is still restoring its session or reading the
          credentials. No actions until the card has its details. -->
@@ -80,8 +86,8 @@
       </p>
     </div>
 
-    <!-- The card body: the sign-in site, then what will be shown. Kept visible
-         through Proving (dimmed) and hidden once done/refused. -->
+    <!-- The sign-in site, and the details disclosure. Kept visible through
+         Proving (dimmed) and hidden once done/refused. -->
     <div
       v-if="view && (phase === 'card' || phase === 'proving')"
       class="card text-left border border-border rounded-lg p-4 space-y-3 bg-card"
@@ -101,21 +107,6 @@
             class="ml-1 inline-block px-1.5 py-0.5 text-xs rounded bg-primary/10 text-primary"
             data-field="home-mark"
           >your community</span>
-        </div>
-      </div>
-
-      <div class="kv">
-        <div class="text-xs uppercase tracking-wide text-muted-foreground">What will be shown</div>
-        <div
-          v-if="view.credential"
-          class="text-sm"
-          data-field="credential-to-show"
-          :data-kind="view.credential.kindLabel.toLowerCase()"
-        >
-          Your <b>{{ view.credential.kindLabel }}</b> credential<template v-if="credentialTail"> — {{ credentialTail }}</template>
-        </div>
-        <div v-else class="text-sm text-muted-foreground" data-field="credential-to-show">
-          No matching credential to show.
         </div>
       </div>
 
@@ -142,6 +133,34 @@
       </details>
     </div>
 
+    <!-- What will be shown: the credential, as the card the wallet draws for it,
+         with Approve at the foot of the card (#683). Kept visible through
+         Proving (dimmed, Approve gone) and hidden once done/refused. -->
+    <div
+      v-if="view && view.credential && (phase === 'card' || phase === 'proving')"
+      class="shown text-left space-y-2"
+      :class="{ 'opacity-40 pointer-events-none': phase === 'proving' }"
+      data-field="credential-to-show"
+      :data-kind="view.credential.slug || view.credential.kindLabel.toLowerCase()"
+    >
+      <div class="text-xs uppercase tracking-wide text-muted-foreground">What will be shown</div>
+      <WalletCredentialCard v-bind="view.credential.card">
+        <template #action="{ painted }">
+          <button
+            v-if="phase === 'card'"
+            type="button"
+            class="cred-approve"
+            :class="{ 'on-painted': painted }"
+            :disabled="!canApprove"
+            data-action="approve"
+            @click="$emit('approve')"
+          >
+            Approve
+          </button>
+        </template>
+      </WalletCredentialCard>
+    </div>
+
     <!-- WS-A2p: Proving. One honest line, no percentage or seconds — the copy
          stays true whether the wait is 0.5 s (cached signer) or 5–8 s. -->
     <div
@@ -152,7 +171,7 @@
       aria-live="polite"
     >
       <span class="spin inline-block w-3 h-3 border-2 border-primary/30 border-t-transparent rounded-full animate-spin"></span>
-      Proving you're a member…
+      {{ view?.provingLine }}
     </div>
 
     <!-- WS-A2d: Signed in. The card closes after a beat; on a same-device
@@ -202,12 +221,10 @@
       </div>
     </div>
 
-    <!-- The two primary actions (WS-A2). Present only on the card face, and only
-         once the card has its service details. -->
+    <!-- The way out (WS-A2). Approve is at the foot of the credential card
+         above; Not now sits beneath the card, present only on the card face and
+         only once the card has its service details. -->
     <div v-if="phase === 'card' && view" class="space-y-2">
-      <MBtn class="w-full" :disabled="!canApprove" data-action="approve" @click="$emit('approve')">
-        Approve
-      </MBtn>
       <MBtn variant="ghost" class="w-full" data-action="not-now" @click="$emit('not-now')">
         Not now
       </MBtn>
@@ -216,13 +233,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
 import MBtn from '../base/MBtn.vue';
+import WalletCredentialCard from '../wallet/WalletCredentialCard.vue';
 import type { ApproveCardView } from 'src/lib/signin/view';
 import type { RefusalCopy } from 'src/lib/signin/refusal';
 import type { SigninPhase } from 'src/composables/useSignin';
 
-const props = defineProps<{
+defineProps<{
   view: ApproveCardView | null;
   phase: SigninPhase;
   refusal: RefusalCopy | null;
@@ -241,14 +258,63 @@ defineEmits<{
   /** The steward toggled the unlock line (PU-A2u, #663). */
   'toggle-unlock': [on: boolean];
 }>();
-
-/** "Member since 12 Aug 2026" — role + issue date, omitting either when absent. */
-const credentialTail = computed(() => {
-  const c = props.view?.credential;
-  if (!c) return '';
-  if (c.role && c.issuedOn) return `${c.role} since ${c.issuedOn}`;
-  if (c.role) return c.role;
-  if (c.issuedOn) return `Issued ${c.issuedOn}`;
-  return '';
-});
 </script>
+
+<style scoped>
+/* Approve, at the foot of the credential card. The card's own button idiom
+   (WalletCredentialCard .cred-open — dark, square, uppercase monospace), made
+   the full width of the card and a thumb's height: it is the screen's one
+   primary act. On a painted card it inverts the card's own pair — the ink (the
+   WCAG pick against the card's colour) as its ground, the card's colour as its
+   label — so it stands off whatever colour the community chose. */
+.cred-approve {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 12px;
+  font-family: var(--cred-mono, monospace);
+  font-size: 0.875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 10px 13px;
+  border: 1px solid var(--matou-foreground, #1f2937);
+  border-radius: 6px;
+  background: var(--matou-foreground, #1f2937);
+  color: var(--matou-background, #ffffff);
+  cursor: pointer;
+}
+
+.cred-approve:hover:not(:disabled),
+.cred-approve:focus-visible {
+  filter: brightness(1.2);
+}
+
+.cred-approve:focus-visible {
+  outline: 2px solid var(--matou-primary);
+  outline-offset: 2px;
+}
+
+.cred-approve:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cred-approve.on-painted {
+  background: var(--cred-paint-ink);
+  border-color: var(--cred-paint-ink);
+  color: var(--cred-paint-bg);
+}
+
+.cred-approve.on-painted:focus-visible {
+  outline-color: var(--cred-paint-ink);
+}
+
+/* On the approve screen the card is one card, not one of a grid of them. */
+.shown :deep(.wallet-cred-card) {
+  height: auto;
+}
+
+.shown :deep(.wallet-cred-card:hover) {
+  box-shadow: none;
+}
+</style>
