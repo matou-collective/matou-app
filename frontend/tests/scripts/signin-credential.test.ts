@@ -53,6 +53,21 @@ describe('chooseCredential', () => {
   it('returns undefined when nothing matches the asked schema', () => {
     expect(chooseCredential([membershipCred], ['ENope'], HOLDER)).toBeUndefined();
   });
+
+  // A revoked credential is never presented, whether or not the door named the
+  // credential it asks for (#687).
+  it('passes over a revoked Membership for the live one issued after it', () => {
+    const revoked: HeldCredential = {
+      sad: { d: 'ERevokedMembership', s: MEMBERSHIP, a: { i: HOLDER } },
+      status: { s: '1', et: 'rev' },
+    };
+    expect(chooseCredential([revoked, membershipCred], [MEMBERSHIP], HOLDER)).toBe(membershipCred);
+  });
+
+  it('presents nothing when the only Membership held is revoked', () => {
+    const revoked: HeldCredential = { ...membershipCred, status: { s: '1', et: 'rev' } };
+    expect(chooseCredential([revoked], [MEMBERSHIP], HOLDER)).toBeUndefined();
+  });
 });
 
 // The credential the door NAMES (#683, idss ADR 0289). The control panel asks

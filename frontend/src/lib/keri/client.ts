@@ -1221,6 +1221,14 @@ export class KERIClient {
   }
 
   /**
+   * The CESR base this app itself can fetch from — the loopback proxy on
+   * Capacitor (#368). {@link getCesrUrl} is the base KERIA resolves OOBIs at.
+   */
+  getCesrFetchUrl(): string {
+    return this.cesrFetchUrl;
+  }
+
+  /**
    * Get the organization's OOBI URL
    * This is a well-known endpoint that users can resolve to contact the org
    */

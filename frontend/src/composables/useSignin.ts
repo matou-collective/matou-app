@@ -193,7 +193,10 @@ function defaultDeps(): SigninDeps {
     async listCredentials() {
       const client = keri.getSignifyClient();
       if (!client) return [];
-      return (await client.credentials().list()) as HeldCredential[];
+      const held = (await client.credentials().list()) as HeldCredential[];
+      // A credential revoked since it was admitted is not offered at a door (#687).
+      const { withLiveStanding } = await import('src/lib/keri/communityStanding');
+      return withLiveStanding(held, identity.aidPrefix);
     },
     async exportCredential(said: string) {
       const client = keri.getSignifyClient();

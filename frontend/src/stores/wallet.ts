@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { toWalletCredential, type WalletCredential } from 'src/lib/walletCredential';
+import { withLiveStanding } from 'src/lib/keri/communityStanding';
 
 // --- Types ---
 
@@ -122,7 +123,12 @@ export const useWalletStore = defineStore('wallet', () => {
     credentialsError.value = null;
 
     try {
-      const rawCredentials = await client.credentials().list();
+      // The agent reads a credential's standing as it was when admitted; the
+      // community's key history says whether it has been revoked since (#687).
+      const rawCredentials = await withLiveStanding(
+        await client.credentials().list(),
+        identityStore.currentAID?.prefix,
+      );
       console.log('[WalletStore] Loaded credentials:', rawCredentials.length);
 
       // Collect unique schema SAIDs and fetch their metadata
