@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { processOrgActNotes } from 'src/composables/useOrgActInbox';
+import { processOrgActNotes, selectOrgActNotes } from 'src/composables/useOrgActInbox';
 
 const note = (i: string, r = '/multisig/iss', read = false) => ({ i, r: read, a: { r, d: `EX${i}` } });
 
@@ -41,5 +41,36 @@ describe('processOrgActNotes', () => {
     const replay = vi.fn();
     await processOrgActNotes([note('1', '/multisig/iss', true), note('2', '/multisig/rot')], { org, getRequest: async () => [], replay, mark: async () => {} });
     expect(replay).not.toHaveBeenCalled();
+  });
+  it('a note an earlier pass already marked read (signify 404) is applied, not failed (R13)', async () => {
+    const mark = vi.fn(async () => { throw new Error('HTTP DELETE /notifications/1 - 404 Not Found - {"msg": "no notification to mark as read for 1"}'); });
+    const res = await processOrgActNotes([note('1')], { org, getRequest: async () => [exnFor('EGRP')], replay: async () => 'already' as const, mark });
+    expect(res).toEqual({ applied: 1, failed: 0 });
+  });
+  it('any other mark error after a successful replay is not a failed replay', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await processOrgActNotes([note('1')], { org, getRequest: async () => [exnFor('EGRP')], replay: async () => 'applied' as const, mark: async () => { throw new Error('socket hang up'); } });
+    expect(res).toEqual({ applied: 1, failed: 0 });
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe('selectOrgActNotes', () => {
+  it('takes only unread org acts, oldest-first', () => {
+    const at = (n: ReturnType<typeof note>, dt: string) => ({ ...n, a: { ...n.a, dt } });
+    const picked = selectOrgActNotes([
+      at(note('2'), '2026-09-30T10:00:02Z'),
+      at(note('1'), '2026-09-30T10:00:01Z'),
+      at(note('3', '/multisig/rev'), '2026-09-30T10:00:03Z'),
+      note('4', '/multisig/rot'),
+    ]);
+    expect(picked.map((n) => n.i)).toEqual(['1', '2', '3']);
+  });
+  it('a note the fresh agent list shows read is not processed, though the stale cache showed it unread', () => {
+    const cached = [note('1')];
+    const fresh = [note('1', '/multisig/iss', true)];
+    expect(selectOrgActNotes(cached)).toHaveLength(1);
+    expect(selectOrgActNotes(fresh)).toHaveLength(0);
   });
 });

@@ -19,6 +19,15 @@ export interface InboxDeps {
 
 const isOrgAct = (n: Note) => ORG_ACT_ROUTES.includes(n.a?.r as never);
 
+/** Unread /multisig/iss|rev notes, oldest-first. Feed it a FRESH agent list — the poll cache can be ~15 s stale. */
+export function selectOrgActNotes(notes: readonly Note[]): Note[] {
+  return notes
+    .filter((n) => !n.r && isOrgAct(n))
+    .sort((a, b) => (a.a?.dt ?? '').localeCompare(b.a?.dt ?? ''));
+}
+
+const alreadyMarked = (err: unknown) => /no notification to mark as read/i.test(err instanceof Error ? err.message : String(err));
+
 /**
  * Apply unread /multisig/iss|rev notes oldest-first; act-then-mark. KERIA
  * never re-notifies an identical exn, so a note is marked read ONLY after its
@@ -38,8 +47,16 @@ export async function processOrgActNotes(notes: Note[], deps: InboxDeps): Promis
       }
       const out = await deps.replay(input);
       if (out === 'skipped') console.warn(`[OrgActInbox] skipped ${input.kind} for ${String(input.acdc.d).slice(0, 12)}... (predates our last rotation)`);
-      await deps.mark(n.i);
       applied++;
+      // The act is applied; a mark failure is not a replay failure. A 404
+      // "no notification to mark as read" means an earlier pass marked it;
+      // anything else: the next pass replays -> 'already' and marks again.
+      try {
+        await deps.mark(n.i);
+      } catch (markErr) {
+        if (alreadyMarked(markErr)) console.debug(`[OrgActInbox] note ${n.i} already marked read`);
+        else console.warn(`[OrgActInbox] applied but could not mark note ${n.i} read:`, markErr);
+      }
     } catch (err) {
       failed++;
       console.warn('[OrgActInbox] replay failed, left unread:', err);
@@ -69,9 +86,10 @@ export function useOrgActInbox() {
   async function drainOnce(): Promise<void> {
     const client = keriClient.getSignifyClient();
     if (!client) return;
-    const list = (notes.notifications.value as Note[])
-      .filter((n) => !n.r && isOrgAct(n))
-      .sort((a, b) => (a.a?.dt ?? '').localeCompare(b.a?.dt ?? ''));
+    // Fresh from the agent, not the poll cache: a cached note an earlier pass
+    // already marked read would otherwise be re-processed (R13).
+    const fresh = (await client.notifications().list(0, 1000)) as { notes?: Note[] };
+    const list = selectOrgActNotes(fresh.notes ?? []);
     pending.value = list.length;
     if (list.length === 0) return;
     let group: string;
