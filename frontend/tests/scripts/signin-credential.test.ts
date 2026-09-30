@@ -53,6 +53,22 @@ describe('chooseCredential', () => {
   it('returns undefined when nothing matches the asked schema', () => {
     expect(chooseCredential([membershipCred], ['ENope'], HOLDER)).toBeUndefined();
   });
+
+  // A live credential is always presented before a revoked one (#687).
+  it('passes over a revoked Membership for the live one issued after it', () => {
+    const revoked: HeldCredential = {
+      sad: { d: 'ERevokedMembership', s: MEMBERSHIP, a: { i: HOLDER } },
+      status: { s: '1', et: 'rev' },
+    };
+    expect(chooseCredential([revoked, membershipCred], [MEMBERSHIP], HOLDER)).toBe(membershipCred);
+  });
+
+  // A suspended member is told so by the door ("your membership has been
+  // revoked"), which the app can only reach by presenting it.
+  it('presents a revoked Membership when it is the only one held, so the door says why', () => {
+    const revoked: HeldCredential = { ...membershipCred, status: { s: '1', et: 'rev' } };
+    expect(chooseCredential([revoked], [MEMBERSHIP], HOLDER)).toBe(revoked);
+  });
 });
 
 // The credential the door NAMES (#683, idss ADR 0289). The control panel asks
