@@ -5,8 +5,8 @@
   >
     <q-card class="report-dialog">
       <q-card-section class="row items-center q-pb-none">
-        <q-icon name="bug_report" color="primary" size="24px" />
-        <div class="text-h6 q-ml-sm">Report an issue</div>
+        <q-icon :name="copy.icon" color="primary" size="24px" />
+        <div class="text-h6 q-ml-sm">{{ copy.heading }}</div>
         <q-space />
         <q-btn icon="close" flat round dense v-close-popup />
       </q-card-section>
@@ -14,7 +14,7 @@
       <!-- Success state -->
       <template v-if="result">
         <q-card-section>
-          <p class="success-text">Thanks — logged as issue #{{ result.number }}.</p>
+          <p class="success-text">Thanks — logged as {{ copy.logged }} #{{ result.number }}.</p>
           <p v-if="result.html_url" class="issue-url">{{ result.html_url }}</p>
         </q-card-section>
         <div class="dialog-footer">
@@ -34,18 +34,6 @@
         <q-card-section>
           <div v-if="errorMessage" class="error-banner">{{ errorMessage }}</div>
 
-          <q-btn-toggle
-            v-model="type"
-            :options="[
-              { label: 'Bug', value: 'bug' },
-              { label: 'Improvement', value: 'improvement' },
-            ]"
-            no-caps
-            unelevated
-            toggle-color="primary"
-            class="q-mb-md"
-          />
-
           <q-input
             v-model="title"
             label="Title"
@@ -62,11 +50,7 @@
             outlined
             rows="5"
             :maxlength="DESCRIPTION_MAX"
-            :placeholder="
-              type === 'bug'
-                ? 'What happened? What did you expect to happen?'
-                : 'What would you like to see?'
-            "
+            :placeholder="copy.placeholder"
           />
 
           <div class="context-preview">
@@ -118,16 +102,44 @@ import {
 } from 'src/lib/api/issues';
 import { KIT } from 'src/generated/kit';
 
-const props = defineProps<{
-  modelValue: boolean;
-  reporterName: string;
-}>();
+// One dialog, two doors: "Report an issue" opens it as a bug, "Suggest an
+// improvement" as an improvement. The type is fixed by the door, not toggled.
+const props = withDefaults(
+  defineProps<{
+    modelValue: boolean;
+    reporterName: string;
+    type?: IssueType;
+  }>(),
+  { type: 'bug' },
+);
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean];
 }>();
 
-const type = ref<IssueType>('bug');
+const COPY: Record<IssueType, { heading: string; icon: string; logged: string; placeholder: string }> = {
+  bug: {
+    heading: 'Report an issue',
+    icon: 'bug_report',
+    logged: 'issue',
+    placeholder: 'What happened? What did you expect to happen?',
+  },
+  improvement: {
+    heading: 'Suggest an improvement',
+    icon: 'lightbulb',
+    logged: 'suggestion',
+    placeholder: 'What would you like to see?',
+  },
+};
+
+const copy = computed(() => COPY[props.type]);
+
+// Each door keeps its own draft, so switching doors never mixes a half-written
+// bug report into a suggestion.
+const drafts: Record<IssueType, { title: string; description: string }> = {
+  bug: { title: '', description: '' },
+  improvement: { title: '', description: '' },
+};
 const title = ref('');
 const description = ref('');
 const submitting = ref(false);
@@ -145,13 +157,15 @@ const canSubmit = computed(
 watch(
   () => props.modelValue,
   (open) => {
-    if (!open) return;
+    if (!open) {
+      drafts[props.type] = { title: title.value, description: description.value };
+      return;
+    }
     if (result.value) {
-      type.value = 'bug';
-      title.value = '';
-      description.value = '';
       result.value = null;
     }
+    title.value = drafts[props.type].title;
+    description.value = drafts[props.type].description;
     errorMessage.value = '';
     submitting.value = false;
   },
@@ -173,10 +187,13 @@ async function onSubmit() {
   submitting.value = true;
   try {
     const payload = buildIssuePayload(
-      { type: type.value, title: title.value, description: description.value },
+      { type: props.type, title: title.value, description: description.value },
       context.value,
     );
     result.value = await submitIssue(payload);
+    drafts[props.type] = { title: '', description: '' };
+    title.value = '';
+    description.value = '';
   } catch (err) {
     errorMessage.value =
       err instanceof IssueSubmitError
