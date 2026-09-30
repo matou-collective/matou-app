@@ -39,3 +39,24 @@ App-module gate (Task 7: `replicate.ts` + `replay.ts` driven with the same deps 
   the Multiplexor dedups on the embeds. A receiver must not mark a note read before its replay lands (a retry by
   re-send will be silent), and a history re-push of an identical `iss` act will not surface as a new note.
   Re-processing the original exn (`getRequest` again) is idempotent: `already`.
+
+## Last run
+
+2026-09-30, KERIA 0.4.0, `stewardpeer`, from tests/infra. All 20 checks PASS in both `MODE=held` and `MODE=fresh` (each on a fresh `down -v` / `up -d`).
+
+| Check | Result (held) | Result (fresh) |
+|---|---|---|
+| module : module: ensureOrgRegistry adopts on 0.4.0 | PASS | PASS |
+| c1 : backfill live cred from ACDC + witness KEL (et=iss) | PASS | PASS |
+| c2 : revoked cred: rev dt recovered from public seal; iss + rev backfilled (et=rev) | PASS | PASS |
+| g1 : member issues X, sendOrgAct iss, admin replayOrgAct applied (et=iss), no lingering escrow | PASS | PASS |
+| g2 : same /multisig/iss delivered twice, already | PASS | PASS |
+| g3 : admin revokes X, sendOrgAct rev, member replay applied (et=rev) | PASS | PASS |
+| a1 : keys[0] replays member-issued cred with member sig + own sig; admin then revokes | PASS | PASS |
+| a2 : own-sig-only replay on already-accepted ixn | PASS | PASS |
+| a3 : own-sig-only replay, ixn new to admin KEL | PASS | PASS |
+| b1 : keys[0] revokes, index-1 replays rev with own sig | PASS | PASS |
+| b2 : index-1 revokes, keys[0] replays rev with own sig | PASS | PASS |
+| d : replayed cred shows in member credentials().list(); member can grant it onward | PASS | PASS |
+| e1 : rev-before-iss rejected cleanly, then iss+rev recovers | PASS | PASS |
+| e2 : replay ahead of the KEL is not self-recovered by a KEL push; re-POST succeeds; member not wedged | PASS | PASS |
