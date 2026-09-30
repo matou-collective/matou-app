@@ -103,21 +103,49 @@ describe('runHandover — the wallet answers the panel', () => {
     }
   });
 
-  it('seals nothing when the panel never binds — gives up after the poll budget', async () => {
+  it('waits the challenge\'s whole life for the panel to bind — two minutes, not ten seconds', async () => {
+    // Whakatōhea Demo, 2026-09-30: the panel first asked the door 11 s after the
+    // present (the OIDC hop, the panel load, the steward opening Members), and the
+    // wallet had already given up at ~10 s (20 polls × 500 ms). The door's challenge
+    // lives two minutes (golden `panel.challenge`); the wallet waits as long as it does.
+    let elapsedMs = 0;
+    const fetchImpl = makeFetch((url) => {
+      if (url.includes('/handover/key')) {
+        return elapsedMs >= 95_000 ? json(H.wallet_key.answered) : json({ status: 200, body: {} });
+      }
+      return json(H.wallet_seal.answered);
+    });
+    const d = deps(fetchImpl, {
+      sleep: async (ms) => {
+        elapsedMs += ms;
+      },
+    });
+    await runHandover(PRESENT_URL, CHALLENGE, AID, d);
+    expect(d.sealed).toEqual([H.wallet_key.answered.body.sealing_key]);
+    expect(elapsedMs).toBeGreaterThanOrEqual(95_000);
+  });
+
+  it('seals nothing when the panel never binds — gives up once the challenge\'s life is over', async () => {
     // Every poll answers empty ({}) — the panel was backgrounded or never landed.
+    let elapsedMs = 0;
     const fetchImpl = makeFetch((url) => {
       if (url.includes('/handover/key')) return json({ status: 200, body: {} });
       throw new Error('the seal route must never be reached');
     });
-    const d = deps(fetchImpl);
+    const d = deps(fetchImpl, {
+      sleep: async (ms) => {
+        elapsedMs += ms;
+      },
+    });
     await runHandover(PRESENT_URL, CHALLENGE, AID, d);
     expect(d.sealed).toEqual([]);
-    // It polled a bounded number of times and posted no box.
+    // It polled for the challenge's life and a little over, then stopped; no box.
     expect(fetchImpl.calls.every((c) => c.url.includes('/handover/key'))).toBe(true);
-    expect(fetchImpl.calls.length).toBeGreaterThan(1);
+    expect(elapsedMs).toBeGreaterThanOrEqual(120_000);
+    expect(elapsedMs).toBeLessThan(180_000);
   });
 
-  it('seals nothing on a dead or unknown challenge (non-200 key route)', async () => {
+  it('stops at once on a dead or unknown challenge (non-200 key route) — no further polls', async () => {
     const fetchImpl = makeFetch((url) => {
       if (url.includes('/handover/key')) return json({ status: 410, body: { status: 'expired' } });
       throw new Error('the seal route must never be reached');
@@ -125,6 +153,22 @@ describe('runHandover — the wallet answers the panel', () => {
     const d = deps(fetchImpl);
     await runHandover(PRESENT_URL, CHALLENGE, AID, d);
     expect(d.sealed).toEqual([]);
+    expect(fetchImpl.calls.length).toBe(1);
+  });
+
+  it('keeps polling through a network fault — the door may be back on the next poll', async () => {
+    let polls = 0;
+    const fetchImpl = makeFetch((url) => {
+      if (url.includes('/handover/key')) {
+        polls++;
+        if (polls === 1) throw new Error('network down');
+        return json(H.wallet_key.answered);
+      }
+      return json(H.wallet_seal.answered);
+    });
+    const d = deps(fetchImpl);
+    await runHandover(PRESENT_URL, CHALLENGE, AID, d);
+    expect(d.sealed).toEqual([H.wallet_key.answered.body.sealing_key]);
   });
 
   it('posts no box when the sealer yields nothing (a locked seat / spent arming)', async () => {
