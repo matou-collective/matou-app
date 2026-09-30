@@ -30,12 +30,23 @@ import { isInboxLink } from 'src/lib/inbox/link';
 export type DeepLinkKind = 'signin' | 'pair' | 'inbox' | 'unknown';
 
 /**
+ * Put a raw deep-link URL in the canonical `matou://<host>?…` form the link
+ * parsers read: trimmed, and with a `/` straight after the host dropped.
+ * Windows inserts that slash when it hands a custom-scheme link to the app —
+ * the page's `matou://signin?c=…` arrives as `matou://signin/?c=…` — and
+ * without this every sign-in and pairing link opened on Windows was ignored.
+ */
+export function normalizeDeepLink(raw: string): string {
+  return (raw ?? '').trim().replace(/^(matou:\/\/[a-z]+)\/(?=[?#]|$)/i, '$1');
+}
+
+/**
  * Classify a raw deep-link URL. Never throws on member/OS input; whitespace is
  * tolerated and anything that is not a recognised, well-formed link is
  * `'unknown'`.
  */
 export function classifyDeepLink(raw: string): DeepLinkKind {
-  const text = (raw ?? '').trim();
+  const text = normalizeDeepLink(raw);
   if (isSigninLink(text)) return 'signin';
   if (isPairingLink(text)) return 'pair';
   if (isInboxLink(text)) return 'inbox';

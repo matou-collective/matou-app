@@ -124,6 +124,8 @@ if (!gotSingleInstanceLock) {
 } else {
   app.on('second-instance', (_event, argv) => {
     const url = deepLinkFromArgv(argv);
+    // Scheme + host only: the query carries a live sign-in challenge.
+    log.info(`[Electron] second-instance, deep link: ${url ? url.split('?')[0] : 'none'}`);
     if (url) deliverDeepLink(url);
     else if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
