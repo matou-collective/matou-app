@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { processOrgActNotes, selectOrgActNotes } from 'src/composables/useOrgActInbox';
+import { processOrgActNotes, selectOrgActNotes, recordSkippedAct, readSkippedActs, skippedActsMessage } from 'src/composables/useOrgActInbox';
 import { NotSignerYet } from 'src/lib/keri/steward/errors';
 
 const note = (i: string, r = '/multisig/iss', read = false) => ({ i, r: read, a: { r, d: `EX${i}` } });
@@ -12,7 +12,7 @@ describe('processOrgActNotes', () => {
     const mark = vi.fn(async () => {});
     const replay = vi.fn(async () => 'applied' as const);
     const res = await processOrgActNotes([note('1'), note('2')], { org, getRequest: async () => [exnFor('EGRP')], replay, mark });
-    expect(res).toEqual({ applied: 2, failed: 0, waiting: 0 });
+    expect(res).toEqual({ applied: 2, failed: 0, waiting: 0, skipped: 0 });
     expect(mark.mock.calls.map((c) => c[0])).toEqual(['1', '2']);
   });
   it('marks a foreign group act read without replaying (Review Focus 4)', async () => {
@@ -46,12 +46,12 @@ describe('processOrgActNotes', () => {
   it('a note an earlier pass already marked read (signify 404) is applied, not failed (R13)', async () => {
     const mark = vi.fn(async () => { throw new Error('HTTP DELETE /notifications/1 - 404 Not Found - {"msg": "no notification to mark as read for 1"}'); });
     const res = await processOrgActNotes([note('1')], { org, getRequest: async () => [exnFor('EGRP')], replay: async () => 'already' as const, mark });
-    expect(res).toEqual({ applied: 1, failed: 0, waiting: 0 });
+    expect(res).toEqual({ applied: 1, failed: 0, waiting: 0, skipped: 0 });
   });
   it('any other mark error after a successful replay is not a failed replay', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await processOrgActNotes([note('1')], { org, getRequest: async () => [exnFor('EGRP')], replay: async () => 'applied' as const, mark: async () => { throw new Error('socket hang up'); } });
-    expect(res).toEqual({ applied: 1, failed: 0, waiting: 0 });
+    expect(res).toEqual({ applied: 1, failed: 0, waiting: 0, skipped: 0 });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -69,12 +69,62 @@ describe('processOrgActNotes — NotSignerYet (C1)', () => {
       org, getRequest: async () => [exn], mark,
       replay: async () => { throw new NotSignerYet('member key not in k'); },
     });
-    expect(res).toEqual({ applied: 0, failed: 0, waiting: 1 });
+    expect(res).toEqual({ applied: 0, failed: 0, waiting: 1, skipped: 0 });
     expect(mark).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
     expect(debug).toHaveBeenCalled();
     warn.mockRestore();
     debug.mockRestore();
+  });
+});
+
+describe('skipped replays are recorded and reported (I5)', () => {
+  const org = { group: 'EGRP', registry: 'EREG' };
+  const exn = { exn: { r: '/multisig/iss', a: { gid: 'EGRP' }, e: { acdc: { d: 'ECSKIP', ri: 'EREG' }, iss: { t: 'iss' }, anc: { t: 'ixn', s: '9' } } }, paths: { anc: '-AAB' + 'AB' + 's'.repeat(86) } };
+  const memStore = () => {
+    const m = new Map<string, string>();
+    return { getItem: async (k: string) => m.get(k) ?? null, setItem: async (k: string, v: string) => { m.set(k, v); }, m };
+  };
+
+  it('a skipped replay is recorded by credential SAID, counted, and still marked read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mark = vi.fn(async () => {});
+    const recordSkipped = vi.fn(async () => {});
+    const res = await processOrgActNotes([note('1')], { org, getRequest: async () => [exn], replay: async () => 'skipped' as const, mark, recordSkipped });
+    expect(res).toEqual({ applied: 0, failed: 0, waiting: 0, skipped: 1 });
+    expect(recordSkipped).toHaveBeenCalledWith('ECSKIP');
+    expect(mark).toHaveBeenCalledWith('1');
+    warn.mockRestore();
+  });
+  it('a failure to record does not un-mark or fail the note', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mark = vi.fn(async () => {});
+    const res = await processOrgActNotes([note('1')], { org, getRequest: async () => [exn], replay: async () => 'skipped' as const, mark, recordSkipped: async () => { throw new Error('disk'); } });
+    expect(res.skipped).toBe(1);
+    expect(res.failed).toBe(0);
+    expect(mark).toHaveBeenCalledWith('1');
+    warn.mockRestore();
+  });
+  it('records under matou_org_acts_skipped:<group>, de-duplicated and bounded', async () => {
+    const store = memStore();
+    await recordSkippedAct('EGRP', 'EA', store);
+    await recordSkippedAct('EGRP', 'EA', store);
+    await recordSkippedAct('EGRP', 'EB', store);
+    expect(await readSkippedActs('EGRP', store)).toEqual(['EA', 'EB']);
+    expect(store.m.has('matou_org_acts_skipped:EGRP')).toBe(true);
+    for (let i = 0; i < 150; i++) await recordSkippedAct('EGRP', `EX${i}`, store);
+    const all = await readSkippedActs('EGRP', store);
+    expect(all).toHaveLength(100);
+    expect(all.at(-1)).toBe('EX149');
+  });
+  it('a corrupt record reads as empty', async () => {
+    const store = memStore();
+    await store.setItem('matou_org_acts_skipped:EGRP', '{not json');
+    expect(await readSkippedActs('EGRP', store)).toEqual([]);
+  });
+  it('the message names the count', () => {
+    expect(skippedActsMessage(0)).toBeNull();
+    expect(skippedActsMessage(2)).toBe('2 change(s) from other stewards could not be applied by this wallet');
   });
 });
 

@@ -15,6 +15,33 @@ export interface InboxDeps {
   getRequest(said: string): Promise<Array<{ exn: Record<string, unknown>; paths: Record<string, string> }>>;
   replay(input: ReplayInput): Promise<'applied' | 'already' | 'skipped'>;
   mark(noteId: string): Promise<void>;
+  /** Remember a credential whose replay this wallet had to skip (keys[0], anchor older than our last rotation). */
+  recordSkipped?(credSaid: string): Promise<void>;
+}
+
+type KV = { getItem(k: string): Promise<string | null>; setItem(k: string, v: string): Promise<void> };
+const SKIPPED_MAX = 100;
+const skippedKey = (group: string) => `matou_org_acts_skipped:${group}`;
+
+/** Credential SAIDs whose replay this wallet skipped, oldest first; corrupt → empty. */
+export async function readSkippedActs(group: string, store: KV = secureStorage): Promise<string[]> {
+  try {
+    const parsed: unknown = JSON.parse((await store.getItem(skippedKey(group))) || '[]');
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Record a skipped credential SAID (de-duplicated, keeps the newest SKIPPED_MAX). */
+export async function recordSkippedAct(group: string, credSaid: string, store: KV = secureStorage): Promise<void> {
+  const list = (await readSkippedActs(group, store)).filter((s) => s !== credSaid);
+  list.push(credSaid);
+  await store.setItem(skippedKey(group), JSON.stringify(list.slice(-SKIPPED_MAX)));
+}
+
+export function skippedActsMessage(count: number): string | null {
+  return count > 0 ? `${count} change(s) from other stewards could not be applied by this wallet` : null;
 }
 
 const isOrgAct = (n: Note) => ORG_ACT_ROUTES.includes(n.a?.r as never);
@@ -33,10 +60,11 @@ const alreadyMarked = (err: unknown) => /no notification to mark as read/i.test(
  * never re-notifies an identical exn, so a note is marked read ONLY after its
  * replay returned — a failed replay stays unread for the next pass.
  */
-export async function processOrgActNotes(notes: Note[], deps: InboxDeps): Promise<{ applied: number; failed: number; waiting: number }> {
+export async function processOrgActNotes(notes: Note[], deps: InboxDeps): Promise<{ applied: number; failed: number; waiting: number; skipped: number }> {
   let applied = 0;
   let failed = 0;
   let waiting = 0;
+  let skipped = 0;
   for (const n of notes) {
     if (n.r || !isOrgAct(n) || !n.a?.d) continue;
     try {
@@ -47,8 +75,20 @@ export async function processOrgActNotes(notes: Note[], deps: InboxDeps): Promis
         continue;
       }
       const out = await deps.replay(input);
-      if (out === 'skipped') console.warn(`[OrgActInbox] skipped ${input.kind} for ${String(input.acdc.d).slice(0, 12)}... (predates our last rotation)`);
-      applied++;
+      if (out === 'skipped') {
+        // keys[0] cannot sign an anchor older than its last rotation and an
+        // unsigned replay would wedge its escrow: report it (spec §9), mark read.
+        skipped++;
+        const said = String(input.acdc.d);
+        console.warn(`[OrgActInbox] skipped ${input.kind} for ${said.slice(0, 12)}... (predates our last rotation)`);
+        try {
+          await deps.recordSkipped?.(said);
+        } catch (recErr) {
+          console.warn('[OrgActInbox] could not record skipped act:', recErr);
+        }
+      } else {
+        applied++;
+      }
       // The act is applied; a mark failure is not a replay failure. A 404
       // "no notification to mark as read" means an earlier pass marked it;
       // anything else: the next pass replays -> 'already' and marks again.
@@ -70,7 +110,7 @@ export async function processOrgActNotes(notes: Note[], deps: InboxDeps): Promis
       console.warn('[OrgActInbox] replay failed, left unread:', err);
     }
   }
-  return { applied, failed, waiting };
+  return { applied, failed, waiting, skipped };
 }
 
 /** The org group this wallet holds (R4: config first, then stored); null = not a steward yet. */
@@ -114,11 +154,13 @@ export function useOrgActInbox() {
       getRequest: async (said) => (await client.groups().getRequest(said)) as never,
       replay: (input) => keriClient.replayOrgAct(input, group),
       mark: async (id) => { await keriClient.markNotificationRead(id); },
+      recordSkipped: (said) => recordSkippedAct(group, said),
     });
     pending.value = res.failed + res.waiting;
     lastError.value = res.failed
       ? `${res.failed} change(s) from other stewards not applied yet`
-      : res.waiting ? new NotSignerYet('').userMessage : null;
+      : res.waiting ? new NotSignerYet('').userMessage
+        : skippedActsMessage((await readSkippedActs(group)).length);
   }
 
   /** Single-flight: concurrent callers share one pass. Never rejects. */
