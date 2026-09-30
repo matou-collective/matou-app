@@ -60,3 +60,5 @@ App-module gate (Task 7: `replicate.ts` + `replay.ts` driven with the same deps 
 | d : replayed cred shows in member credentials().list(); member can grant it onward | PASS | PASS |
 | e1 : rev-before-iss rejected cleanly, then iss+rev recovers | PASS | PASS |
 | e2 : replay ahead of the KEL is not self-recovered by a KEL push; re-POST succeeds; member not wedged | PASS | PASS |
+
+Note: the "Improper Habitat event" traceback in the held run's KERIA logs is expected noise from the e-series out-of-order replay probe.
