@@ -83,49 +83,33 @@ Each unit is its own module under `frontend/src/lib/keri/steward/`, with a narro
   4. poll `list` (≤ 15 s, else throw `RegistryNotAdopted`).
 - A steward always holds a Membership from the org registry, because they were a member before promotion. The founder made the registry. So if this agent holds nothing from `regk`, throw `RegistryNotAdopted("no held credential to adopt from")`. Don't guess.
 
-### 3.3 `actReplication` — sending
-After an issue or revoke, send an exn to each other signer's personal AID. Sending to one recipient is best-effort and never rolls the act back.
+### 3.3 `actReplication` — sending (native keripy group-issuance exns)
+After an issue or revoke, the acting steward sends keripy's own group-issuance exn to each other signer's personal AID. The sender is the acting steward's member AID (the group's `mhab`). Stock KERIA already raises a notification for these routes on any agent that holds the group (`keri/app/grouping.py loadHandlers`, `Multiplexor.add`), so no KERIA patch is needed.
 
-Route `/matou/org/act`, payload:
+- `/multisig/iss`: payload `{gid}`; embeds `{acdc, iss, anc}` with `anc`'s signature attachment.
+- `/multisig/rev`: payload `{gid}`; embeds `{acdc, iss, issanc, rev, anc}`. `acdc`, `iss` and `issanc` let a receiver that lacks the credential replay the issuance first.
 
-```ts
-{
-  v: 1,
-  kind: 'iss' | 'rev',
-  group: string,        // group AID prefix
-  registry: string,     // regk
-  acdc: object,         // the credential SAD
-  event: object,        // the iss or rev SAD
-  anc: string,          // the anchoring ixn's exact raw JSON text
-  sigs: string[],       // its indexed signatures, qb64
-}
-```
-
-`signify revoke()` doesn't return the sigs, so the sender reads them back from its own KEL export after the act. This format is the contract idss implements (§6).
+Sending to each recipient is best-effort and never rolls the act back. `signify revoke()` does not return the sigs, so the sender reads the anchoring ixn and its sigs back from its own credential export (`credentials().get(said, true)`). The idss control panel implements the same two exns (§6).
 
 ### 3.4 `replayInbox` — receiving
 - Runs while a steward is signed in. It follows the existing notification service and is **single-flight**.
-- For each unread `/matou/org/act`, oldest first:
+- For each unread `/multisig/iss` or `/multisig/rev` whose `gid` is the org group and whose embedded registry is the org registry (anything else is marked read and ignored), oldest first:
+  0. Fetch the exn with `groups().getRequest(note.a.d)`. The embeds are in `exn.e` and their attachments in `paths`.
   1. `syncGroup`.
   2. If `credentials().state(registry, acdc.d).et` already equals `event.t`, mark it read. Done.
-  3. Sign `anc` with this steward's group-member key (`client.manager.get(groupHab).sign(raw)`) and merge that signature with `sigs`.
-  4. `iss`: POST. `rev`: DELETE. On a `rev` 404 (not held), replay the `iss` built from `acdc` first, then the `rev`.
+  3. Sign the anchoring ixn with this steward's group-member key and merge that signature with the attachment sigs.
+  4. `iss`: POST. `rev`: DELETE. On a `rev` 404 (not held), replay the `iss` first, then the `rev`.
   5. On a 500: `syncGroup`, then retry once. If it still fails, leave the notification unread and surface it.
   6. Mark it read.
 - `drainReplays(): Promise<void>` runs the loop to empty and throws if anything is left.
 
-### 3.5 `backfill` — catch-up without messages
-- `catchUp(group, regk)`.
-- Keeps a watermark: the last group sn scanned, stored per steward and per group.
-- Walks the witness group KEL above the watermark. For each ixn seal on a credential of `regk`, it replays what this agent lacks:
-  - `iss`: rebuilt from the ACDC.
-  - `rev`: its `dt` is recovered by a millisecond search from the `iss` dt, bounded by the ixn's first-seen time on the witness. A failed search is reported and never guessed.
-- ACDC source:
-  - IDSS: the gateway directory (`GET /api/v1/idip/directory`).
-  - Legacy: the backend's credential store.
-- It runs:
-  - after adoption (a full scan);
-  - at every steward sign-in (incremental). This also covers acts that sent no exn: IDSS panel acts until §6 lands, and missed messages.
+### 3.5 `historyPush` — catch-up without a public ACDC source
+The backend's community credential cache is lossy (no raw ACDC; `anystore.CachedCredential`), and the IDSS directory needs a panel session. So backfill is driven by the peer that **holds** the history:
+- At every steward sign-in, and right after a promotion completes, each steward's app lists the credentials its own agent holds from the org registry.
+- For every other signer it sends the `/multisig/iss` (and, if revoked, `/multisig/rev`) it has not sent that signer before. It records what it sent per peer in secure storage (`matou_org_acts_sent:<group>`).
+- Receivers are idempotent (§3.4), so a re-send costs one no-op.
+- A peer promoted while nobody who holds the history is online catches up the next time any holder signs in.
+- The timestamp search for a revoked credential's `rev.dt` is no longer needed: the holder sends the real `rev`.
 
 ### 3.6 `stewardReady`
 - One reactive state: `joined` (a local group identifier matches the org AID), `registry` (adopted), `synced` (the last `syncGroup` succeeded).
@@ -160,9 +144,9 @@ Route `/matou/org/act`, payload:
 
 The control panel's steward bundle signs from a steward's agent. It must:
 - run the §3.1 sync before each issue or revoke and refuse on `GroupBehind`;
-- send `/matou/org/act` (§3.3) after each one.
+- send `/multisig/iss` / `/multisig/rev` (§3.3) after each one.
 
-To file: an idss issue. Until it lands, §3.5 catch-up at steward sign-in covers panel acts.
+To file: an idss issue. Until it lands, a panel act reaches the other stewards the next time the acting steward signs in to the app (§3.5).
 
 ## 7. Testing
 
@@ -186,7 +170,7 @@ To file: an idss issue. Until it lands, §3.5 catch-up at steward sign-in covers
 2. File the idss issue (§6).
 3. whakatohea-demo repairs itself with the new app:
    - The founder's next act syncs to sn 20 first, so there's no fork.
-   - engie's next sign-in adopts the registry and catches up.
+   - engie's next sign-in adopts the registry; the founder's next sign-in pushes the history to engie.
    - The waiting applicant is then approved by either steward.
    - Group sn 17–20 stay as anchor-less orphans. Record them in the incident notes.
 
