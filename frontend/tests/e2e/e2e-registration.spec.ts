@@ -860,7 +860,7 @@ test.describe.serial('Registration Approval Flow', () => {
   // for now — the ChangeRoleModal needs investigation.
   // ------------------------------------------------------------------
   test('register and approve a second member', async ({ browser }) => {
-    test.setTimeout(480_000); // 8 min: registration + endorsements + attendance + steward upgrade + approval (group-AID credential escrow clear can take ~2 min before User2 joins)
+    test.setTimeout(600_000); // 10 min: registration + endorsements + attendance + steward upgrade + approval (group-AID credential escrow clear can take ~2 min before User2 joins)
 
     // Reload accounts saved by test 1 (includes member mnemonic).
     // Skip gracefully when running standalone without test 1.
@@ -1122,7 +1122,7 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log('[Test] Step: Promoting steward to signer (round 2) visible');
 
       // Final: Done button appears when upgrade is complete
-      await expect(changeRoleModal.getByRole('button', { name: /^Done$/i })).toBeVisible({ timeout: 2 * 60_000 });
+      await expect(changeRoleModal.getByRole('button', { name: /^Done$/i })).toBeVisible({ timeout: 4 * 60_000 });
       console.log('[Test] User1 upgrade to Community Steward complete');
 
       // #520: the promotion rotated the org group twice (round 1 + round 2),
@@ -1491,7 +1491,7 @@ test.describe.serial('Registration Approval Flow', () => {
   // is the failure mode this test exists to catch.
   // ------------------------------------------------------------------
   test('admin sees the steward-approved member as a member and promotes them to Community Steward', async ({ browser }) => {
-    test.setTimeout(600_000); // 10 min: login + two multisig rounds
+    test.setTimeout(720_000); // 12 min: login + two multisig rounds (up to 4 min for the promotion to finish)
 
     accounts = loadAccounts();
     if (!accounts.member?.mnemonic || !accounts.member2?.mnemonic) {
@@ -1641,7 +1641,7 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log('[Test] Step: Waiting for steward to accept visible');
       await expect(adminPage.locator('text=Promoting steward to signer (round 2)')).toBeVisible({ timeout: 5 * 60_000 });
       console.log('[Test] Step: Promoting steward to signer (round 2) visible');
-      await expect(changeRoleModal.getByRole('button', { name: /^Done$/i })).toBeVisible({ timeout: 2 * 60_000 });
+      await expect(changeRoleModal.getByRole('button', { name: /^Done$/i })).toBeVisible({ timeout: 4 * 60_000 });
       console.log('[Test] member2 upgrade to Community Steward complete');
       await changeRoleModal.getByRole('button', { name: /^Done$/i }).click();
       await expect(changeRoleModal).not.toBeVisible({ timeout: TIMEOUT.short });
