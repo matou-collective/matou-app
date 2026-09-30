@@ -46,6 +46,12 @@ describe('replayAct', () => {
     await expect(replayAct(iss, d)).resolves.toBe('already');
     expect(d.postIss).not.toHaveBeenCalled();
   });
+  it('an iss for a credential already revoked here is "already" — no duplicate iss (I2)', async () => {
+    const d = deps({ credentialState: async () => 'rev' });
+    await expect(replayAct(iss, d)).resolves.toBe('already');
+    expect(d.postIss).not.toHaveBeenCalled();
+    expect(d.deleteRev).not.toHaveBeenCalled();
+  });
   it('a rev already applied is "already"', async () => {
     await expect(replayAct(rev, deps({ credentialState: async () => 'rev' }))).resolves.toBe('already');
   });

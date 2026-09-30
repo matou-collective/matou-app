@@ -80,6 +80,9 @@ export async function replayAct(input: ReplayInput, deps: ReplayDeps): Promise<'
   const said = String(input.acdc.d);
   const state = await deps.credentialState(input.registry, said);
   if (state === input.kind) return 'already';
+  // A revoked credential was issued first: its iss is already in our TEL, and
+  // re-posting it is rejected by KERIA forever (the note would never clear).
+  if (input.kind === 'iss' && state === 'rev') return 'already';
 
   if (input.kind === 'rev' && state === null) {
     if (!input.issForRev) throw new ReplayFailed(`rev for ${said} but its issuance is unknown here`);
