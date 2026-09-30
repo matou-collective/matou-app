@@ -29,3 +29,13 @@ Native `/multisig/iss` gate (KERIA 0.4.0, 1-of-2 group, index-1 member issues, e
   converges to `et=iss` and the escrow noise stops (0 lines in the following 6s).
 - KERIA does not self-recover a replay whose anchoring ixn is ahead of the target's KEL after a KEL push;
   the caller must re-POST (check e2).
+
+App-module gate (Task 7: `replicate.ts` + `replay.ts` driven with the same deps as `KERIClient.sendOrgAct` /
+`replayOrgAct`):
+
+- member issues X → `/multisig/iss` → keys[0] `replayAct(parseActExn(getRequest(note.a.d)))` = `applied`, `et=iss`,
+  no escrow noise afterwards; keys[0] revokes → `/multisig/rev` → member replays = `applied`, `et=rev`.
+- KERIA raises NO second notification when the same sender re-sends an exn with an identical embed set (same `e.d`):
+  the Multiplexor dedups on the embeds. A receiver must not mark a note read before its replay lands (a retry by
+  re-send will be silent), and a history re-push of an identical `iss` act will not surface as a new note.
+  Re-processing the original exn (`getRequest` again) is idempotent: `already`.

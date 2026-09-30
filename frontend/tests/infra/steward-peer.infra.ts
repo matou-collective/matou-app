@@ -970,39 +970,121 @@ async function main() {
     const adminIssue = async (recipient: string, role: string) => { await push(admin, adminP.prefix); return issueMembershipCredential(admin, G, regk, recipient, role, { ipexGrant: false }); };
     const expAdmin = async (mem: SignifyClient, said: string) => partsOf(await mem.credentials().get(said, true) as string, said);
 
-    // ============ GATE: native /multisig/iss delivery + Multiplexor auto-parse ============
-    log('\n===== GATE: native /multisig/iss exn on keys[0] =====');
+    // ============ GATE: native /multisig/iss|rev through the app's modules ============
+    // The harness can't instantiate the Vue-bound KERIClient, so it drives the
+    // pure modules with deps built exactly like KERIClient.sendOrgAct /
+    // replayOrgAct (client.ts).
+    log('\n===== GATE: /multisig/iss|rev via replicate.ts + replay.ts =====');
     {
-        const since = nowIso();
-        const issueFrom = memberIssue; // member (index 1) issues from the shared group AID; returns credential SAID
-        const X = await issueFrom(adminP.prefix, 'Contributor');
-        const p = await expAdmin(member, X);
-        const mp = await member.identifiers().get(memberP.name);
-        await member.exchanges().send(
-            memberP.name, G, mp, '/multisig/iss', { gid: grp.prefix },
-            { acdc: [new Serder(p.acdc!.sad), ''], iss: [new Serder(p.iss!.sad), ''], anc: [new Serder(p.ancIss!.sad), p.ancIss!.atc] },
-            [adminP.prefix],
-        );
-        // 1. admin (keys[0]) gets a notification
-        const note = await waitForNote(admin, '/multisig/iss', 30_000);
-        note ? pass('gate: /multisig/iss notifies keys[0]') : fail('gate: /multisig/iss notifies keys[0]', 'no note');
-        // 2. what did auto-parse do?
-        await sleep(8000);
-        const st = await admin.credentials().state(regk, X).catch((e: Error) => ({ err: e.message }));
-        log(`  gate: admin state(X) after exn only = ${JSON.stringify(st)}`);
-        const flood = kl(since, 'gate', /MissingAnchorError|Waiting for fully signed/).length;
-        log(`  gate: escrow noise lines = ${flood}`);
-        // 3. explicit replay with admin's own sig still converges
-        await push(admin, adminP.prefix);
-        const sigs = sortIdx([...sigOf(p.ancIss!), ...(await ownSigs(admin, p.ancIss!.raw))]);
-        const r = await replayIssue(admin, p.acdc!.sad, p.iss!.sad, p.ancIss!, sigs);
-        await waitHas(admin, X, 30_000);
-        const st2 = await admin.credentials().state(regk, X).catch((e: Error) => ({ err: e.message } as any));
-        log(`  gate: replay ${r}; state = ${JSON.stringify(st2)}`);
-        st2.et === 'iss' ? pass('gate: replay after exn converges on keys[0]') : fail('gate: replay after exn converges on keys[0]', JSON.stringify(st2));
-        await sleep(6000);
-        const flood2 = kl(new Date(Date.now() - 6000).toISOString(), 'gate-after', /MissingAnchorError|Waiting for fully signed/).length;
-        flood2 === 0 ? pass('gate: no lingering escrow after replay') : fail('gate: no lingering escrow after replay', `${flood2} lines`);
+        const { telBundle } = await import('../../src/lib/keri/steward/sigs');
+        const { actEmbedParts, parseActExn } = await import('../../src/lib/keri/steward/replicate');
+        const { replayAct } = await import('../../src/lib/keri/steward/replay');
+        const org = { group: grp.prefix, registry: regk };
+
+        // == KERIClient.sendOrgAct(G, credSaid, kind, [to])
+        const sendOrgAct = async (c: SignifyClient, credSaid: string, kind: 'iss' | 'rev', to: string) => {
+            const parts = actEmbedParts(telBundle(await c.credentials().get(credSaid, true) as unknown as string, credSaid), kind);
+            const embeds: Record<string, [Serder, string]> = {};
+            for (const [k, p] of Object.entries(parts)) embeds[k] = [new Serder(p.sad as never), p.atc];
+            const hab = await c.identifiers().get(grp.prefix) as { group?: { mhab?: Record<string, unknown> } };
+            const mhab = hab.group?.mhab;
+            if (!mhab) throw new Error('no mhab on group hab');
+            await c.exchanges().send(String(mhab.name ?? mhab.prefix), grp.prefix, mhab as never,
+                `/multisig/${kind}`, { gid: grp.prefix }, embeds as never, [to]);
+        };
+        // == KERIClient.replayOrgAct(input, G); sync == syncGroupFromWitnesses (witness KEL push)
+        const replayOrgAct = async (c: SignifyClient, cAid: string, input: Parameters<typeof replayAct>[0]) => {
+            const statusOf = async (p: Promise<unknown>): Promise<number> => {
+                try { await p; return 200; } catch (err) {
+                    const m = /\s-\s(\d{3})\s-\s/.exec(err instanceof Error ? err.message : String(err));
+                    return m ? Number(m[1]) : 599;
+                }
+            };
+            const keeperParams = async () => {
+                const hab = await c.identifiers().get(grp.prefix);
+                const k = c.manager!.get(hab);
+                return { [k.algo]: k.params() };
+            };
+            return replayAct(input, {
+                credentialState: async (ri, said) => {
+                    try {
+                        const st = await c.credentials().state(ri, said) as { et?: string };
+                        return st.et === 'rev' || st.et === 'brv' ? 'rev' : st.et ? 'iss' : null;
+                    } catch { return null; }
+                },
+                ownSigs: (raw) => ownSigs(c, raw),
+                postIss: async (body) => statusOf(c.fetch(`/identifiers/${grp.prefix}/credentials`, 'POST', { ...body, ...(await keeperParams()) })),
+                deleteRev: async (said, body) => statusOf(c.fetch(`/identifiers/${grp.prefix}/credentials/${said}`, 'DELETE', { ...body, ...(await keeperParams()) })),
+                sync: async () => { await push(c, cAid); },
+                keyState: async () => {
+                    const hab = await c.identifiers().get(grp.prefix) as any;
+                    const memberKey = hab.group?.mhab?.state?.k?.[0];
+                    if (!memberKey) throw new Error('NotJoined: no member key');
+                    return { k: hab.state?.k ?? [], latestEstSn: parseInt(hab.state?.ee?.s ?? '0', 16), memberKey };
+                },
+            });
+        };
+        // receiver side: getRequest(note.a.d) → parseActExn → replayOrgAct
+        const replayFromExn = async (c: SignifyClient, cAid: string, exnSaid: string) => {
+            const [req] = await c.groups().getRequest(exnSaid) as Array<{ exn: any; paths: Record<string, string> }>;
+            const input = parseActExn(req.exn, req.paths ?? {}, org);
+            if (!input) throw new Error(`parseActExn returned null for ${req.exn?.r} (gid=${req.exn?.a?.gid})`);
+            return replayOrgAct(c, cAid, input);
+        };
+        let lastExnSaid = '';
+        const c_mark = async (c: SignifyClient, note: any) => { await c.notifications().mark(note.i); };
+        const receive = async (c: SignifyClient, cAid: string, route: string) => {
+            const note = await waitForNote(c, route, 30_000);
+            if (!note) throw new Error(`no ${route} notification`);
+            await c.notifications().mark(note.i);
+            lastExnSaid = note.a.d;
+            return replayFromExn(c, cAid, note.a.d);
+        };
+
+        // g1: member (index 1) issues X → /multisig/iss → admin (keys[0]) replays
+        let X = '';
+        try {
+            const since = nowIso();
+            X = await memberIssue(adminP.prefix, 'Contributor');
+            await sendOrgAct(member, X, 'iss', adminP.prefix);
+            const r = await receive(admin, adminP.prefix, '/multisig/iss');
+            await waitHas(admin, X, 30_000);
+            const et = await stateEt(admin, X);
+            log(`  g1: replayOrgAct=${r}; admin et=${et}`);
+            (r === 'applied' && et === 'iss' ? pass : fail)('gate g1: member issues X → sendOrgAct iss → admin replayOrgAct applied, et=iss', `${r} et=${et}`);
+            await sleep(6000);
+            const flood = kl(new Date(Date.now() - 6000).toISOString(), 'g1-after', /MissingAnchorError|Waiting for fully signed/).length;
+            flood === 0 ? pass('gate g1: no lingering escrow after replay') : fail('gate g1: no lingering escrow after replay', `${flood} lines (since ${since})`);
+        } catch (e) { fail('gate g1: member issues X → admin replays', e); }
+
+        // g2: the same /multisig/iss delivered again → 'already'. KERIA's
+        // Multiplexor raises a notification only for the first exn carrying a
+        // given embed set (same e.d), so a re-send is silent on the receiver;
+        // the second delivery is therefore the same exn processed again (a
+        // restart re-reading an unhandled note, or a history re-push).
+        try {
+            const g1Exn = lastExnSaid;
+            await sendOrgAct(member, X, 'iss', adminP.prefix);
+            const dupNote = await waitForNote(admin, '/multisig/iss', 15_000);
+            log(`  g2: re-send of identical /multisig/iss raised a note on admin = ${!!dupNote}`);
+            const r = dupNote
+                ? (await c_mark(admin, dupNote), await replayFromExn(admin, adminP.prefix, dupNote.a.d))
+                : await replayFromExn(admin, adminP.prefix, g1Exn);
+            (r === 'already' ? pass : fail)('gate g2: same /multisig/iss delivered twice → already', `${r} (dup note=${!!dupNote})`);
+        } catch (e) { fail('gate g2: same /multisig/iss delivered twice → already', e); }
+
+        // g3: admin revokes X → /multisig/rev → member replays
+        try {
+            const rv = await admin.credentials().revoke(G, X);
+            const w = await waitOp(admin, rv.op, 45_000);
+            if (!w.done || w.err) throw new Error(`admin revoke op done=${w.done} ${w.err}`);
+            await sendOrgAct(admin, X, 'rev', memberP.prefix);
+            const r = await receive(member, memberP.prefix, '/multisig/rev');
+            let et = await stateEt(member, X);
+            for (let i = 0; i < 10 && et !== 'rev'; i++) { await sleep(1500); et = await stateEt(member, X); }
+            log(`  g3: replayOrgAct=${r}; member et=${et}`);
+            (r === 'applied' && et === 'rev' ? pass : fail)('gate g3: admin revokes X → sendOrgAct rev → member replayOrgAct applied, et=rev', `${r} et=${et}`);
+        } catch (e) { fail('gate g3: admin revokes X → member replays rev', e); }
     }
 
     // a1: sigs = member's + admin own
