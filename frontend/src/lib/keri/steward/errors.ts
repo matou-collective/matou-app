@@ -34,3 +34,9 @@ export class ReplayFailed extends StewardRefusal {
     super(`replay failed: ${detail}`, "A change another steward made couldn't be applied to your wallet yet.");
   }
 }
+
+/** What to show a user for a failed steward act: a refusal's plain words, else the error text. */
+export function userFacingMessage(err: unknown): string {
+  if (err instanceof StewardRefusal) return err.userMessage;
+  return err instanceof Error ? err.message : String(err);
+}

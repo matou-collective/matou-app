@@ -120,6 +120,7 @@ import { ref, reactive, watch, computed } from 'vue';
 import { X, Loader2, CheckCircle2, Circle, XCircle } from 'lucide-vue-next';
 import { updateMemberRole } from 'src/lib/api/client';
 import { useAdminActions } from 'src/composables/useAdminActions';
+import { StewardRefusal } from 'src/lib/keri/steward/errors';
 import { useRolePolicyStore } from 'src/stores/rolePolicy';
 
 interface Props {
@@ -136,7 +137,7 @@ const emit = defineEmits<{
   (e: 'role-updated', role: string): void;
 }>();
 
-const { upgradeMemberToSteward, reissueMembershipCredential } = useAdminActions();
+const { upgradeMemberToSteward, reissueMembershipCredential, error: adminError } = useAdminActions();
 
 const rolePolicyStore = useRolePolicyStore();
 void rolePolicyStore.load();
@@ -306,9 +307,10 @@ async function handleConfirm() {
       for (const step of upgradeSteps) {
         if (step.status === 'active') step.status = 'error';
       }
-      error.value = isStewardRole
+      // A steward refusal (e.g. not joined / behind the witnesses) says why.
+      error.value = adminError.value ?? (isStewardRole
         ? 'Steward upgrade failed. No role change was applied — the member keeps their previous role and credential.'
-        : 'Credential re-issue failed. No role change was applied — the member keeps their previous role and credential.';
+        : 'Credential re-issue failed. No role change was applied — the member keeps their previous role and credential.');
       return;
     }
 
@@ -330,7 +332,9 @@ async function handleConfirm() {
     for (const step of upgradeSteps) {
       if (step.status === 'active') step.status = 'error';
     }
-    error.value = err instanceof Error ? err.message : 'Failed to update role';
+    error.value = err instanceof StewardRefusal
+      ? err.userMessage
+      : err instanceof Error ? err.message : 'Failed to update role';
   } finally {
     isUpdating.value = false;
   }

@@ -18,7 +18,7 @@ import { BACKEND_URL, createOrUpdateProfile, getProfileById, grantStewardAdmin, 
 import { resolveIssuingRegistry } from 'src/lib/keri/registry';
 import { findActiveIssuedCredentialSaid } from 'src/lib/keri/notifications';
 import { secureStorage } from 'src/lib/secureStorage';
-import { NotJoined } from 'src/lib/keri/steward/errors';
+import { NotJoined, userFacingMessage } from 'src/lib/keri/steward/errors';
 
 // Membership credential schema — the coa-shared Mātou fallback. An IDSS
 // community names its OWN Membership schema in the descriptor; every issuance
@@ -594,7 +594,8 @@ export function useAdminActions() {
 
       return true;
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      // A StewardRefusal (NotJoined / GroupBehind / ...) shows its plain words.
+      const errorMsg = userFacingMessage(err);
       console.error('[AdminActions] Approve failed:', err);
       error.value = errorMsg;
 
@@ -755,6 +756,7 @@ export function useAdminActions() {
 
     isProcessing.value = true;
     processingStep.value = 'Preparing...';
+    error.value = null;
 
     try {
       // --- Step 1: Resolve steward identity ---
@@ -894,6 +896,7 @@ export function useAdminActions() {
       return true;
     } catch (err) {
       console.error('[AdminActions] Failed to upgrade steward:', err);
+      error.value = userFacingMessage(err);
       return false;
     } finally {
       isProcessing.value = false;
@@ -1215,7 +1218,7 @@ export function useAdminActions() {
 
       return true;
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = userFacingMessage(err);
       console.error('[AdminActions] Remove member failed:', err);
       error.value = errorMsg;
 
