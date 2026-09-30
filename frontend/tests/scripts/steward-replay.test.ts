@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { replayAct, cosignPolicy, type ReplayDeps, type ReplayInput } from 'src/lib/keri/steward/replay';
-import { ReplayFailed } from 'src/lib/keri/steward/errors';
+import { replayAct, cosignPolicy, ownSigningIndex, type ReplayDeps, type ReplayInput } from 'src/lib/keri/steward/replay';
+import { ReplayFailed, NotSignerYet, StewardRefusal } from 'src/lib/keri/steward/errors';
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 const sig = (i: number) => `A${B64[i]}` + 's'.repeat(86);
@@ -77,6 +77,56 @@ describe('replayAct', () => {
     const bad = { ...iss, anc: { ...iss.anc, sad: { ...iss.anc.sad, s: 'zz' } } };
     const d = deps({ keyState: async () => ({ k: ['DKEY0', 'DKEY1'], latestEstSn: 8, memberKey: 'DKEY1' }) });
     await expect(replayAct(bad, d)).rejects.toBeInstanceOf(ReplayFailed);
+    expect(d.postIss).not.toHaveBeenCalled();
+  });
+});
+
+describe('ownSigningIndex', () => {
+  it('is the index of our member key in the group keys', () => {
+    expect(ownSigningIndex({ k: ['A', 'B'], latestEstSn: 0, memberKey: 'B' })).toBe(1);
+    expect(ownSigningIndex({ k: ['A', 'B'], latestEstSn: 0, memberKey: 'A' })).toBe(0);
+  });
+  it('is -1 when our member key is not (yet) one of the group keys', () => {
+    expect(ownSigningIndex({ k: ['A', 'B'], latestEstSn: 0, memberKey: 'C' })).toBe(-1);
+  });
+});
+
+describe('replayAct — our key not in the group keys (C1: promoter rotated ahead of the group)', () => {
+  // keys[0] (the promoter) rotated its personal AID before the group rotation
+  // landed: its member key is not in the group's current k.
+  const ks = (latestEstSn: number) => async () => ({ k: ['DOLD0', 'DKEY1'], latestEstSn, memberKey: 'DNEW0' });
+
+  it('an anchor at/before the latest establishment event → NotSignerYet, nothing POSTed', async () => {
+    const d = deps({ keyState: ks(12) });
+    const err = await replayAct(iss, d).catch((e) => e);
+    expect(err).toBeInstanceOf(NotSignerYet);
+    expect(err).toBeInstanceOf(StewardRefusal);
+    expect(d.postIss).not.toHaveBeenCalled();
+    expect(d.ownSigs).not.toHaveBeenCalled();
+  });
+  it('an anchor after the latest establishment event → NotSignerYet, nothing signed or POSTed', async () => {
+    const d = deps({ keyState: ks(8) });
+    await expect(replayAct(iss, d)).rejects.toBeInstanceOf(NotSignerYet);
+    expect(d.ownSigs).not.toHaveBeenCalled();
+    expect(d.postIss).not.toHaveBeenCalled();
+  });
+  it('a rev → NotSignerYet, nothing DELETEd', async () => {
+    const d = deps({ keyState: ks(8), credentialState: async () => 'iss' });
+    await expect(replayAct(rev, d)).rejects.toBeInstanceOf(NotSignerYet);
+    expect(d.deleteRev).not.toHaveBeenCalled();
+  });
+});
+
+describe('replayAct — our own signature must be in the merged set (T6)', () => {
+  it('ownSigs returns nothing → ReplayFailed, no POST', async () => {
+    const d = deps({ ownSigs: async () => [] });
+    await expect(replayAct(iss, d)).rejects.toBeInstanceOf(ReplayFailed);
+    expect(d.postIss).not.toHaveBeenCalled();
+  });
+  it('ownSigs returns a signature at another index → ReplayFailed, no POST', async () => {
+    // we are keys[0]; our "own" sig claims index 2
+    const d = deps({ ownSigs: async () => [sig(2)] });
+    await expect(replayAct(iss, d)).rejects.toBeInstanceOf(ReplayFailed);
     expect(d.postIss).not.toHaveBeenCalled();
   });
 });

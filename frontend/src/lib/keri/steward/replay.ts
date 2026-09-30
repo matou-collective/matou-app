@@ -1,5 +1,5 @@
-import { mergeSigs } from './sigs';
-import { ReplayFailed } from './errors';
+import { mergeSigs, sigIndex } from './sigs';
+import { NotSignerYet, ReplayFailed } from './errors';
 
 export interface Anchor { raw: string; sad: Record<string, unknown>; sigs: string[] }
 export interface ReplayInput {
@@ -19,15 +19,22 @@ export interface ReplayDeps {
   keyState(): Promise<{ k: string[]; latestEstSn: number; memberKey: string }>;
 }
 
+type KeyState = { k: string[]; latestEstSn: number; memberKey: string };
+
+/** Our signing index in the group's current keys; -1 when our member key is not one of them. */
+export function ownSigningIndex(ks: KeyState): number {
+  return ks.k.indexOf(ks.memberKey);
+}
+
 /**
  * Whether our signature over an ixn is valid (only after the group's latest
  * establishment event — our key is the current one), and whether we must skip:
  * keys[0] is the group's elected witnesser and parks a replay without its own
  * signature in an escrow it never leaves (spike round 1, route C).
  */
-export function cosignPolicy(ancSn: number, ks: { k: string[]; latestEstSn: number; memberKey: string }) {
+export function cosignPolicy(ancSn: number, ks: KeyState) {
   const sign = ancSn > ks.latestEstSn;
-  const isKeys0 = ks.k[0] === ks.memberKey;
+  const isKeys0 = ownSigningIndex(ks) === 0;
   return { sign, skip: !sign && isKeys0 };
 }
 
@@ -47,9 +54,20 @@ function ancSn(anc: Anchor): number {
 }
 
 async function signed(anc: Anchor, deps: ReplayDeps): Promise<string[] | null> {
-  const policy = cosignPolicy(ancSn(anc), await deps.keyState());
+  const sn = ancSn(anc);
+  const ks = await deps.keyState();
+  // Pre-sign guard: a member key outside the group's current keys cannot tell
+  // whether it is keys[0] (whose unsigned replay wedges in escrow forever), and
+  // signify's group signer fails with "Invalid signing index = -1". Wait for
+  // the group rotation instead of posting anything.
+  const idx = ownSigningIndex(ks);
+  if (idx < 0) throw new NotSignerYet(`member key ${ks.memberKey.slice(0, 12)} not in the group's ${ks.k.length} current key(s)`);
+  const policy = cosignPolicy(sn, ks);
   if (policy.skip) return null;
-  return policy.sign ? mergeSigs(anc.sigs, await deps.ownSigs(anc.raw)) : anc.sigs;
+  if (!policy.sign) return anc.sigs;
+  const merged = mergeSigs(anc.sigs, await deps.ownSigs(anc.raw));
+  if (!merged.some((s) => sigIndex(s) === idx)) throw new ReplayFailed(`no signature at our index ${idx} over anchor sn=${sn}`);
+  return merged;
 }
 
 /**

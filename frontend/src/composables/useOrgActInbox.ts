@@ -5,7 +5,7 @@ import { resolveOrgGroupPrefix } from 'src/composables/useAdminActions';
 import { fetchOrgConfig } from 'src/api/config';
 import { ORG_ACT_ROUTES, parseActExn } from 'src/lib/keri/steward/replicate';
 import type { ReplayInput } from 'src/lib/keri/steward/replay';
-import { NotJoined, userFacingMessage } from 'src/lib/keri/steward/errors';
+import { NotJoined, NotSignerYet, userFacingMessage } from 'src/lib/keri/steward/errors';
 import { resolveOrgRegistryId } from 'src/lib/keri/registry';
 import { secureStorage } from 'src/lib/secureStorage';
 
@@ -33,9 +33,10 @@ const alreadyMarked = (err: unknown) => /no notification to mark as read/i.test(
  * never re-notifies an identical exn, so a note is marked read ONLY after its
  * replay returned — a failed replay stays unread for the next pass.
  */
-export async function processOrgActNotes(notes: Note[], deps: InboxDeps): Promise<{ applied: number; failed: number }> {
+export async function processOrgActNotes(notes: Note[], deps: InboxDeps): Promise<{ applied: number; failed: number; waiting: number }> {
   let applied = 0;
   let failed = 0;
+  let waiting = 0;
   for (const n of notes) {
     if (n.r || !isOrgAct(n) || !n.a?.d) continue;
     try {
@@ -58,11 +59,18 @@ export async function processOrgActNotes(notes: Note[], deps: InboxDeps): Promis
         else console.warn(`[OrgActInbox] applied but could not mark note ${n.i} read:`, markErr);
       }
     } catch (err) {
+      if (err instanceof NotSignerYet) {
+        // Expected mid-promotion (our key rotated ahead of the group): retry
+        // on a later pass, quietly — still pending, never posted.
+        waiting++;
+        console.debug(`[OrgActInbox] waiting for the group rotation, left unread: ${err.message}`);
+        continue;
+      }
       failed++;
       console.warn('[OrgActInbox] replay failed, left unread:', err);
     }
   }
-  return { applied, failed };
+  return { applied, failed, waiting };
 }
 
 /** The org group this wallet holds (R4: config first, then stored); null = not a steward yet. */
@@ -107,8 +115,10 @@ export function useOrgActInbox() {
       replay: (input) => keriClient.replayOrgAct(input, group),
       mark: async (id) => { await keriClient.markNotificationRead(id); },
     });
-    pending.value = res.failed;
-    lastError.value = res.failed ? `${res.failed} change(s) from other stewards not applied yet` : null;
+    pending.value = res.failed + res.waiting;
+    lastError.value = res.failed
+      ? `${res.failed} change(s) from other stewards not applied yet`
+      : res.waiting ? new NotSignerYet('').userMessage : null;
   }
 
   /** Single-flight: concurrent callers share one pass. Never rejects. */

@@ -35,6 +35,17 @@ export class ReplayFailed extends StewardRefusal {
   }
 }
 
+/**
+ * Our member key is not (yet) one of the group's current signing keys — e.g.
+ * the promoter rotated its personal AID and the group rotation has not landed.
+ * Retryable and quiet: nothing is posted, the act stays pending.
+ */
+export class NotSignerYet extends StewardRefusal {
+  constructor(detail: string) {
+    super(`not a current group signer: ${detail}`, "Waiting for the community's key rotation to finish.");
+  }
+}
+
 /** What to show a user for a failed steward act: a refusal's plain words, else the error text. */
 export function userFacingMessage(err: unknown): string {
   if (err instanceof StewardRefusal) return err.userMessage;
