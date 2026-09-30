@@ -10,6 +10,7 @@ import { secureStorage } from 'src/lib/secureStorage';
 import { useKERINotificationService } from './useKERINotificationService';
 import { toKeriAlias } from 'src/lib/keri/alias';
 import { isAlreadyGroupSigner, hasLocalGroupIdentifier } from 'src/lib/keri/notifications';
+import { classifyMultisigRot, adminPrefixFromExn, shouldRotateForRound1 } from 'src/lib/keri/multisigRound';
 
 const MULTISIG_ROT_ROUTE = '/multisig/rot';
 // When admin pre-rotates between rounds and immediately sends a /multisig/rot,
@@ -20,6 +21,27 @@ const MULTISIG_ROT_ROUTE = '/multisig/rot';
 // new KEL into kevers. KERIA's escrow processor then retries the EXN and the
 // normal /multisig/rot notification fires.
 const MULTISIG_ROT_PENDING_ROUTE = '/exn/multisig/rot/pending';
+
+// Module-level single-flight: every caller (startPolling's immediate check,
+// the lastFetchTime watcher, other component instances) shares ONE pass. Two
+// concurrent passes over the same unread round-1 notification rotated the
+// joining member's personal AID twice (registration e2e, 2026-09-30).
+let inFlight: Promise<boolean> | null = null;
+
+// Rotation SAIDs (exn.e.rot.d) of the round-1 proposals we already rotated
+// for, persisted so a reload or a co-signer's forward of the same proposal
+// can never trigger a second personal rotation. Bounded to the last 50.
+const HANDLED_KEY = 'matou_round1_rotations_handled';
+async function loadHandled(): Promise<Set<string>> {
+  try {
+    return new Set(JSON.parse((await secureStorage.getItem(HANDLED_KEY)) || '[]') as string[]);
+  } catch {
+    return new Set();
+  }
+}
+async function saveHandled(s: Set<string>): Promise<void> {
+  await secureStorage.setItem(HANDLED_KEY, JSON.stringify([...s].slice(-50)));
+}
 
 export function useMultisigJoin() {
   const keriClient = useKERIClient();
@@ -32,9 +54,15 @@ export function useMultisigJoin() {
   let stopWatcher: (() => void) | null = null;
 
   /**
-   * Check for /multisig/rot notifications and join if found
+   * Check for /multisig/rot notifications and join if found. Single-flight:
+   * concurrent callers share the pass already running.
    */
-  async function checkAndJoinMultisig(): Promise<boolean> {
+  function checkAndJoinMultisig(): Promise<boolean> {
+    inFlight ??= checkAndJoinMultisigOnce().finally(() => { inFlight = null; });
+    return inFlight;
+  }
+
+  async function checkAndJoinMultisigOnce(): Promise<boolean> {
     const client = keriClient.getSignifyClient();
     if (!client) return false;
 
@@ -60,7 +88,6 @@ export function useMultisigJoin() {
       isJoining.value = true;
       error.value = null;
 
-      const { classifyMultisigRot, adminPrefixFromExn } = await import('src/lib/keri/multisigRound');
       const exchResp = await client.exchanges().get(notification.a.d);
       const exn = exchResp?.exn ?? {};
 
@@ -114,30 +141,26 @@ export function useMultisigJoin() {
 
         // Below here I am the JOINING member (not yet a signer of this group).
         if (round === 'round-1') {
+          // Rotate ONCE per proposed group rotation, and only on the
+          // initiator's exn. A co-signer forwards the same proposal (d29ab75);
+          // reacting to that as a fresh round 1 rotated the joiner past the
+          // key round 2 committed (e2e test 5, 2026-09-30). The group's
+          // round-1 rotation itself reaches us through the admin's KEL push
+          // (addMemberRound1) and joinGroup's own group resolve — no
+          // queryKeyStateToSn here (it always timed out on KERIA).
+          const handled = await loadHandled();
+          const decision = shouldRotateForRound1(exn as never, handled);
+          if (!decision.rotate) {
+            console.log(`[MultisigJoin] round-1 ${decision.said?.slice(0, 12) ?? '?'} already handled or not from the initiator — marking read`);
+            await keriClient.markNotificationRead(notification.i);
+            return false;
+          }
           if (!adminPrefix) throw new Error('round-1 EXN missing admin prefix');
           await keriClient.resolveOOBI(`${cesrUrl}/oobi/${adminPrefix}`, undefined, 30000);
-
-          // Pull the group's WITNESS-RECEIPTED round-1 rotation straight from
-          // ITS witnesses before we react (issue #520, step 1). The EXN carries
-          // the rotation with only the admin's signature and no witness
-          // receipts; if our agent ingests that copy first, keripy parks it in
-          // the partially-witnessed escrow ("Failure satisfying toad ...
-          // sigs=[]") until an incidental KEL push arrives. Resolving the
-          // group's OOBI then querying its key state to the embedded sn fetches
-          // the receipted event instead. Best-effort: a failure leaves the
-          // admin's push (addMemberRound1) as the backstop.
-          const embeddedSn = (exn as { e?: { rot?: { s?: string } } }).e?.rot?.s;
-          if (gidFromExn && embeddedSn) {
-            try {
-              await keriClient.resolveOOBI(`${cesrUrl}/oobi/${gidFromExn}`, undefined, 30000);
-              await keriClient.queryKeyStateToSn(gidFromExn, embeddedSn);
-            } catch (pullErr) {
-              console.warn('[MultisigJoin] round-1 group key-state pull failed; relying on KEL push backstop', pullErr);
-            }
-          }
-
           const personalName = aids.aids[0]?.name as string;
           await keriClient.rotatePersonalAid(personalName);
+          handled.add(decision.said!);
+          await saveHandled(handled);
           await keriClient.markNotificationRead(notification.i);
           console.log('[MultisigJoin] round-1 done; waiting for round-2 EXN');
           return false; // keep watcher running
@@ -192,6 +215,16 @@ export function useMultisigJoin() {
           await keriClient.markNotificationRead(notification.i);
           hasJoined.value = true;
           console.log(`[MultisigJoin] round-2 done, joined ${gid.slice(0, 12)}`);
+          // Best-effort readiness: catch up on the group's witnessed KEL and
+          // adopt the org registry so the first group act works. The
+          // dashboard's readiness check retries whatever this leaves undone.
+          try {
+            await keriClient.syncGroupFromWitnesses(gid);
+            const { resolveOrgRegistryId } = await import('src/lib/keri/registry');
+            await keriClient.ensureOrgRegistryAdopted(gid, await resolveOrgRegistryId());
+          } catch (readyErr) {
+            console.warn('[MultisigJoin] post-join readiness incomplete (dashboard will retry):', readyErr);
+          }
           return true;
         }
 

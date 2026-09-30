@@ -765,6 +765,18 @@ export function useAdminActions() {
       console.log(`[AdminActions] Adding steward ${stewardAid.slice(0, 12)}... to org multisig`);
 
       const orgAidPrefix = await getOrgAidName();
+      // Start from the group's witnessed KEL and every peer steward's act
+      // applied: the promotion rotates this wallet's key, after which an
+      // unapplied act signed under the old key state can't be replayed.
+      // syncGroupFromWitnesses refuses (throws) rather than fail open;
+      // drain() never rejects, so its leftovers are read from `pending`.
+      await keriClient.syncGroupFromWitnesses(orgAidPrefix);
+      const { useOrgActInbox } = await import('src/composables/useOrgActInbox');
+      const inbox = useOrgActInbox();
+      await inbox.drain();
+      if (inbox.pending.value > 0) {
+        throw new Error(`Changes from other stewards not applied yet — try again (${inbox.lastError.value ?? `${inbox.pending.value} pending`})`);
+      }
       const aids = await client.identifiers().list();
       const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === orgAidPrefix);
       const orgName = orgAid?.name;

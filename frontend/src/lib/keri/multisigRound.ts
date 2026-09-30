@@ -40,3 +40,28 @@ export function adminPrefixFromExn(exn: ExnLike): string | undefined {
   const smids = Array.isArray(exn?.a?.smids) ? (exn.a!.smids as string[]) : undefined;
   return smids?.[0];
 }
+
+/** The promotion's initiator is by convention smids[0]; a co-signer's forwarded /multisig/rot has another sender. */
+export function isInitiatorExn(exn: { i?: string; a?: { smids?: unknown } }): boolean {
+  const smids = Array.isArray(exn?.a?.smids) ? (exn.a!.smids as string[]) : [];
+  return !!exn?.i && exn.i === smids[0];
+}
+
+export function rotationSaidOf(exn: { e?: { rot?: { d?: string } } }): string | undefined {
+  return exn?.e?.rot?.d;
+}
+
+/**
+ * The joining member rotates its personal AID ONCE per proposed group
+ * rotation — on the initiator's exn only. A co-signer forwards the same
+ * proposal (d29ab75); treating that as a new round 1 rotated member2 three
+ * times while round 2 committed its first new key (e2e test 5, 2026-09-30).
+ */
+export function shouldRotateForRound1(
+  exn: { i?: string; a?: { smids?: unknown }; e?: { rot?: { d?: string } } },
+  handled: Set<string>,
+): { rotate: boolean; said?: string } {
+  const said = rotationSaidOf(exn);
+  if (!said || handled.has(said) || !isInitiatorExn(exn)) return { rotate: false, said };
+  return { rotate: true, said };
+}

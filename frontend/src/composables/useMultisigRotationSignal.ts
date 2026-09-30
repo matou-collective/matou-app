@@ -18,6 +18,7 @@ import { watch, onUnmounted } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useBackendEvents } from './useBackendEvents';
 import { BACKEND_URL, authHeaders } from 'src/lib/api/client';
+import { secureStorage } from 'src/lib/secureStorage';
 
 interface RotationSignalEvent {
   signalId: string;
@@ -99,6 +100,18 @@ export function useMultisigRotationSignal() {
         const mine = aids?.aids?.find((a: { prefix: string }) => a.prefix === myAid) ?? aids?.aids?.[0];
         const name = mine?.name as string | undefined;
         if (!name) throw new Error('no local alias for this AID');
+        // Apply every peer steward's act and catch up on the group's witnessed
+        // KEL BEFORE rotating: once our key moves on, an unapplied act signed
+        // under the old key state can no longer be replayed here.
+        // drain() never rejects — it parks failures in `pending`.
+        const { useOrgActInbox } = await import('src/composables/useOrgActInbox');
+        const inbox = useOrgActInbox();
+        await inbox.drain();
+        if (inbox.pending.value > 0) {
+          throw new Error(`changes from other stewards not applied yet — try again (${inbox.lastError.value ?? `${inbox.pending.value} pending`})`);
+        }
+        const group = sig.groupAid || await secureStorage.getItem('matou_org_aid');
+        if (group) await keriClient.syncGroupFromWitnesses(group);
         const newSn = await keriClient.rotatePersonalAid(name);
         console.log(`[RotationSignal] rotated own AID for ${sig.round} -> sn=${newSn}`);
       } catch (err) {

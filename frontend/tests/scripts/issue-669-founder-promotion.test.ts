@@ -65,7 +65,16 @@ const keriClientMock = {
   addMemberRound2,
   waitForMemberRotation,
   pushKelToAgent: vi.fn(async () => ({ pushed: 1, failed: 0 })),
+  syncGroupFromWitnesses: vi.fn(async () => ({ sn: 3 })),
 };
+
+// The promotion drains peer stewards' acts before rotating; drain() never
+// rejects, leftovers show in `pending`.
+const inbox = vi.hoisted(() => ({ pending: { value: 0 }, lastError: { value: null as string | null } }));
+const drain = vi.fn(async () => {});
+vi.mock('src/composables/useOrgActInbox', () => ({
+  useOrgActInbox: () => ({ drain, pending: inbox.pending, lastError: inbox.lastError }),
+}));
 
 vi.mock('src/lib/keri/client', () => ({ useKERIClient: () => keriClientMock }));
 vi.mock('src/lib/keri/registry', () => ({
@@ -128,6 +137,10 @@ describe('#669 founding-member upgrade runs the IDSS promotion rail', () => {
     state.steward = { s: '0', k: ['KSTEWARD0'] };
     state.group = { k: ['KADMIN', 'KSOMEONE'], n: ['ndig'], s: '3' };
     state.admin = { k: ['KADMIN'], s: '2' };
+    inbox.pending.value = 0;
+    inbox.lastError.value = null;
+    drain.mockClear();
+    keriClientMock.syncGroupFromWitnesses.mockReset().mockResolvedValue({ sn: 3 });
   });
 
   it('rotates the group identity to add the member as a signer (AC1)', async () => {
@@ -172,5 +185,26 @@ describe('#669 founding-member upgrade runs the IDSS promotion rail', () => {
     expect(issueCredential).not.toHaveBeenCalled();
     expect(vi.mocked(createOrUpdateProfile)).not.toHaveBeenCalled();
     expect(vi.mocked(grantStewardAdmin)).not.toHaveBeenCalled();
+  });
+
+  it('syncs the group and drains peer acts before starting; refuses while any are unapplied', async () => {
+    inbox.pending.value = 1;
+    inbox.lastError.value = '1 change(s) from other stewards not applied yet';
+
+    const actions = useAdminActions();
+    const ok = await actions.upgradeMemberToSteward(STEWARD_AID, 'Founding Member');
+    expect(ok).toBe(false);
+    expect(keriClientMock.syncGroupFromWitnesses).toHaveBeenCalledWith('ORGAID');
+    expect(drain).toHaveBeenCalledTimes(1);
+    expect(actions.error.value).toMatch(/not applied yet/);
+    expect(addMemberRound1).not.toHaveBeenCalled();
+  });
+
+  it('refuses to start when the witness sync refuses', async () => {
+    keriClientMock.syncGroupFromWitnesses.mockRejectedValue(new Error('group behind its witnesses'));
+    const ok = await useAdminActions().upgradeMemberToSteward(STEWARD_AID, 'Founding Member');
+    expect(ok).toBe(false);
+    expect(drain).not.toHaveBeenCalled();
+    expect(addMemberRound1).not.toHaveBeenCalled();
   });
 });
