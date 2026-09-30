@@ -41,7 +41,7 @@ Two spikes ran against `weboftrust/keria:0.4.0` + `keri-witness-demo:1.1.0` + si
 | Once an agent holds or has adopted a registry, keripy's `Tevery` refuses inbound TEL events for it (`Local event regk=… when nonlocal mode`). This holds over the CESR door, IPEX grant/admit, anything. The door still answers 204. | A shared registry is kept in step **only by replay**: each steward's agent re-creates each TEL event itself. A 204 from the door proves nothing. |
 | Replaying an issuance: `POST /identifiers/{g}/credentials {acdc, iss, ixn, sigs}`. It works on any steward **if the sigs include that steward's own signature over the ixn**. `keys[0]` is the elected witnesser and wedges forever without its own sig. A second, different signature set on an already-accepted ixn is accepted and merged. | Every replay adds the replaying steward's own signature. |
 | Replaying a revocation: `DELETE /identifiers/{g}/credentials/{said} {rev, ixn, sigs}`. It works both directions, but only once the credential's `iss` is held. A `rev` before its `iss` is a clean 404 with no side effect. | Replay `iss` before `rev`. |
-| `iss` is rebuilt exactly from the ACDC: `{t:'iss', i:acdc.d, s:'0', ri:acdc.ri, dt:acdc.a.dt}` → saidify → equals the SAID sealed in the witness-held group ixn. The `rev` SAID is sealed publicly, but its `dt` (ms resolution) is not; a bounded brute force from the issuance found it in ~4,000 tries (<1 s). | Backfill needs only the ACDC + the witness KEL. |
+| `iss` is rebuilt exactly from the ACDC: `{t:'iss', i:acdc.d, s:'0', ri:acdc.ri, dt:acdc.a.dt}` → saidify → equals the SAID sealed in the witness-held group ixn. The `rev` SAID is sealed publicly, but its `dt` (ms resolution) is not; a bounded brute force from the issuance found it in ~4,000 tries (<1 s). | The rebuild is possible yet unused: no public lossless ACDC source exists on IDSS. History is pushed by its holder (§3.5), not pulled from a witness by the receiver. |
 | A replayed credential whose issuee is the steward shows in their `credentials().list()`, and they can grant it onward. Inbound IPEX from that registry to an adopted steward fails. | Credentials *to* a steward from the org registry arrive by replay. |
 | A steward whose agent is behind the group KEL issues at an already-used sn with **no error**. The witnesses reject it, so the result is a silent fork. `keyStates().query(group, sn)` times out every time. Resolving the witness OOBI doesn't move sn. **A CESR push of the witness KEL (with receipts) into the agent works.** | Sync from the witnesses before every act. It is the only fork guard. |
 | A replay whose anchoring ixn is ahead of the agent's KEL returns 500 and does not self-heal after the KEL arrives. Re-POSTing after a sync succeeds, and the agent is never wedged. | The replayer syncs and retries once. |
@@ -96,7 +96,7 @@ Sending to each recipient is best-effort and never rolls the act back. `signify 
 - For each unread `/multisig/iss` or `/multisig/rev` whose `gid` is the org group and whose embedded registry is the org registry (anything else is marked read and ignored), oldest first:
   0. Fetch the exn with `groups().getRequest(note.a.d)`. The embeds are in `exn.e` and their attachments in `paths`.
   1. `syncGroup`.
-  2. If `credentials().state(registry, acdc.d).et` already equals `event.t`, mark it read. Done.
+  2. If `credentials().state(regk, exn.e.acdc.d).et` already equals `exn.e.iss.t` (for `/multisig/iss`) or `exn.e.rev.t` (for `/multisig/rev`), mark it read. Done.
   3. Sign the anchoring ixn with this steward's group-member key and merge that signature with the attachment sigs.
   4. `iss`: POST. `rev`: DELETE. On a `rev` 404 (not held), replay the `iss` first, then the `rev`.
   5. On a 500: `syncGroup`, then retry once. If it still fails, leave the notification unread and surface it.
@@ -104,7 +104,7 @@ Sending to each recipient is best-effort and never rolls the act back. `signify 
 - `drainReplays(): Promise<void>` runs the loop to empty and throws if anything is left.
 
 ### 3.5 `historyPush` — catch-up without a public ACDC source
-The backend's community credential cache is lossy (no raw ACDC; `anystore.CachedCredential`), and the IDSS directory needs a panel session. So backfill is driven by the peer that **holds** the history:
+The backend's community credential cache is lossy (no raw ACDC; `anystore.CachedCredential`), and the IDSS directory needs a panel session. So history push is driven by the peer that **holds** the history:
 - At every steward sign-in, and right after a promotion completes, each steward's app lists the credentials its own agent holds from the org registry.
 - For every other signer it sends the `/multisig/iss` (and, if revoked, `/multisig/rev`) it has not sent that signer before. It records what it sent per peer in secure storage (`matou_org_acts_sent:<group>`).
 - Receivers are idempotent (§3.4), so a re-send costs one no-op.
@@ -131,7 +131,7 @@ The backend's community credential cache is lossy (no raw ACDC; `anystore.Cached
    - Any other `/multisig/rot` carrying an already-handled rotation SAID is only marked read.
    - `checkAndJoinMultisig` gets a real in-flight guard.
    - `queryKeyStateToSn` is replaced by `syncGroup` there.
-3. **Joiner, round 2:** join, then `syncGroup` → `ensureOrgRegistry` → `catchUp`. Only then does `stewardReady` turn true.
+3. **Joiner, round 2:** join, then `syncGroup` → `ensureOrgRegistry`; then `stewardReady` turns true; history arrives from peers via §3.5 and is applied by `replayInbox` (readiness does not wait for it).
 
 ## 5. Changes to existing code
 
@@ -153,12 +153,12 @@ To file: an idss issue. Until it lands, a panel act reaches the other stewards t
 - **Unit (vitest):**
   - `iss`/`rev` rebuild + SAID;
   - CESR signature parsing;
-  - the bounded `dt` search;
   - the join handler's rotation-SAID dedupe and in-flight guard;
   - `getOrgAidName` refusing;
   - the `replayInbox` decision table (already applied / rev-404-then-iss / 500-sync-retry / still failing);
+  - history-push planning (per-peer ledger);
   - `groupSync` refusing when behind.
-- **KERIA integration** (new; KERIA 0.4.0 + witness demo, isolated ports): the spike, kept as a test. It covers adoption (held and fresh), issue and revoke by each of `keys[0]` and index 1 with replay to the other, backfill of a live and a revoked credential, out-of-order replay, and fork refusal. The e2e stack runs `matou-keria-patched`, which is a different base version, so this test covers the gap.
+- **KERIA integration** (new; KERIA 0.4.0 + witness demo, isolated ports): the spike, kept as a test. It covers adoption (held and fresh), issue and revoke by each of `keys[0]` and index 1 with replay to the other, history push of a live and a revoked credential, out-of-order replay, and fork refusal. The e2e stack runs `matou-keria-patched`, which is a different base version, so this test covers the gap.
 - **Registration e2e:**
   - Test 2 asserts that member2's Membership **issuer is the group AID**.
   - Test 5 is green.
@@ -178,4 +178,4 @@ To file: an idss issue. Until it lands, a panel act reaches the other stewards t
 
 - Threshold co-signing (`kt > 1`). The replay channel is a natural place for it later, but not now.
 - Removing a steward from the group.
-- Signing replays of ixns older than the replaying steward's last rotation. §4.2's drain-before-rotate makes this unreachable in normal operation. If it happens anyway, `catchUp` replays without an own signature: that works for a non-`keys[0]` steward, and `keys[0]` reports it.
+- Signing replays of ixns older than the replaying steward's last rotation. §4.2's drain-before-rotate makes this unreachable in normal operation. If it happens anyway, `replayInbox` replays without an own signature: that works for a non-`keys[0]` steward, and `keys[0]` reports it.
