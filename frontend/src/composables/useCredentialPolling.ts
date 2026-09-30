@@ -422,11 +422,14 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           } catch (attendErr) {
             console.warn('[CredentialPolling] Failed to admit event attendance grant:', attendErr);
           }
-        } else if (!credentialReceived.value) {
-          // Membership grant — existing admission flow
+        } else {
+          // Membership grant. Handle it whether or not the credential has
+          // already landed (#704): a membership grant that arrives after the
+          // credential — e.g. a re-approval sent to give a stranded member the
+          // space invite they never got — must still have its embedded invite
+          // read and its notification cleared, or it sits unread for good.
           console.log('[CredentialPolling] Membership grant detected:', grant);
           grantReceived.value = true;
-          isProcessingGrant = true;
 
           // Extract space invite data from the IPEX exchange message (embedded by admin).
           // The grant notification's `a` field only has `{ r, d }` — the actual message
@@ -448,12 +451,26 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
             }
           }
 
-          try {
-            await admitGrant(grant);
-            // After admitting, poll for membership credential to appear in wallet
-            await pollForCredential();
-          } finally {
-            isProcessingGrant = false;
+          if (!credentialReceived.value) {
+            // Credential not in the wallet yet — the original admission flow.
+            isProcessingGrant = true;
+            try {
+              await admitGrant(grant);
+              // After admitting, poll for membership credential to appear in wallet
+              await pollForCredential();
+            } finally {
+              isProcessingGrant = false;
+            }
+          } else {
+            // Credential already landed. Admit anyway to mark the grant read —
+            // idempotent on the credential (#470): it clears the notification
+            // without a second admit. Don't re-enter pollForCredential; the
+            // [credentialReceived, spaceInviteReceived] watcher runs the join.
+            try {
+              await admitGrant(grant);
+            } catch (admitErr) {
+              console.warn('[CredentialPolling] Failed to admit late membership grant:', admitErr);
+            }
           }
           break; // Only process one membership grant at a time
         }
