@@ -823,6 +823,16 @@ export class KERIClient {
         return r.ok; // 204 is not proof of acceptance — syncGroup re-reads sn
       },
       localGroupSn: localSn,
+      localEventSaid: async (g, sn) => {
+        try {
+          const events = await client.keyEvents().get(g) as Array<{ ked?: { s?: string; d?: string } }>;
+          const hit = events.find((e) => typeof e?.ked?.s === 'string' && parseInt(e.ked.s, 16) === sn);
+          return hit?.ked?.d ?? null;
+        } catch (err) {
+          console.warn(`[KERIClient] group sync: could not read our event at sn=${sn}:`, err instanceof Error ? err.message : err);
+          return null;
+        }
+      },
     };
     const res = await syncGroup(groupPrefix, memberAid, deps);
     console.log(`[KERIClient] group ${groupPrefix.slice(0, 12)}... synced to witnesses at sn=${res.sn}`);

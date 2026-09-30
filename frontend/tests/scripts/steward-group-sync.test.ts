@@ -16,6 +16,8 @@ function deps(over: Partial<GroupSyncDeps> & { local: number[] }): GroupSyncDeps
     fetchText: over.fetchText ?? (async () => kel(5)),
     pushEvent: over.pushEvent ?? vi.fn(async () => true),
     localGroupSn: async () => (local.length > 1 ? local.shift()! : local[0]!),
+    // Default: the agent holds the same events the witnesses serve (kel() SAIDs are `E<sn>`).
+    localEventSaid: over.localEventSaid ?? (async (_g, sn) => `E${sn}`),
   };
 }
 
@@ -56,5 +58,31 @@ describe('syncGroup', () => {
   });
   it('refuses when the local sn is NaN', async () => {
     await expect(syncGroup('EGRP', 'EME', deps({ local: [NaN] }))).rejects.toBeInstanceOf(StewardRefusal);
+  });
+});
+
+describe('syncGroup — same-sn fork (I3)', () => {
+  it('refuses with GroupDiverged when the agent holds a different event at the witnesses\' sn', async () => {
+    const push = vi.fn(async () => true);
+    const d = deps({ local: [5], pushEvent: push, localEventSaid: async (_g, sn) => (sn === 5 ? 'EFORK5' : `E${sn}`) });
+    await expect(syncGroup('EGRP', 'EME', d)).rejects.toBeInstanceOf(GroupDiverged);
+  });
+  it('refuses with GroupDiverged when the agent forked at its pre-push sn', async () => {
+    const d = deps({ local: [3, 5], localEventSaid: async (_g, sn) => (sn === 3 ? 'EFORK3' : `E${sn}`) });
+    await expect(syncGroup('EGRP', 'EME', d)).rejects.toBeInstanceOf(GroupDiverged);
+  });
+  it('refuses with GroupDiverged when the pushed-to sn carries a different event', async () => {
+    const d = deps({ local: [3, 5], localEventSaid: async (_g, sn) => (sn === 5 ? 'EFORK5' : `E${sn}`) });
+    await expect(syncGroup('EGRP', 'EME', d)).rejects.toBeInstanceOf(GroupDiverged);
+  });
+  it('passes when the agent\'s event SAIDs match the witnesses\'', async () => {
+    const seen: number[] = [];
+    const d = deps({ local: [3, 5], localEventSaid: async (_g, sn) => { seen.push(sn); return `E${sn}`; } });
+    await expect(syncGroup('EGRP', 'EME', d)).resolves.toEqual({ sn: 5 });
+    expect(seen.sort()).toEqual([3, 5]);
+  });
+  it('an unreadable agent event is GroupBehind (retry), not a fork', async () => {
+    const d = deps({ local: [5], localEventSaid: async () => null });
+    await expect(syncGroup('EGRP', 'EME', d)).rejects.toBeInstanceOf(GroupBehind);
   });
 });
