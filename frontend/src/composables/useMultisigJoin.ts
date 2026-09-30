@@ -10,7 +10,13 @@ import { secureStorage } from 'src/lib/secureStorage';
 import { useKERINotificationService } from './useKERINotificationService';
 import { toKeriAlias } from 'src/lib/keri/alias';
 import { isAlreadyGroupSigner, hasLocalGroupIdentifier } from 'src/lib/keri/notifications';
-import { classifyMultisigRot, adminPrefixFromExn, shouldRotateForRound1 } from 'src/lib/keri/multisigRound';
+import {
+  classifyMultisigRot,
+  adminPrefixFromExn,
+  rotationSaidOf,
+  round1Action,
+  parseRound1Records,
+} from 'src/lib/keri/multisigRound';
 
 const MULTISIG_ROT_ROUTE = '/multisig/rot';
 // When admin pre-rotates between rounds and immediately sends a /multisig/rot,
@@ -28,19 +34,23 @@ const MULTISIG_ROT_PENDING_ROUTE = '/exn/multisig/rot/pending';
 // joining member's personal AID twice (registration e2e, 2026-09-30).
 let inFlight: Promise<boolean> | null = null;
 
-// Rotation SAIDs (exn.e.rot.d) of the round-1 proposals we already rotated
-// for, persisted so a reload or a co-signer's forward of the same proposal
-// can never trigger a second personal rotation. Bounded to the last 50.
+// Round-1 proposals (by rotation SAID, exn.e.rot.d) we started rotating for,
+// each with our personal AID's sn just BEFORE the rotation. Written BEFORE
+// rotating: if the rotation lands but its wait times out, or the app dies
+// before the note is marked read, the next pass sees our sn advanced past
+// snBefore and does not rotate again. Bounded to the last 50 proposals.
 const HANDLED_KEY = 'matou_round1_rotations_handled';
-async function loadHandled(): Promise<Set<string>> {
+async function loadHandled(): Promise<Map<string, number>> {
   try {
-    return new Set(JSON.parse((await secureStorage.getItem(HANDLED_KEY)) || '[]') as string[]);
+    const raw: unknown = JSON.parse((await secureStorage.getItem(HANDLED_KEY)) || '[]');
+    return new Map(parseRound1Records(raw).map((r) => [r.said, r.snBefore]));
   } catch {
-    return new Set();
+    return new Map();
   }
 }
-async function saveHandled(s: Set<string>): Promise<void> {
-  await secureStorage.setItem(HANDLED_KEY, JSON.stringify([...s].slice(-50)));
+async function saveHandled(m: Map<string, number>): Promise<void> {
+  const records = [...m].map(([said, snBefore]) => ({ said, snBefore })).slice(-50);
+  await secureStorage.setItem(HANDLED_KEY, JSON.stringify(records));
 }
 
 export function useMultisigJoin() {
@@ -148,19 +158,30 @@ export function useMultisigJoin() {
           // round-1 rotation itself reaches us through the admin's KEL push
           // (addMemberRound1) and joinGroup's own group resolve — no
           // queryKeyStateToSn here (it always timed out on KERIA).
+          const personalName = aids.aids[0]?.name as string;
           const handled = await loadHandled();
-          const decision = shouldRotateForRound1(exn as never, handled);
-          if (!decision.rotate) {
-            console.log(`[MultisigJoin] round-1 ${decision.said?.slice(0, 12) ?? '?'} already handled or not from the initiator — marking read`);
+          const said = rotationSaidOf(exn as never);
+          // A failed sn read throws: the note stays unread and the next pass
+          // retries, rather than guessing and risking a second rotation.
+          const mine = await client.identifiers().get(personalName) as { state?: { s?: string } };
+          const currentSn = parseInt(mine?.state?.s ?? '', 16);
+          if (!Number.isFinite(currentSn)) throw new Error(`could not read ${personalName}'s key state`);
+          const recorded = !!said && handled.has(said);
+          const action = round1Action(exn as never, recorded ? { said: said!, snBefore: handled.get(said!)! } : undefined, currentSn);
+          if (action !== 'rotate') {
+            console.log(`[MultisigJoin] round-1 ${said?.slice(0, 12) ?? '?'} ${action === 'skip' ? 'not from the initiator' : 'already rotated for'} — marking read`);
             await keriClient.markNotificationRead(notification.i);
             return false;
           }
+          if (!recorded) {
+            handled.set(said!, currentSn);
+            await saveHandled(handled);
+          } else {
+            console.warn(`[MultisigJoin] round-1 ${said!.slice(0, 12)} recorded but sn still ${currentSn} — retrying the rotation`);
+          }
           if (!adminPrefix) throw new Error('round-1 EXN missing admin prefix');
           await keriClient.resolveOOBI(`${cesrUrl}/oobi/${adminPrefix}`, undefined, 30000);
-          const personalName = aids.aids[0]?.name as string;
           await keriClient.rotatePersonalAid(personalName);
-          handled.add(decision.said!);
-          await saveHandled(handled);
           await keriClient.markNotificationRead(notification.i);
           console.log('[MultisigJoin] round-1 done; waiting for round-2 EXN');
           return false; // keep watcher running
