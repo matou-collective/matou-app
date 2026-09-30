@@ -18,6 +18,7 @@ import { BACKEND_URL, createOrUpdateProfile, getProfileById, grantStewardAdmin, 
 import { resolveIssuingRegistry } from 'src/lib/keri/registry';
 import { findActiveIssuedCredentialSaid } from 'src/lib/keri/notifications';
 import { secureStorage } from 'src/lib/secureStorage';
+import { NotJoined } from 'src/lib/keri/steward/errors';
 
 // Membership credential schema — the coa-shared Mātou fallback. An IDSS
 // community names its OWN Membership schema in the descriptor; every issuance
@@ -57,6 +58,23 @@ async function resolveMembershipBackend(): Promise<MembershipBackend> {
     // fall through to the legacy body
   }
   return { kind: 'legacy' };
+}
+
+/**
+ * The org group AID's prefix IF this wallet holds the group identifier. Never
+ * a personal AID: the old name-pattern fallback made a not-yet-joined steward
+ * issue memberships from their own identity (registration e2e, 2026-09-30).
+ */
+export async function resolveOrgGroupPrefix(
+  client: { identifiers(): { list(): Promise<{ aids?: Array<{ prefix: string }> }> } },
+  config: { organization?: { aid?: string } } | null,
+  storedOrgAid: string | null,
+): Promise<string> {
+  const aids = (await client.identifiers().list()).aids ?? [];
+  for (const want of [config?.organization?.aid, storedOrgAid]) {
+    if (want && aids.some((a) => a.prefix === want)) return want;
+  }
+  throw new NotJoined(`wallet holds no identifier for org ${config?.organization?.aid ?? storedOrgAid ?? '(unknown)'}`);
 }
 
 export function useAdminActions() {
@@ -165,62 +183,18 @@ export function useAdminActions() {
   }
 
   /**
-   * Get the org AID name for issuing credentials
-   * This should match the AID that owns the registry
+   * The org group AID prefix this wallet issues from. Never a personal AID —
+   * throws NotJoined when the wallet does not hold the group identifier.
    */
   async function getOrgAidName(): Promise<string> {
     const client = keriClient.getSignifyClient();
     if (!client) throw new Error('Not connected to KERIA');
-
-    // First: check org config for the canonical org AID prefix
+    let config = null;
     try {
-      const configResult = await fetchOrgConfig();
-      const config = configResult.status === 'configured'
-        ? configResult.config
-        : configResult.status === 'server_unreachable'
-          ? configResult.cached
-          : null;
-
-      if (config?.organization?.aid) {
-        const aids = await client.identifiers().list();
-        const orgAid = aids.aids?.find(
-          (a: { prefix: string }) => a.prefix === config.organization.aid
-        );
-        if (orgAid) {
-          console.log('[AdminActions] Using org AID from config:', orgAid.name);
-          return orgAid.prefix;
-        }
-      }
-    } catch {
-      // Fall through to other methods
-    }
-
-    // Second: check secure storage (set during org setup or multisig join)
-    const storedOrgAid = await secureStorage.getItem('matou_org_aid');
-    if (storedOrgAid) {
-      const aids = await client.identifiers().list();
-      const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === storedOrgAid);
-      if (orgAid) {
-        console.log('[AdminActions] Using stored org AID:', orgAid.name);
-        return orgAid.prefix;
-      }
-    }
-
-    // Fallback: look for an org-type AID by name pattern
-    const aids = await client.identifiers().list();
-    if (!aids?.aids?.length) {
-      throw new Error('No AIDs found in wallet');
-    }
-
-    const orgAid = aids.aids.find((a: { name: string }) =>
-      a.name.includes('org') || a.name.includes('matou') || a.name.includes('community')
-    );
-
-    if (orgAid) {
-      return orgAid.prefix;
-    }
-
-    return aids.aids[0].prefix;
+      const r = await fetchOrgConfig();
+      config = r.status === 'configured' ? r.config : r.status === 'server_unreachable' ? r.cached : null;
+    } catch { /* fall through to stored */ }
+    return resolveOrgGroupPrefix(client, config, await secureStorage.getItem('matou_org_aid'));
   }
 
   /**

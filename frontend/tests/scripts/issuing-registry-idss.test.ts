@@ -11,7 +11,8 @@
  *    creates a registry on KERIA (no per-steward registry);
  *  - idss with no `community.registry` → hard error, never a silent fallback
  *    that would mint a per-steward registry the gateway never anchored;
- *  - legacy (non-idss) → the pre-existing per-steward behaviour is untouched.
+ *  - legacy (non-idss) → the ONE org registry named by the org config's
+ *    `registry.id` (steward peer registry: per-steward registries are gone).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -40,12 +41,19 @@ vi.mock('src/lib/clientConfig', () => ({
   }),
 }));
 
+// The org config the legacy path reads, driven per-test.
+let orgConfigResult: unknown;
+vi.mock('src/api/config', () => ({
+  fetchOrgConfig: vi.fn(async () => orgConfigResult),
+}));
+
 import { resolveIssuingRegistry } from 'src/lib/keri/registry';
 
 beforeEach(() => {
   registriesList.mockClear();
   createRegistry.mockClear();
   descriptor = undefined;
+  orgConfigResult = { status: 'configured', config: { registry: { id: 'EORG_REGISTRY' } } };
 });
 
 describe('resolveIssuingRegistry (#612, ADR 0235 d.4)', () => {
@@ -72,37 +80,34 @@ describe('resolveIssuingRegistry (#612, ADR 0235 d.4)', () => {
     expect(createRegistry).not.toHaveBeenCalled();
   });
 
-  it('legacy backend: falls back to the steward group-AID registry (reuse existing)', async () => {
+  it('legacy backend: the ONE org registry from org config, never a per-steward one', async () => {
     descriptor = { backend_kind: '', community: undefined };
-    registriesList.mockResolvedValueOnce([
-      { name: 'matou-community', regk: 'ELEGACY_EXISTING_REGISTRY' },
-    ]);
 
     const regk = await resolveIssuingRegistry('org-aid-name');
 
-    expect(regk).toBe('ELEGACY_EXISTING_REGISTRY');
-    expect(registriesList).toHaveBeenCalledWith('org-aid-name');
+    expect(regk).toBe('EORG_REGISTRY');
+    expect(registriesList).not.toHaveBeenCalled();
     expect(createRegistry).not.toHaveBeenCalled();
   });
 
-  it('legacy backend with no registry yet: creates a per-steward registry', async () => {
+  it('legacy backend, config server unreachable: uses the cached org config registry', async () => {
     descriptor = { backend_kind: '' };
-    registriesList.mockResolvedValueOnce([]);
+    orgConfigResult = { status: 'server_unreachable', cached: { registry: { id: 'ECACHED_REGISTRY' } } };
 
-    const regk = await resolveIssuingRegistry('org-aid-name');
-
-    expect(regk).toBe('ELOCAL_STEWARD_REGISTRY');
-    expect(createRegistry).toHaveBeenCalledTimes(1);
+    await expect(resolveIssuingRegistry('org-aid-name')).resolves.toBe('ECACHED_REGISTRY');
   });
 
-  it('descriptor unavailable: falls back to legacy handling, not an idss error', async () => {
+  it('legacy backend with no org registry: hard error, never creates one', async () => {
+    descriptor = { backend_kind: '' };
+    orgConfigResult = { status: 'configured', config: {} };
+
+    await expect(resolveIssuingRegistry('org-aid-name')).rejects.toThrow(/names no registry/);
+    expect(createRegistry).not.toHaveBeenCalled();
+  });
+
+  it('descriptor unavailable: falls back to the org config registry, not an idss error', async () => {
     descriptor = new Error('config server unreachable');
-    registriesList.mockResolvedValueOnce([
-      { name: 'matou-community', regk: 'ELEGACY_EXISTING_REGISTRY' },
-    ]);
 
-    const regk = await resolveIssuingRegistry('org-aid-name');
-
-    expect(regk).toBe('ELEGACY_EXISTING_REGISTRY');
+    await expect(resolveIssuingRegistry('org-aid-name')).resolves.toBe('EORG_REGISTRY');
   });
 });
