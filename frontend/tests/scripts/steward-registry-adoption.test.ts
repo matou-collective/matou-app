@@ -39,6 +39,25 @@ describe('ensureOrgRegistry', () => {
     expect(anc.d).toBe('EANC');
     expect(sigs).toEqual([SIG]);
   });
+  it('tolerates KERIA "already in use" (adoption already submitted) and polls', async () => {
+    let calls = 0;
+    const d = deps({
+      listRegistries: async () => (++calls >= 3 ? ['EREG'] : []),
+      createFromEvents: async () => { throw new Error('HTTP POST /identifiers/g/registries - 400 Bad Request - {"description": "registry name org-EREG already in use"}'); },
+    });
+    await expect(ensureOrgRegistry('EGRP', 'EREG', d)).resolves.toBe('adopted');
+  });
+  it('"already in use" but never listed -> RegistryNotAdopted', async () => {
+    const d = deps({
+      createFromEvents: async () => { throw new Error('registry name x already in use'); },
+      listRegistries: async () => [],
+    });
+    await expect(ensureOrgRegistry('EGRP', 'EREG', d, { timeoutMs: 0 })).rejects.toBeInstanceOf(RegistryNotAdopted);
+  });
+  it('other createFromEvents errors stay fatal', async () => {
+    const d = deps({ createFromEvents: async () => { throw new Error('HTTP 500'); } });
+    await expect(ensureOrgRegistry('EGRP', 'EREG', d)).rejects.toBeInstanceOf(RegistryNotAdopted);
+  });
   it('polls list until the escrow resolves (op done is not trusted)', async () => {
     let calls = 0;
     const d = deps({

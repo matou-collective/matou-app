@@ -831,6 +831,18 @@ export class KERIClient {
 
   /** Make sure our agent can issue into the org registry (adopting it if needed). */
   async ensureOrgRegistryAdopted(groupPrefix: string, regk: string): Promise<'present' | 'adopted'> {
+    // Single-flight per (group, regk): concurrent callers share one adoption.
+    const key = `${groupPrefix}:${regk}`;
+    const inflight = this.registryAdoptions.get(key);
+    if (inflight) return inflight;
+    const p = this.adoptOrgRegistry(groupPrefix, regk).finally(() => this.registryAdoptions.delete(key));
+    this.registryAdoptions.set(key, p);
+    return p;
+  }
+
+  private registryAdoptions = new Map<string, Promise<'present' | 'adopted'>>();
+
+  private async adoptOrgRegistry(groupPrefix: string, regk: string): Promise<'present' | 'adopted'> {
     if (!this.client) throw new Error('Not initialized');
     const client = this.client;
     const deps: AdoptionDeps = {

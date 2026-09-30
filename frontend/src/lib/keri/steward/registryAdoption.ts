@@ -40,7 +40,17 @@ export async function ensureOrgRegistry(
   } catch (e) {
     throw new RegistryNotAdopted(`anchoring ixn of ${regk} has no usable signatures: ${(e as Error).message}`);
   }
-  await deps.createFromEvents(vcp.event, anc.event, sigs, `org-${regk.slice(0, 12)}`);
+  try {
+    await deps.createFromEvents(vcp.event, anc.event, sigs, `org-${regk.slice(0, 12)}`);
+  } catch (e) {
+    // KERIA: "registry name … already in use" — another caller's adoption is
+    // already submitted; fall through to the list poll.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('already in use')) {
+      if (e instanceof RegistryNotAdopted) throw e;
+      throw new RegistryNotAdopted(`createFromEvents failed: ${msg}`);
+    }
+  }
 
   const deadline = Date.now() + (opts.timeoutMs ?? 15_000);
   do {
