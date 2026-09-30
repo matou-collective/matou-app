@@ -28,9 +28,9 @@ describe('issue report route', () => {
   });
 
   it('a production build posts to Mātou, not the community config server', async () => {
-    expect(getIssueReportUrl()).toBe('https://coa-infra.matou.nz');
+    expect(getIssueReportUrl()).toBe('http://awa.matou.nz:3904');
     await submitIssue({ type: 'improvement', title: 't', body: 'b' });
-    expect(fetchMock.mock.calls[0][0]).toBe('https://coa-infra.matou.nz/api/v1/issues');
+    expect(fetchMock.mock.calls[0][0]).toBe('http://awa.matou.nz:3904/api/v1/issues');
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).type).toBe('improvement');
   });
 

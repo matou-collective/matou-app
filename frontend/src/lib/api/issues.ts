@@ -12,7 +12,8 @@ import { version as appVersion } from '../../../package.json';
 import { getConfigUrl, getEnv } from '../clientConfig';
 import { summarizePlatform, type IssueContext, type IssuePayload } from '../issueReport';
 
-const MATOU_ISSUE_URL = 'https://coa-infra.matou.nz';
+// The same server the Mātou app's own build reports through (.env.production).
+const MATOU_ISSUE_URL = 'http://awa.matou.nz:3904';
 
 /** Base URL reports POST to. Dev/test keep the local config server. */
 export function getIssueReportUrl(): string {
