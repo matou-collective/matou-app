@@ -30,7 +30,10 @@ export async function credentialTelState(
       if (!client) return null;
       const st = (await client.credentials().state(ri, d)) as { et?: string };
       return st.et ?? null;
-    } catch {
+    } catch (err) {
+      // Usually a 404 while this agent has no TEL for the credential yet —
+      // log it so a persistent failure is visible, and keep polling.
+      console.warn(`[keria-page] credentials().state(${ri.slice(0, 12)}..., ${d.slice(0, 12)}...) failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   }, { ri: registryId, d: said });
@@ -63,4 +66,25 @@ export async function orgIssuedCredentialSaid(
       return null;
     }
   }, { i: orgAid, ri: registryId, a: recipientAid });
+}
+
+/**
+ * Revoke an org-issued credential through the app's own KERIClient in this
+ * page — the same call ProfileModal's member removal makes
+ * (useAdminActions.removeMember → keriClient.revokeCredential), so it runs the
+ * group preflight and the `/multisig/rev` replication to the other stewards.
+ * Used where the acting steward has no removal UI (a Community Steward lacks
+ * canManageMembers). Throws with the app's error message on failure.
+ */
+export async function revokeInPage(page: Page, orgAid: string, said: string): Promise<void> {
+  const error = await page.evaluate(async ({ i, d }) => {
+    try {
+      const keriModule = await import('/src/lib/keri/client.ts');
+      await keriModule.useKERIClient().revokeCredential(i, d);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    }
+  }, { i: orgAid, d: said });
+  if (error) throw new Error(`revokeCredential(${orgAid.slice(0, 12)}..., ${said.slice(0, 12)}...) failed in page: ${error}`);
 }

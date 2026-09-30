@@ -22,7 +22,7 @@ import {
   performOrgSetup,
   TestAccounts,
 } from './utils/test-helpers';
-import { credentialTelState, orgIssuedCredentialSaid } from './utils/keria-page';
+import { credentialTelState, orgIssuedCredentialSaid, revokeInPage } from './utils/keria-page';
 
 // --- KEL / witness helpers (shared by the steward-promotion tests) ----------
 // A GROUP AID's key state must be read from a WITNESS, never from KERIA's bare
@@ -1790,8 +1790,9 @@ test.describe.serial('Registration Approval Flow', () => {
       }
     };
 
-    // Remove a member through the ProfileModal (as e2e-member-removal does).
-    // Remove Member appears only once the remover sees the profile approved.
+    // Remove a member through the ProfileModal (as e2e-member-removal does) —
+    // the admin (Founding Member) path. Remove Member appears only once the
+    // remover sees the profile approved.
     const removeViaUI = async (stewardPage: Page, name: string) => {
       await expect(async () => {
         const m = await openProfile(stewardPage, name);
@@ -1858,8 +1859,12 @@ test.describe.serial('Registration Approval Flow', () => {
       await telState(member1Page, saidA, 'member1').toBe('iss');
       console.log('[Test] member1\'s agent replayed the admin\'s issuance');
 
-      await removeViaUI(member1Page, a.name);
-      console.log(`[Test] member1 removed ${a.name}`);
+      // member1 is a Community Steward: RBAC gives it no Remove Member button
+      // (canManageMembers is Operations Steward / Founding Member only), so it
+      // revokes through the app's own client — the exact call member removal
+      // makes, including the group preflight and /multisig/rev replication.
+      await revokeInPage(member1Page, orgAid, saidA);
+      console.log(`[Test] member1 revoked ${a.name}'s Membership`);
       await telState(member1Page, saidA, 'member1').toBe('rev');
       await telState(adminPage, saidA, 'admin').toBe('rev');
       console.log('[Test] PASS (A) - admin\'s agent shows member1\'s revocation of the admin\'s issuance');
