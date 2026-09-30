@@ -3020,14 +3020,20 @@ export class KERIClient {
     console.log(`[KERIClient] Issuing credential to ${recipientAid}...`);
 
     // Get issuer AID info
+    // Always the full hab from get(): a list() summary carries no `group`, and
+    // treating it as the issuer would skip the group preflight (fail open).
     let issuerAid;
     try {
       issuerAid = await this.client.identifiers().get(issuerAidName);
     } catch (getErr) {
       const aids = await this.client.identifiers().list();
       const found = aids.aids.find((a: { name: string; prefix: string }) => a.prefix === issuerAidName || a.name === issuerAidName);
-      if (!found) throw new Error(`Issuer AID "${issuerAidName}" not found`);
-      issuerAid = found;
+      if (!found) throw new Error(`Issuer AID "${issuerAidName}" not found`, { cause: getErr });
+      try {
+        issuerAid = await this.client.identifiers().get(found.name);
+      } catch (reGetErr) {
+        throw new Error(`Issuer AID "${issuerAidName}" found in list but not retrievable`, { cause: reGetErr });
+      }
     }
 
     const isGroup = !!(issuerAid as { group?: unknown }).group;
@@ -3271,7 +3277,7 @@ export class KERIClient {
     await this.ensureConnected();
     let issuer: { prefix: string; group?: unknown };
     try { issuer = await this.client.identifiers().get(issuerAidName) as typeof issuer; }
-    catch { throw new Error(`Issuer AID "${issuerAidName}" not found`); }
+    catch (err) { throw new Error(`Issuer AID "${issuerAidName}" not found`, { cause: err }); }
     // Fork guard (spec §4.1): a group revocation is refused BEFORE it anchors.
     if (issuer.group) await this.syncGroupFromWitnesses(issuer.prefix);
 
