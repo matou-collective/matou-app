@@ -15,9 +15,11 @@ import { buildMembershipAttributes, type MembershipBackend } from 'src/lib/membe
 import type { PendingRegistration } from './useRegistrationPolling';
 import { buildOobiCandidates } from 'src/lib/registrationResolve';
 import { BACKEND_URL, createOrUpdateProfile, getProfileById, grantStewardAdmin, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
-import { resolveIssuingRegistry } from 'src/lib/keri/registry';
+import { resolveIssuingRegistry, resolveOrgRegistryId } from 'src/lib/keri/registry';
+import { pushHistoryWhenSigner } from 'src/lib/keri/steward/promotionHistory';
 import { findActiveIssuedCredentialSaid } from 'src/lib/keri/notifications';
 import { secureStorage } from 'src/lib/secureStorage';
+import { NotJoined, userFacingMessage } from 'src/lib/keri/steward/errors';
 
 // Membership credential schema — the coa-shared Mātou fallback. An IDSS
 // community names its OWN Membership schema in the descriptor; every issuance
@@ -57,6 +59,23 @@ async function resolveMembershipBackend(): Promise<MembershipBackend> {
     // fall through to the legacy body
   }
   return { kind: 'legacy' };
+}
+
+/**
+ * The org group AID's prefix IF this wallet holds the group identifier. Never
+ * a personal AID: the old name-pattern fallback made a not-yet-joined steward
+ * issue memberships from their own identity (registration e2e, 2026-09-30).
+ */
+export async function resolveOrgGroupPrefix(
+  client: { identifiers(): { list(): Promise<{ aids?: Array<{ prefix: string }> }> } },
+  config: { organization?: { aid?: string } } | null,
+  storedOrgAid: string | null,
+): Promise<string> {
+  const aids = (await client.identifiers().list()).aids ?? [];
+  for (const want of [config?.organization?.aid, storedOrgAid]) {
+    if (want && aids.some((a) => a.prefix === want)) return want;
+  }
+  throw new NotJoined(`wallet holds no identifier for org ${config?.organization?.aid ?? storedOrgAid ?? '(unknown)'}`);
 }
 
 export function useAdminActions() {
@@ -165,62 +184,18 @@ export function useAdminActions() {
   }
 
   /**
-   * Get the org AID name for issuing credentials
-   * This should match the AID that owns the registry
+   * The org group AID prefix this wallet issues from. Never a personal AID —
+   * throws NotJoined when the wallet does not hold the group identifier.
    */
   async function getOrgAidName(): Promise<string> {
     const client = keriClient.getSignifyClient();
     if (!client) throw new Error('Not connected to KERIA');
-
-    // First: check org config for the canonical org AID prefix
+    let config = null;
     try {
-      const configResult = await fetchOrgConfig();
-      const config = configResult.status === 'configured'
-        ? configResult.config
-        : configResult.status === 'server_unreachable'
-          ? configResult.cached
-          : null;
-
-      if (config?.organization?.aid) {
-        const aids = await client.identifiers().list();
-        const orgAid = aids.aids?.find(
-          (a: { prefix: string }) => a.prefix === config.organization.aid
-        );
-        if (orgAid) {
-          console.log('[AdminActions] Using org AID from config:', orgAid.name);
-          return orgAid.prefix;
-        }
-      }
-    } catch {
-      // Fall through to other methods
-    }
-
-    // Second: check secure storage (set during org setup or multisig join)
-    const storedOrgAid = await secureStorage.getItem('matou_org_aid');
-    if (storedOrgAid) {
-      const aids = await client.identifiers().list();
-      const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === storedOrgAid);
-      if (orgAid) {
-        console.log('[AdminActions] Using stored org AID:', orgAid.name);
-        return orgAid.prefix;
-      }
-    }
-
-    // Fallback: look for an org-type AID by name pattern
-    const aids = await client.identifiers().list();
-    if (!aids?.aids?.length) {
-      throw new Error('No AIDs found in wallet');
-    }
-
-    const orgAid = aids.aids.find((a: { name: string }) =>
-      a.name.includes('org') || a.name.includes('matou') || a.name.includes('community')
-    );
-
-    if (orgAid) {
-      return orgAid.prefix;
-    }
-
-    return aids.aids[0].prefix;
+      const r = await fetchOrgConfig();
+      config = r.status === 'configured' ? r.config : r.status === 'server_unreachable' ? r.cached : null;
+    } catch { /* fall through to stored */ }
+    return resolveOrgGroupPrefix(client, config, await secureStorage.getItem('matou_org_aid'));
   }
 
   /**
@@ -491,13 +466,13 @@ export function useAdminActions() {
         );
 
         console.log('[AdminActions] Issuing membership credential to:', registration.applicantAid);
-        // Resolve the registry that issues this membership for THIS backend.
-        // On an IDSS backend the ONE community registry (`community.registry`
-        // in the descriptor) issues every membership and no per-steward
-        // registry is created (ADR 0235 decision 4). On a legacy backend KERIA
-        // does not sync TEL/registry events between group-AID members, so each
-        // steward uses (or creates) a registry that exists in their local
-        // KERIA: the admin already has one; upgraded stewards create their own.
+        // Every steward issues into the ONE org registry: `community.registry`
+        // in the IDSS descriptor, else the org config's `registry.id` (legacy).
+        // No steward creates its own registry. A promoted steward's agent
+        // adopts the org registry (ensureOrgRegistryAdopted, gated by steward
+        // readiness), and because KERIA does not sync TEL events between
+        // group members, each act is replayed into the other stewards' agents
+        // over /multisig/iss|rev (spec 2026-09-30 §3.2–§3.4).
         const orgRegistryId = await resolveIssuingRegistry(issuerAidName);
         const credResult = await keriClient.issueCredential(
           issuerAidName,
@@ -620,7 +595,8 @@ export function useAdminActions() {
 
       return true;
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      // A StewardRefusal (NotJoined / GroupBehind / ...) shows its plain words.
+      const errorMsg = userFacingMessage(err);
       console.error('[AdminActions] Approve failed:', err);
       error.value = errorMsg;
 
@@ -781,6 +757,7 @@ export function useAdminActions() {
 
     isProcessing.value = true;
     processingStep.value = 'Preparing...';
+    error.value = null;
 
     try {
       // --- Step 1: Resolve steward identity ---
@@ -789,6 +766,18 @@ export function useAdminActions() {
       console.log(`[AdminActions] Adding steward ${stewardAid.slice(0, 12)}... to org multisig`);
 
       const orgAidPrefix = await getOrgAidName();
+      // Start from the group's witnessed KEL and every peer steward's act
+      // applied: the promotion rotates this wallet's key, after which an
+      // unapplied act signed under the old key state can't be replayed.
+      // syncGroupFromWitnesses refuses (throws) rather than fail open;
+      // drain() never rejects, so its leftovers are read from `pending`.
+      await keriClient.syncGroupFromWitnesses(orgAidPrefix);
+      const { useOrgActInbox } = await import('src/composables/useOrgActInbox');
+      const inbox = useOrgActInbox();
+      await inbox.drain();
+      if (inbox.pending.value > 0) {
+        throw new Error(`Changes from other stewards not applied yet — try again (${inbox.lastError.value ?? `${inbox.pending.value} pending`})`);
+      }
       const aids = await client.identifiers().list();
       const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === orgAidPrefix);
       const orgName = orgAid?.name;
@@ -915,11 +904,24 @@ export function useAdminActions() {
         console.log('[AdminActions] Granted Admin permission to new steward on community + readonly spaces');
       }
 
+      // Spec §3.5: push the org's credential history to the other signers
+      // (now including the new steward) right after the promotion. Best-effort
+      // and in the background — never fails or delays the promotion; the next
+      // sign-in's readiness check retries anything undelivered.
+      void pushHistoryWhenSigner(orgAidPrefix, {
+        sync: (g) => keriClient.syncGroupFromWitnesses(g),
+        keyState: (g) => keriClient.groupKeyState(g),
+        resolveRegistry: () => resolveOrgRegistryId(),
+        pushHistory: (g, r) => keriClient.pushOrgHistory(g, r),
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      });
+
       onStep?.('Complete');
       console.log('[AdminActions] Steward upgrade complete');
       return true;
     } catch (err) {
       console.error('[AdminActions] Failed to upgrade steward:', err);
+      error.value = userFacingMessage(err);
       return false;
     } finally {
       isProcessing.value = false;
@@ -1241,7 +1243,7 @@ export function useAdminActions() {
 
       return true;
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorMsg = userFacingMessage(err);
       console.error('[AdminActions] Remove member failed:', err);
       error.value = errorMsg;
 

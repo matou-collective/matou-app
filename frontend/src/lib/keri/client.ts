@@ -19,6 +19,10 @@ import {
 import { extractWitnessAids, witnessOobiBases } from 'src/lib/keri/witnessAssignment';
 import { parseCesrStream, filterKelMessages, mergeKelMessages } from 'src/lib/keri/cesr';
 import { selectGroupKelPushTargets } from 'src/lib/keri/groupKelPush';
+import { syncGroup, type GroupSyncDeps } from 'src/lib/keri/steward/groupSync';
+import { ensureOrgRegistry, type AdoptionDeps } from 'src/lib/keri/steward/registryAdoption';
+import { NotJoined } from 'src/lib/keri/steward/errors';
+import type { SentLedger } from 'src/lib/keri/steward/replicate';
 
 export interface AIDInfo {
   prefix: string; // The AID string (e.g., "EAbcd...")
@@ -764,6 +768,283 @@ export class KERIClient {
     return { pushed, failed };
   }
 
+  /** This steward's member AID (the group's local mhab). Throws NotJoined. */
+  async groupMemberAid(groupPrefix: string): Promise<string> {
+    if (!this.client) throw new Error('Not initialized');
+    let mhab: string | undefined;
+    try {
+      const hab = await this.client.identifiers().get(groupPrefix) as { group?: { mhab?: { prefix?: string } } };
+      mhab = hab.group?.mhab?.prefix;
+    } catch { mhab = undefined; }
+    if (!mhab) throw new NotJoined(`no local group identifier for ${groupPrefix.slice(0, 12)}`);
+    return mhab;
+  }
+
+  /** Bring our agent to the witnesses' group sn, or throw GroupBehind / GroupDiverged. */
+  async syncGroupFromWitnesses(groupPrefix: string): Promise<{ sn: number }> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+    const client = this.client;
+    const base = this.cesrFetchUrl.replace(/\/+$/, '');
+    const memberAid = await this.groupMemberAid(groupPrefix);
+    const localSn = async (g: string): Promise<number> => {
+      const hab = await client.identifiers().get(g) as { state?: { s?: string } };
+      return parseInt(hab.state?.s ?? '0', 16);
+    };
+    // A group with no witnesses has nothing to sync against (and can't have a
+    // second steward) — skip rather than refuse.
+    const own = await client.identifiers().get(groupPrefix) as { state?: { b?: string[] } };
+    if (!own.state?.b?.length) {
+      console.log(`[KERIClient] group ${groupPrefix.slice(0, 12)}... has no witnesses; skipping witness sync`);
+      return { sn: await localSn(groupPrefix) };
+    }
+    const deps: GroupSyncDeps = {
+      witnessUrls: async () => {
+        const { fetchClientConfig } = await import('../clientConfig');
+        return (await fetchClientConfig()).witnesses?.urls ?? [];
+      },
+      fetchText: async (url) => {
+        try {
+          const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+          return r.ok ? await r.text() : null;
+        } catch { return null; }
+      },
+      pushEvent: async (msg, destination) => {
+        const r = await fetch(`${base}/`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/cesr+json',
+            'CESR-ATTACHMENT': msg.attachment.replace(/[\r\n]+/g, ''),
+            'CESR-DESTINATION': destination,
+          },
+          body: msg.eventRaw,
+          signal: AbortSignal.timeout(10000),
+        });
+        return r.ok; // 204 is not proof of acceptance — syncGroup re-reads sn
+      },
+      localGroupSn: localSn,
+      localEventSaid: async (g, sn) => {
+        try {
+          const events = await client.keyEvents().get(g) as Array<{ ked?: { s?: string; d?: string } }>;
+          const hit = events.find((e) => typeof e?.ked?.s === 'string' && parseInt(e.ked.s, 16) === sn);
+          return hit?.ked?.d ?? null;
+        } catch (err) {
+          console.warn(`[KERIClient] group sync: could not read our event at sn=${sn}:`, err instanceof Error ? err.message : err);
+          return null;
+        }
+      },
+    };
+    const res = await syncGroup(groupPrefix, memberAid, deps);
+    console.log(`[KERIClient] group ${groupPrefix.slice(0, 12)}... synced to witnesses at sn=${res.sn}`);
+    return res;
+  }
+
+  /** Make sure our agent can issue into the org registry (adopting it if needed). */
+  async ensureOrgRegistryAdopted(groupPrefix: string, regk: string): Promise<'present' | 'adopted'> {
+    // Single-flight per (group, regk): concurrent callers share one adoption.
+    const key = `${groupPrefix}:${regk}`;
+    const inflight = this.registryAdoptions.get(key);
+    if (inflight) return inflight;
+    const p = this.adoptOrgRegistry(groupPrefix, regk).finally(() => this.registryAdoptions.delete(key));
+    this.registryAdoptions.set(key, p);
+    return p;
+  }
+
+  private registryAdoptions = new Map<string, Promise<'present' | 'adopted'>>();
+
+  private async adoptOrgRegistry(groupPrefix: string, regk: string): Promise<'present' | 'adopted'> {
+    if (!this.client) throw new Error('Not initialized');
+    const client = this.client;
+    const deps: AdoptionDeps = {
+      listRegistries: async (g) => ((await client.registries().list(g)) as Array<{ regk: string }>).map((r) => r.regk),
+      heldCredentialSaids: async (r) => {
+        type Held = Array<{ sad: { d: string; ri?: string } }>;
+        let creds: Held;
+        try {
+          creds = await client.credentials().list({ filter: { '-ri': r }, limit: 100 }) as Held;
+        } catch {
+          // KERIA 0.4.0 may reject the -ri filter key: list everything instead.
+          creds = await client.credentials().list({ limit: 100 }) as Held;
+        }
+        // Always filter here too: KERIA 0.4.0 may silently ignore an unknown
+        // filter key and return unrelated credentials.
+        return creds.filter((c) => c.sad.ri === r).map((c) => c.sad.d);
+      },
+      exportCredential: (said) => this.exportCredential(said),
+      createFromEvents: async (vcp, anc, sigs, name) => {
+        const hab = await client.identifiers().get(groupPrefix);
+        const res = await client.registries().createFromEvents(hab, groupPrefix, name, vcp, anc, sigs) as unknown as Response;
+        if (res && typeof res.ok === 'boolean' && !res.ok) throw new Error(`createFromEvents HTTP ${res.status}`);
+      },
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    };
+    const out = await ensureOrgRegistry(groupPrefix, regk, deps);
+    if (out === 'adopted') console.log(`[KERIClient] adopted org registry ${regk.slice(0, 12)}...`);
+    return out;
+  }
+
+  /** Personal AIDs of every OTHER current signer of the group. */
+  async otherGroupSigners(groupPrefix: string): Promise<string[]> {
+    const me = await this.groupMemberAid(groupPrefix);
+    const signers = await this.currentGroupSigners(groupPrefix, [me]);
+    return signers.map((s) => s.aid).filter((a) => a !== me);
+  }
+
+  /** CESR export of a held credential: its KELs, TEL and ACDC. */
+  async exportCredential(said: string): Promise<string> {
+    if (!this.client) throw new Error('Not initialized');
+    return await this.client.credentials().get(said, true) as unknown as string;
+  }
+
+  /** Our group-member signature(s) over an event's exact raw text. */
+  async signAsGroupMember(groupPrefix: string, raw: string): Promise<string[]> {
+    if (!this.client) throw new Error('Not initialized');
+    const signify = await import('signify-ts');
+    const hab = await this.client.identifiers().get(groupPrefix);
+    const keeper = this.client.manager!.get(hab);
+    return (await keeper.sign(signify.b(raw))) as unknown as string[];
+  }
+
+  /** Group signing keys, latest establishment sn, and our member's current key. */
+  async groupKeyState(groupPrefix: string): Promise<{ k: string[]; latestEstSn: number; memberKey: string }> {
+    if (!this.client) throw new Error('Not initialized');
+    const hab = await this.client.identifiers().get(groupPrefix) as {
+      state?: { k?: string[]; ee?: { s?: string } };
+      group?: { mhab?: { state?: { k?: string[] } } };
+    };
+    // An empty memberKey would make cosignPolicy think we are not keys[0] and
+    // let keys[0] post an unsigned replay into an escrow it never leaves.
+    const memberKey = hab.group?.mhab?.state?.k?.[0];
+    if (!memberKey) throw new NotJoined(`no member key for group ${groupPrefix.slice(0, 12)}`);
+    return {
+      k: hab.state?.k ?? [],
+      latestEstSn: parseInt(hab.state?.ee?.s ?? '0', 16),
+      memberKey,
+    };
+  }
+
+  /**
+   * Send our act on credSaid to the other signers over /multisig/iss|rev.
+   * Best-effort per recipient; returns the recipients the exn was delivered to.
+   */
+  async sendOrgAct(groupPrefix: string, credSaid: string, kind: 'iss' | 'rev', recipients?: string[]): Promise<string[]> {
+    if (!this.client) throw new Error('Not initialized');
+    const { telBundle } = await import('src/lib/keri/steward/sigs');
+    const { actEmbedParts } = await import('src/lib/keri/steward/replicate');
+    const signify = await import('signify-ts');
+    const targets = recipients ?? await this.otherGroupSigners(groupPrefix);
+    if (targets.length === 0) return [];
+    const parts = actEmbedParts(telBundle(await this.exportCredential(credSaid), credSaid), kind);
+    const embeds: Record<string, [InstanceType<typeof signify.Serder>, string]> = {};
+    for (const [k, p] of Object.entries(parts)) embeds[k] = [new signify.Serder(p.sad as never), p.atc];
+    const hab = await this.client.identifiers().get(groupPrefix) as { group?: { mhab?: Record<string, unknown> } };
+    const mhab = hab.group?.mhab;
+    if (!mhab) {
+      console.warn(`[KERIClient] /multisig/${kind}: no local member for group ${groupPrefix.slice(0, 12)}...; nothing sent`);
+      return [];
+    }
+    const sent: string[] = [];
+    for (const to of targets) {
+      try {
+        await this.client.exchanges().send(String(mhab.name ?? mhab.prefix), groupPrefix, mhab as never,
+          `/multisig/${kind}`, { gid: groupPrefix }, embeds as never, [to]);
+        sent.push(to);
+      } catch (err) {
+        console.warn(`[KERIClient] /multisig/${kind} for ${credSaid.slice(0, 12)}... to ${to.slice(0, 12)}... failed:`, err);
+      }
+    }
+    console.log(`[KERIClient] /multisig/${kind} for ${credSaid.slice(0, 12)}... sent to ${sent.length}/${targets.length} steward(s)`);
+    return sent;
+  }
+
+  /** Apply a peer's act to our agent (spec §3.4). */
+  async replayOrgAct(input: import('src/lib/keri/steward/replay').ReplayInput, groupPrefix: string) {
+    if (!this.client) throw new Error('Not initialized');
+    const client = this.client;
+    const { replayAct } = await import('src/lib/keri/steward/replay');
+    const { statusOf } = await import('src/lib/keri/steward/replicate');
+    const keeperParams = async () => {
+      const hab = await client.identifiers().get(groupPrefix);
+      const k = client.manager!.get(hab);
+      return { [k.algo]: k.params() };
+    };
+    return replayAct(input, {
+      credentialState: async (ri, said) => {
+        try {
+          const st = await client.credentials().state(ri, said) as { et?: string };
+          return st.et === 'rev' || st.et === 'brv' ? 'rev' : st.et ? 'iss' : null;
+        } catch { return null; }
+      },
+      ownSigs: (raw) => this.signAsGroupMember(groupPrefix, raw),
+      postIss: async (body) => statusOf(client.fetch(`/identifiers/${groupPrefix}/credentials`, 'POST', { ...body, ...(await keeperParams()) })),
+      deleteRev: async (said, body) => statusOf(client.fetch(`/identifiers/${groupPrefix}/credentials/${said}`, 'DELETE', { ...body, ...(await keeperParams()) })),
+      sync: async () => { await this.syncGroupFromWitnesses(groupPrefix); },
+      keyState: () => this.groupKeyState(groupPrefix),
+    });
+  }
+
+  /** Send the other signers any org-registry credential we hold they have not been sent (spec §3.5). */
+  async pushOrgHistory(groupPrefix: string, registry: string): Promise<number> {
+    if (!this.client) throw new Error('Not initialized');
+    const { planHistoryPush } = await import('src/lib/keri/steward/replicate');
+    const ledger = await this.readSentLedger(groupPrefix);
+    // Generous limit (the default is 25); the filter below is authoritative.
+    const creds = await this.client.credentials().list({ limit: 200 }) as Array<{ sad: { d: string; ri?: string; i?: string }; status?: { et?: string } }>;
+    const held = creds
+      .filter((c) => c.sad.ri === registry && c.sad.i === groupPrefix)
+      .map((c) => ({ said: c.sad.d, revoked: c.status?.et === 'rev' || c.status?.et === 'brv' }));
+    const plan = planHistoryPush(held, await this.otherGroupSigners(groupPrefix), ledger);
+    let delivered = 0;
+    for (const step of plan) {
+      try {
+        // Only a delivered act is recorded, so an unreachable peer is re-served next time.
+        const sent = await this.sendOrgAct(groupPrefix, step.said, step.kind, [step.peer]);
+        if (!sent.includes(step.peer)) continue;
+        (ledger[step.peer] ??= {})[step.said] = step.kind;
+        await this.writeSentLedger(groupPrefix, ledger);
+        delivered++;
+      } catch (err) {
+        console.warn(`[KERIClient] org history: ${step.kind} ${step.said.slice(0, 12)}... to ${step.peer.slice(0, 12)}... failed:`, err);
+      }
+    }
+    if (plan.length) console.log(`[KERIClient] org history: ${delivered}/${plan.length} act(s) pushed to peer stewards`);
+    return delivered;
+  }
+
+  /** The per-group ledger of acts delivered to each peer; corrupt → empty. */
+  private async readSentLedger(groupPrefix: string): Promise<SentLedger> {
+    try {
+      const parsed: unknown = JSON.parse((await secureStorage.getItem(`matou_org_acts_sent:${groupPrefix}`)) || '{}');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as SentLedger;
+      console.warn('[KERIClient] org history ledger is not an object; starting afresh');
+    } catch (err) {
+      console.warn('[KERIClient] org history ledger unreadable; starting afresh:', err);
+    }
+    return {};
+  }
+
+  private async writeSentLedger(groupPrefix: string, ledger: SentLedger): Promise<void> {
+    await secureStorage.setItem(`matou_org_acts_sent:${groupPrefix}`, JSON.stringify(ledger));
+  }
+
+  /**
+   * Replicate our own org act to the other signers right after anchoring it,
+   * recording ONLY the peers it was delivered to so pushOrgHistory neither
+   * resends a delivered act nor skips an undelivered one. Never throws.
+   */
+  private async sendOrgActRecorded(groupPrefix: string, said: string, kind: 'iss' | 'rev'): Promise<void> {
+    try {
+      const peers = await this.otherGroupSigners(groupPrefix);
+      const sent = await this.sendOrgAct(groupPrefix, said, kind, peers);
+      if (sent.length === 0) return;
+      const ledger = await this.readSentLedger(groupPrefix);
+      for (const p of sent) (ledger[p] ??= {})[said] = kind;
+      await this.writeSentLedger(groupPrefix, ledger);
+    } catch (err) {
+      console.warn('[KERIClient] org act replication failed (history push will retry):', err);
+    }
+  }
+
   /**
    * After a group-AID member anchors a group `ixn` (registry `vcp` or
    * credential `iss`), proactively push the freshly-advanced group KEL to
@@ -776,9 +1057,9 @@ export class KERIClient {
    * first event treat the second as duplicitous, and the second issuance's
    * credential escrows forever ("Missing anchor" / "not in Tevers").
    *
-   * Recipients are the org config `admins` (the group's signing members) minus
-   * the currently-acting member (the group's local `mhab`) and the group AID
-   * itself. The push destination is each member's managed personal AID (an
+   * Recipients are the group's other current signers (otherGroupSigners),
+   * falling back to the org config `admins` minus the acting member (the
+   * group's local `mhab`) and the group AID itself if the signer lookup fails. The push destination is each member's managed personal AID (an
    * agent AID 404s "unknown destination"). Best-effort and fire-and-forget:
    * a failed or partial push logs a warning but never blocks or fails the
    * issuing operation. Mirrors the pre-grant recipient push used above.
@@ -788,19 +1069,16 @@ export class KERIClient {
     actingMemberAid?: string,
   ): Promise<void> {
     try {
-      const { fetchOrgConfig } = await import('../../api/config');
-      const result = await fetchOrgConfig();
-      const config =
-        result.status === 'configured'
-          ? result.config
-          : result.status === 'server_unreachable'
-            ? result.cached
-            : null;
-      const targets = selectGroupKelPushTargets(
-        (config?.admins ?? []).map((a) => a.aid),
-        groupAidPrefix,
-        actingMemberAid,
-      );
+      let targets: string[] = [];
+      try {
+        targets = await this.otherGroupSigners(groupAidPrefix);
+      } catch (err) {
+        console.warn('[KERIClient] Group KEL push: signer lookup failed, falling back to org-config admins:', err);
+        const { fetchOrgConfig } = await import('../../api/config');
+        const result = await fetchOrgConfig();
+        const config = result.status === 'configured' ? result.config : result.status === 'server_unreachable' ? result.cached : null;
+        targets = selectGroupKelPushTargets((config?.admins ?? []).map((a) => a.aid), groupAidPrefix, actingMemberAid);
+      }
       if (targets.length === 0) {
         console.log(
           `[KERIClient] Group KEL push: no other members to notify for ${groupAidPrefix.slice(0, 12)}...`,
@@ -1783,7 +2061,7 @@ export class KERIClient {
    * partial list: the group's own key state says how many keys sign, and
    * every one of them has to be attributable to a member AID.
    */
-  private async currentGroupSigners(
+  async currentGroupSigners(
     groupName: string,
     seedCandidates: string[] = [],
   ): Promise<{ aid: string; state: Record<string, unknown> }[]> {
@@ -2764,14 +3042,27 @@ export class KERIClient {
     console.log(`[KERIClient] Issuing credential to ${recipientAid}...`);
 
     // Get issuer AID info
+    // Always the full hab from get(): a list() summary carries no `group`, and
+    // treating it as the issuer would skip the group preflight (fail open).
     let issuerAid;
     try {
       issuerAid = await this.client.identifiers().get(issuerAidName);
     } catch (getErr) {
       const aids = await this.client.identifiers().list();
       const found = aids.aids.find((a: { name: string; prefix: string }) => a.prefix === issuerAidName || a.name === issuerAidName);
-      if (!found) throw new Error(`Issuer AID "${issuerAidName}" not found`);
-      issuerAid = found;
+      if (!found) throw new Error(`Issuer AID "${issuerAidName}" not found`, { cause: getErr });
+      try {
+        issuerAid = await this.client.identifiers().get(found.name);
+      } catch (reGetErr) {
+        throw new Error(`Issuer AID "${issuerAidName}" found in list but not retrievable`, { cause: reGetErr });
+      }
+    }
+
+    const isGroup = !!(issuerAid as { group?: unknown }).group;
+    if (isGroup) {
+      // Fork guard + registry (spec §4.1): refuse BEFORE anything is anchored.
+      await this.syncGroupFromWitnesses(issuerAid.prefix);
+      await this.ensureOrgRegistryAdopted(issuerAid.prefix, registryId);
     }
 
     // Create the credential — use prefix, not display name
@@ -2809,7 +3100,7 @@ export class KERIClient {
     // the credential sits in its escrow (issue #51's second-member join hang).
     // Personal-AID issuance (endorsements, attendance) has no `group` and is
     // skipped — its events are witnessed synchronously by the `witness` op.
-    if ((issuerAid as { group?: unknown }).group) {
+    if (isGroup) {
       const ancSaid = (credResult.anc as { said?: string; sad?: { d?: string } } | undefined)?.said
         ?? (credResult.anc as { sad?: { d?: string } } | undefined)?.sad?.d;
       if (ancSaid) {
@@ -2824,10 +3115,10 @@ export class KERIClient {
       // duplicitous-event fork that left invitee credentials stuck in escrow
       // (issue #63). Best-effort — never throws. This is distinct from the
       // pre-grant push below, which targets the credential RECIPIENT.
-      await this.pushGroupKelToOtherMembers(
-        issuerAid.prefix,
-        (issuerAid as { group?: { mhab?: { prefix?: string } } }).group?.mhab?.prefix,
-      );
+      await this.pushGroupKelToOtherMembers(issuerAid.prefix, (issuerAid as { group?: { mhab?: { prefix?: string } } }).group?.mhab?.prefix);
+      // Replicate the act itself so every steward's agent holds the credential
+      // state (spec §3.3); pushOrgHistory retries any peer this misses.
+      await this.sendOrgActRecorded(issuerAid.prefix, credentialSaid, 'iss');
     }
 
     // Make sure the recipient's agent already holds OUR key state at the sn
@@ -3005,13 +3296,24 @@ export class KERIClient {
    */
   async revokeCredential(issuerAidName: string, credentialSaid: string): Promise<void> {
     if (!this.client) throw new Error('Not initialized');
-
     await this.ensureConnected();
-    console.log(`[KERIClient] Revoking credential ${credentialSaid}...`);
+    let issuer: { prefix: string; group?: unknown };
+    try { issuer = await this.client.identifiers().get(issuerAidName) as typeof issuer; }
+    catch (err) { throw new Error(`Issuer AID "${issuerAidName}" not found`, { cause: err }); }
+    // Fork guard (spec §4.1): a group revocation is refused BEFORE it anchors.
+    if (issuer.group) await this.syncGroupFromWitnesses(issuer.prefix);
 
+    console.log(`[KERIClient] Revoking credential ${credentialSaid}...`);
     const result = await this.client.credentials().revoke(issuerAidName, credentialSaid);
     await this.client.operations().wait(result.op, { signal: AbortSignal.timeout(60000) });
 
+    if (issuer.group) {
+      const ancSaid = (result.anc as { said?: string; sad?: { d?: string } } | undefined)?.said
+        ?? (result.anc as { sad?: { d?: string } } | undefined)?.sad?.d;
+      if (ancSaid) await this.awaitGroupAnchorWitnessed(ancSaid, { label: 'revocation' });
+      await this.pushGroupKelToOtherMembers(issuer.prefix, (issuer as { group?: { mhab?: { prefix?: string } } }).group?.mhab?.prefix);
+      await this.sendOrgActRecorded(issuer.prefix, credentialSaid, 'rev');
+    }
     console.log(`[KERIClient] Credential ${credentialSaid} revoked`);
   }
 

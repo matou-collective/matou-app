@@ -1,0 +1,20 @@
+name: stewardpeer
+services:
+  keria:
+    image: weboftrust/keria:0.4.0
+    command: ["start", "--config-dir", "/keria/config", "--config-file", "keria", "--name", "keria", "--loglevel", "DEBUG"]
+    ports: ["5911:3901","5912:3902","5913:3903"]
+    environment: {KERI_AGENT_CORS: "1", PYTHONUNBUFFERED: "1"}
+    volumes:
+      - ./keria-config.json:/keria/config/keri/cf/keria.json
+    depends_on: [witness-demo]
+  schema-server:
+    image: python:3.11-slim
+    command: ["python", "/app/schema-server.py", "--schemas-dir", "/schemas"]
+    volumes:
+      - /home/benz/Documents/1.projects/matou-infrastructure/schema-server.py:/app/schema-server.py:ro
+      - /home/benz/Documents/1.projects/matou-infrastructure/schemas:/schemas:ro
+  witness-demo:
+    image: weboftrust/keri-witness-demo:1.1.0
+    volumes:
+      - ./witness-config:/keripy/scripts/keri/cf/main

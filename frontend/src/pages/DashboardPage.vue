@@ -212,6 +212,7 @@
       :isProcessing="isProcessing"
       :error="actionError || endorseError || attendanceError"
       :isSteward="isSteward"
+      :stewardBlockedReason="stewardReadiness.ready.value ? null : stewardReadiness.reason.value"
       :currentUserAid="identityStore.currentAID?.prefix || ''"
       :endorsements="selectedMemberEndorsements"
       :hasEndorsed="selectedMemberHasEndorsed"
@@ -272,6 +273,8 @@ import { fetchOrgConfig } from 'src/api/config';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
 import { useMultisigJoin } from 'src/composables/useMultisigJoin';
+import { useOrgActInbox } from 'src/composables/useOrgActInbox';
+import { useStewardReadiness } from 'src/composables/useStewardReadiness';
 import { useMultisigRotationSignal } from 'src/composables/useMultisigRotationSignal';
 import { useEndorsements } from 'src/composables/useEndorsements';
 import { useMoonPhase } from 'src/composables/useMoonPhase';
@@ -328,6 +331,11 @@ const {
 } = useAdminActions();
 
 const { hasWitnesses: orgHasWitnesses, refresh: refreshOrgWitnesses } = useOrgWitnessState();
+
+// Peer stewards' issues/revokes replayed promptly; Approve gated until this
+// steward's app has joined, synced and adopted the org registry.
+const orgActInbox = useOrgActInbox();
+const stewardReadiness = useStewardReadiness();
 const isAdoptingWitnesses = ref(false);
 const adoptError = ref<string | null>(null);
 
@@ -616,6 +624,8 @@ onMounted(async () => {
   // Only poll for pending registrations if the user is a steward/admin
   if (isSteward.value) {
     startPolling();
+    orgActInbox.start();
+    stewardReadiness.start();
   }
 
   // Load activity and chat data for community stats
@@ -637,6 +647,8 @@ onUnmounted(() => {
   stopPolling();
   stopMultisigPolling();
   stopRotationSignalWatcher();
+  orgActInbox.stop();
+  stewardReadiness.stop();
 });
 
 watch(hasJoinedMultisig, async (joined) => {
@@ -645,6 +657,8 @@ watch(hasJoinedMultisig, async (joined) => {
     await recheckAdminStatus();
     if (isSteward.value) {
       startPolling();
+      orgActInbox.start();
+      stewardReadiness.start();
     }
   }
 });

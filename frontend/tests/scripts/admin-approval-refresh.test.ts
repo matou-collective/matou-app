@@ -58,7 +58,6 @@ vi.mock('src/api/config', () => ({
 }));
 
 vi.mock('src/lib/keri/registry', () => ({
-  getOrCreateOrgRegistry: async () => 'EReg',
   resolveIssuingRegistry: async () => 'EReg',
 }));
 
