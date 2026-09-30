@@ -465,13 +465,13 @@ export function useAdminActions() {
         );
 
         console.log('[AdminActions] Issuing membership credential to:', registration.applicantAid);
-        // Resolve the registry that issues this membership for THIS backend.
-        // On an IDSS backend the ONE community registry (`community.registry`
-        // in the descriptor) issues every membership and no per-steward
-        // registry is created (ADR 0235 decision 4). On a legacy backend KERIA
-        // does not sync TEL/registry events between group-AID members, so each
-        // steward uses (or creates) a registry that exists in their local
-        // KERIA: the admin already has one; upgraded stewards create their own.
+        // Every steward issues into the ONE org registry: `community.registry`
+        // in the IDSS descriptor, else the org config's `registry.id` (legacy).
+        // No steward creates its own registry. A promoted steward's agent
+        // adopts the org registry (ensureOrgRegistryAdopted, gated by steward
+        // readiness), and because KERIA does not sync TEL events between
+        // group members, each act is replayed into the other stewards' agents
+        // over /multisig/iss|rev (spec 2026-09-30 §3.2–§3.4).
         const orgRegistryId = await resolveIssuingRegistry(issuerAidName);
         const credResult = await keriClient.issueCredential(
           issuerAidName,
