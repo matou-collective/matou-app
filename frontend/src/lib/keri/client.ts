@@ -22,6 +22,7 @@ import { selectGroupKelPushTargets } from 'src/lib/keri/groupKelPush';
 import { syncGroup, type GroupSyncDeps } from 'src/lib/keri/steward/groupSync';
 import { ensureOrgRegistry, type AdoptionDeps } from 'src/lib/keri/steward/registryAdoption';
 import { NotJoined } from 'src/lib/keri/steward/errors';
+import type { SentLedger } from 'src/lib/keri/steward/replicate';
 
 export interface AIDInfo {
   prefix: string; // The AID string (e.g., "EAbcd...")
@@ -900,29 +901,38 @@ export class KERIClient {
     };
   }
 
-  /** Send our act on credSaid to the other signers over /multisig/iss|rev. Best-effort per recipient. */
-  async sendOrgAct(groupPrefix: string, credSaid: string, kind: 'iss' | 'rev', recipients?: string[]): Promise<void> {
+  /**
+   * Send our act on credSaid to the other signers over /multisig/iss|rev.
+   * Best-effort per recipient; returns the recipients the exn was delivered to.
+   */
+  async sendOrgAct(groupPrefix: string, credSaid: string, kind: 'iss' | 'rev', recipients?: string[]): Promise<string[]> {
     if (!this.client) throw new Error('Not initialized');
     const { telBundle } = await import('src/lib/keri/steward/sigs');
     const { actEmbedParts } = await import('src/lib/keri/steward/replicate');
     const signify = await import('signify-ts');
     const targets = recipients ?? await this.otherGroupSigners(groupPrefix);
-    if (targets.length === 0) return;
+    if (targets.length === 0) return [];
     const parts = actEmbedParts(telBundle(await this.exportCredential(credSaid), credSaid), kind);
     const embeds: Record<string, [InstanceType<typeof signify.Serder>, string]> = {};
     for (const [k, p] of Object.entries(parts)) embeds[k] = [new signify.Serder(p.sad as never), p.atc];
     const hab = await this.client.identifiers().get(groupPrefix) as { group?: { mhab?: Record<string, unknown> } };
     const mhab = hab.group?.mhab;
-    if (!mhab) return;
+    if (!mhab) {
+      console.warn(`[KERIClient] /multisig/${kind}: no local member for group ${groupPrefix.slice(0, 12)}...; nothing sent`);
+      return [];
+    }
+    const sent: string[] = [];
     for (const to of targets) {
       try {
         await this.client.exchanges().send(String(mhab.name ?? mhab.prefix), groupPrefix, mhab as never,
           `/multisig/${kind}`, { gid: groupPrefix }, embeds as never, [to]);
+        sent.push(to);
       } catch (err) {
         console.warn(`[KERIClient] /multisig/${kind} for ${credSaid.slice(0, 12)}... to ${to.slice(0, 12)}... failed:`, err);
       }
     }
-    console.log(`[KERIClient] /multisig/${kind} for ${credSaid.slice(0, 12)}... sent to ${targets.length} steward(s)`);
+    console.log(`[KERIClient] /multisig/${kind} for ${credSaid.slice(0, 12)}... sent to ${sent.length}/${targets.length} steward(s)`);
+    return sent;
   }
 
   /** Apply a peer's act to our agent (spec §3.4). */
@@ -930,12 +940,7 @@ export class KERIClient {
     if (!this.client) throw new Error('Not initialized');
     const client = this.client;
     const { replayAct } = await import('src/lib/keri/steward/replay');
-    const statusOf = async (p: Promise<unknown>): Promise<number> => {
-      try { await p; return 200; } catch (err) {
-        const m = /\s-\s(\d{3})\s-\s/.exec(err instanceof Error ? err.message : String(err));
-        return m ? Number(m[1]) : 599;
-      }
-    };
+    const { statusOf } = await import('src/lib/keri/steward/replicate');
     const keeperParams = async () => {
       const hab = await client.identifiers().get(groupPrefix);
       const k = client.manager!.get(hab);
@@ -961,19 +966,35 @@ export class KERIClient {
     if (!this.client) throw new Error('Not initialized');
     const { planHistoryPush } = await import('src/lib/keri/steward/replicate');
     const key = `matou_org_acts_sent:${groupPrefix}`;
-    const ledger = JSON.parse((await secureStorage.getItem(key)) || '{}');
-    const creds = await this.client.credentials().list() as Array<{ sad: { d: string; ri?: string; i?: string }; status?: { et?: string } }>;
+    let ledger: SentLedger = {};
+    try {
+      const parsed: unknown = JSON.parse((await secureStorage.getItem(key)) || '{}');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ledger = parsed as SentLedger;
+      else console.warn('[KERIClient] org history ledger is not an object; starting afresh');
+    } catch (err) {
+      console.warn('[KERIClient] org history ledger unreadable; starting afresh:', err);
+    }
+    // Generous limit (the default is 25); the filter below is authoritative.
+    const creds = await this.client.credentials().list({ limit: 200 }) as Array<{ sad: { d: string; ri?: string; i?: string }; status?: { et?: string } }>;
     const held = creds
       .filter((c) => c.sad.ri === registry && c.sad.i === groupPrefix)
       .map((c) => ({ said: c.sad.d, revoked: c.status?.et === 'rev' || c.status?.et === 'brv' }));
     const plan = planHistoryPush(held, await this.otherGroupSigners(groupPrefix), ledger);
+    let delivered = 0;
     for (const step of plan) {
-      await this.sendOrgAct(groupPrefix, step.said, step.kind, [step.peer]);
-      (ledger[step.peer] ??= {})[step.said] = step.kind;
-      await secureStorage.setItem(key, JSON.stringify(ledger));
+      try {
+        // Only a delivered act is recorded, so an unreachable peer is re-served next time.
+        const sent = await this.sendOrgAct(groupPrefix, step.said, step.kind, [step.peer]);
+        if (!sent.includes(step.peer)) continue;
+        (ledger[step.peer] ??= {})[step.said] = step.kind;
+        await secureStorage.setItem(key, JSON.stringify(ledger));
+        delivered++;
+      } catch (err) {
+        console.warn(`[KERIClient] org history: ${step.kind} ${step.said.slice(0, 12)}... to ${step.peer.slice(0, 12)}... failed:`, err);
+      }
     }
-    if (plan.length) console.log(`[KERIClient] org history: ${plan.length} act(s) pushed to peer stewards`);
-    return plan.length;
+    if (plan.length) console.log(`[KERIClient] org history: ${delivered}/${plan.length} act(s) pushed to peer stewards`);
+    return delivered;
   }
 
   /**

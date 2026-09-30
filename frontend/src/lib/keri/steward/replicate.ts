@@ -58,3 +58,18 @@ export function planHistoryPush(
   }
   return out;
 }
+
+/**
+ * HTTP status of a signify-ts call: 200 when it resolves, the status parsed
+ * from signify's `HTTP <method> <path> - <status> <statusText> - <body>` error
+ * otherwise, 599 for anything else (network failure, unexpected error).
+ */
+export async function statusOf(p: Promise<unknown>): Promise<number> {
+  try {
+    await p;
+    return 200;
+  } catch (err) {
+    const m = /^HTTP \S+ \S+ - (\d{3})\b/.exec(err instanceof Error ? err.message : String(err));
+    return m ? Number(m[1]) : 599;
+  }
+}

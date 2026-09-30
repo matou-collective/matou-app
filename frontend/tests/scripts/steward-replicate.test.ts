@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { actEmbedParts, parseActExn, planHistoryPush } from 'src/lib/keri/steward/replicate';
+import { actEmbedParts, parseActExn, planHistoryPush, statusOf } from 'src/lib/keri/steward/replicate';
 import type { TelBundle } from 'src/lib/keri/steward/sigs';
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -60,5 +60,25 @@ describe('planHistoryPush', () => {
   });
   it('sends nothing twice', () => {
     expect(planHistoryPush([{ said: 'C1', revoked: false }], ['P1'], { P1: { C1: 'iss' } })).toEqual([]);
+  });
+});
+
+describe('statusOf', () => {
+  // signify-ts clienting.js: `HTTP ${method} ${path} - ${res.status} ${res.statusText} - ${error}`
+  const reject = (msg: string) => Promise.reject(new Error(msg));
+  it('is 200 when the call resolves', async () => {
+    expect(await statusOf(Promise.resolve({}))).toBe(200);
+  });
+  it('reads the status from a signify error with a statusText', async () => {
+    expect(await statusOf(reject('HTTP POST /identifiers/matou-org/credentials - 400 Bad Request - {"title": "400 Bad Request"}'))).toBe(400);
+  });
+  it('reads the status from a signify error with an empty statusText', async () => {
+    expect(await statusOf(reject('HTTP DELETE /identifiers/matou-org/credentials/EABC - 404  - {"title": "404 Not Found"}'))).toBe(404);
+  });
+  it('reads a 5xx', async () => {
+    expect(await statusOf(reject('HTTP POST /identifiers/matou-org/credentials - 500 Internal Server Error - boom - 400 - x'))).toBe(500);
+  });
+  it('is 599 for a network failure', async () => {
+    expect(await statusOf(Promise.reject(new TypeError('fetch failed')))).toBe(599);
   });
 });

@@ -977,7 +977,7 @@ async function main() {
     log('\n===== GATE: /multisig/iss|rev via replicate.ts + replay.ts =====');
     {
         const { telBundle } = await import('../../src/lib/keri/steward/sigs');
-        const { actEmbedParts, parseActExn } = await import('../../src/lib/keri/steward/replicate');
+        const { actEmbedParts, parseActExn, statusOf } = await import('../../src/lib/keri/steward/replicate');
         const { replayAct } = await import('../../src/lib/keri/steward/replay');
         const org = { group: grp.prefix, registry: regk };
 
@@ -994,12 +994,6 @@ async function main() {
         };
         // == KERIClient.replayOrgAct(input, G); sync == syncGroupFromWitnesses (witness KEL push)
         const replayOrgAct = async (c: SignifyClient, cAid: string, input: Parameters<typeof replayAct>[0]) => {
-            const statusOf = async (p: Promise<unknown>): Promise<number> => {
-                try { await p; return 200; } catch (err) {
-                    const m = /\s-\s(\d{3})\s-\s/.exec(err instanceof Error ? err.message : String(err));
-                    return m ? Number(m[1]) : 599;
-                }
-            };
             const keeperParams = async () => {
                 const hab = await c.identifiers().get(grp.prefix);
                 const k = c.manager!.get(hab);
@@ -1036,9 +1030,12 @@ async function main() {
         const receive = async (c: SignifyClient, cAid: string, route: string) => {
             const note = await waitForNote(c, route, 30_000);
             if (!note) throw new Error(`no ${route} notification`);
-            await c.notifications().mark(note.i);
             lastExnSaid = note.a.d;
-            return replayFromExn(c, cAid, note.a.d);
+            // Mark read only once the replay has landed: a re-send of the same
+            // act raises no new note (Multiplexor dedups on the embeds).
+            const r = await replayFromExn(c, cAid, note.a.d);
+            await c.notifications().mark(note.i);
+            return r;
         };
 
         // g1: member (index 1) issues X → /multisig/iss → admin (keys[0]) replays
@@ -1068,7 +1065,7 @@ async function main() {
             const dupNote = await waitForNote(admin, '/multisig/iss', 15_000);
             log(`  g2: re-send of identical /multisig/iss raised a note on admin = ${!!dupNote}`);
             const r = dupNote
-                ? (await c_mark(admin, dupNote), await replayFromExn(admin, adminP.prefix, dupNote.a.d))
+                ? await replayFromExn(admin, adminP.prefix, dupNote.a.d).then(async (x) => { await c_mark(admin, dupNote); return x; })
                 : await replayFromExn(admin, adminP.prefix, g1Exn);
             (r === 'already' ? pass : fail)('gate g2: same /multisig/iss delivered twice → already', `${r} (dup note=${!!dupNote})`);
         } catch (e) { fail('gate g2: same /multisig/iss delivered twice → already', e); }
