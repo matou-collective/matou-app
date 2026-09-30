@@ -41,6 +41,7 @@ const keriClientMock = {
   grantCredential: vi.fn(async (_i: string, said: string) => ({ said })),
   revokeCredential: vi.fn(async () => {}),
   pushKelToAgent: vi.fn(async () => ({ pushed: 1, failed: 0 })),
+  sendEXN: vi.fn(async () => ({ success: true, said: 'EInviteExn' })),
   listNotifications: vi.fn(async () => []),
   markNotificationRead: vi.fn(async () => {}),
   getExchange: vi.fn(async () => null),

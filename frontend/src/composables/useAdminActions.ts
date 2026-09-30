@@ -521,6 +521,38 @@ export function useAdminActions() {
       // polling.
       await keriClient.pushKelToAgent(issuerAidName, registration.applicantAid);
 
+      // 6a. Send the community space invite as a STANDALONE /matou/space/invite
+      //     EXN, in addition to the copy embedded in the grant message above.
+      //     The embedded copy only lands if the member is still waiting on the
+      //     credential grant: once their credential has arrived, the member app
+      //     ignores a repeat membership grant (#704), so a member approved from
+      //     the IDSS control panel — where the grant carried no invite — would
+      //     otherwise never receive the invite and wait for ever (#703). The
+      //     member's polling handler reads exactly these payload keys off the
+      //     standalone EXN (useCredentialPolling, /exn/matou/space/invite).
+      //     Best-effort: the credential is already granted, so a failure here
+      //     must not fail the approval — surface it to the steward instead.
+      try {
+        const inviteExnResult = await keriClient.sendEXN(
+          issuerAidName,
+          registration.applicantAid,
+          '/matou/space/invite',
+          {
+            spaceId: inviteResult.communitySpaceId,
+            inviteKey: inviteResult.inviteKey,
+            readOnlyInviteKey: inviteResult.readOnlyInviteKey,
+            readOnlySpaceId: inviteResult.readOnlySpaceId,
+          },
+        );
+        if (inviteExnResult.success) {
+          console.log('[AdminActions] Standalone space invite sent to:', registration.applicantAid);
+        } else {
+          notifyApprovalWarning(`Member approved, but the community space invite may not have been delivered (${inviteExnResult.error ?? 'unknown error'}). They may stay on the waiting screen — re-approve to resend.`);
+        }
+      } catch (inviteExnErr) {
+        notifyApprovalWarning(`Member approved, but the community space invite may not have been delivered (${inviteExnErr instanceof Error ? inviteExnErr.message : String(inviteExnErr)}). They may stay on the waiting screen — re-approve to resend.`);
+      }
+
       // 6b. Update CommunityProfile with real credential SAID.
       //     The CommunityProfile was created in step 4 by initMemberProfiles with
       //     credentialSaid='pending'. It carries only the admin-managed membership

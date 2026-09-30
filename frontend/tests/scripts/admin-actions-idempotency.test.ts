@@ -63,6 +63,7 @@ const keriClientMock = {
   issueCredential,
   grantCredential,
   pushKelToAgent: vi.fn(async () => ({ pushed: 1, failed: 0 })),
+  sendEXN: vi.fn(async () => ({ success: true, said: 'EINVITEEXN' })),
   listNotifications: vi.fn(async () => []),
   markNotificationRead: vi.fn(async () => {}),
   getExchange: vi.fn(async () => null),
@@ -139,6 +140,7 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
     wallet.length = 0;
     issueCredential.mockClear();
     grantCredential.mockClear();
+    keriClientMock.sendEXN.mockClear();
     listCredentials.mockClear();
     notifyCreate.mockClear();
     createOrUpdateProfileMock.mockClear();
@@ -341,6 +343,45 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
       'SharedProfile',
       expect.objectContaining({ aid: 'DAPPLICANT', status: 'approved' }),
       expect.objectContaining({ id: 'SharedProfile-DAPPLICANT' }),
+    );
+  });
+
+  it('sends the space invite as a standalone /matou/space/invite EXN on a fresh approval (#703)', async () => {
+    const admin = useAdminActions();
+    expect(await admin.approveRegistration(registration)).toBe(true);
+
+    // In addition to embedding the invite in the grant message, a standalone
+    // EXN carries it so a member who is no longer waiting on the grant still
+    // gets the invite (#703 / #704).
+    expect(keriClientMock.sendEXN).toHaveBeenCalledWith(
+      'ORGAID',
+      'DAPPLICANT',
+      '/matou/space/invite',
+      expect.objectContaining({ inviteKey: 'K', spaceId: 'S' }),
+    );
+  });
+
+  it('re-grant branch (member issued elsewhere) also sends the standalone /matou/space/invite EXN (#703)', async () => {
+    // The applicant already holds an ACTIVE membership issued outside the app
+    // (the IDSS control panel), so approval takes the #488 re-grant branch.
+    // The embedded invite in that re-grant is ignored by a member whose
+    // credential has already landed, so the standalone EXN is their ONLY path
+    // into the community space — it MUST be sent.
+    wallet.push({
+      sad: { d: 'EPANEL', s: MEMBERSHIP_SCHEMA_SAID, a: { i: 'DAPPLICANT' } },
+      status: { et: 'iss', s: '0' },
+    });
+
+    const admin = useAdminActions();
+    expect(await admin.approveRegistration(registration)).toBe(true);
+
+    expect(issueCredential).not.toHaveBeenCalled();
+    expect(grantCredential).toHaveBeenCalledTimes(1);
+    expect(keriClientMock.sendEXN).toHaveBeenCalledWith(
+      'ORGAID',
+      'DAPPLICANT',
+      '/matou/space/invite',
+      expect.objectContaining({ inviteKey: 'K', spaceId: 'S' }),
     );
   });
 });

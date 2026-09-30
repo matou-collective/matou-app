@@ -44,6 +44,7 @@ vi.mock('src/lib/keri/client', () => ({
     resolveOOBIWithReason: async () => ({ ok: true }),
     issueCredential: async () => ({ said: 'ECredentialSAID' }),
     pushKelToAgent: async () => {},
+    sendEXN: async () => ({ success: true, said: 'EInviteExn' }),
     listNotifications: async () => [],
     markNotificationRead: async () => {},
     getExchange: async () => null,
