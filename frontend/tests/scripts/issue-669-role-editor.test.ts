@@ -126,3 +126,36 @@ describe('#669 Change Role editor — Founding Member is a promotion, not a gran
     wrapper.unmount();
   });
 });
+
+describe('Change Role is gated by steward readiness (spec §3.6)', () => {
+  beforeEach(() => {
+    appState.isIdssBackend = false;
+    upgradeMemberToSteward.mockClear();
+    reissueMembershipCredential.mockClear();
+  });
+  const mountWith = (stewardBlockedReason: string | null) => mount(ChangeRoleModal, {
+    props: { show: true, memberName: 'Kahu', memberAid: 'DMEMBER', currentRole: 'Member', stewardBlockedReason },
+    global: { stubs: { teleport: true } },
+  });
+
+  it('disables Confirm and shows the reason while this steward is not ready', async () => {
+    const wrapper = mountWith("Your wallet can't issue into the community's registry yet — try again in a moment.");
+    await wrapper.find('input[value="Community Steward"]').setValue();
+    const confirm = wrapper.findAll('button').find((b) => b.text() === 'Confirm')!;
+    expect(confirm.attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain("Your wallet can't issue into the community's registry yet");
+    await confirm.trigger('click');
+    await flushPromises();
+    expect(upgradeMemberToSteward).not.toHaveBeenCalled();
+    expect(reissueMembershipCredential).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('enables Confirm once ready', async () => {
+    const wrapper = mountWith(null);
+    await wrapper.find('input[value="Community Steward"]').setValue();
+    const confirm = wrapper.findAll('button').find((b) => b.text() === 'Confirm')!;
+    expect(confirm.attributes('disabled')).toBeUndefined();
+    wrapper.unmount();
+  });
+});

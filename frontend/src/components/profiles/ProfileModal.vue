@@ -421,6 +421,7 @@
     :memberName="profileName"
     :memberAid="profileAid"
     :currentRole="memberRole"
+    :stewardBlockedReason="props.stewardBlockedReason"
     @close="showChangeRole = false"
     @role-updated="handleRoleUpdated"
   />

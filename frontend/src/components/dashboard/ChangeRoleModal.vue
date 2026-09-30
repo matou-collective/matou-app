@@ -39,6 +39,11 @@
               </label>
             </div>
 
+            <!-- Steward not ready (spec §3.6): role changes wait, naming the step -->
+            <p v-if="stewardBlockedReason" class="mt-4 text-xs text-black/60">
+              {{ stewardBlockedReason }}
+            </p>
+
             <!-- Error -->
             <div v-if="error" class="mt-4 p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
               <p class="text-sm text-destructive">{{ error }}</p>
@@ -97,7 +102,8 @@
               v-if="!upgradeStarted"
               @click="handleConfirm"
               class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors disabled:opacity-50"
-              :disabled="selectedRole === currentRole"
+              :disabled="selectedRole === currentRole || !!stewardBlockedReason"
+              :title="stewardBlockedReason || undefined"
             >
               Confirm
             </button>
@@ -128,9 +134,11 @@ interface Props {
   memberName: string;
   memberAid: string;
   currentRole: string;
+  /** Why this steward cannot change roles yet (not joined / behind / registry not adopted); null = ready. */
+  stewardBlockedReason?: string | null;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), { stewardBlockedReason: null });
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -276,7 +284,7 @@ watch(() => props.show, (isOpen) => {
 });
 
 async function handleConfirm() {
-  if (selectedRole.value === props.currentRole) return;
+  if (selectedRole.value === props.currentRole || props.stewardBlockedReason) return;
 
   isUpdating.value = true;
   error.value = null;
