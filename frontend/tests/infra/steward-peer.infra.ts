@@ -855,9 +855,21 @@ async function main() {
     const c1 = partsOf(await member.credentials().get(cred1, true) as string, cred1);
     const vcp = splitCesr(await member.credentials().get(cred1, true) as string).find((m) => m.sad.t === 'vcp' && m.sad.i === regk)!;
     const anc0 = splitCesr(await member.credentials().get(cred1, true) as string).find((m) => m.sad.t === 'ixn' && (m.sad.a || []).some((x: any) => x.i === regk))!;
-    const gh0 = await member.identifiers().get(G);
-    const ad = await member.registries().createFromEvents(gh0, G, 'adopted', vcp.sad, anc0.sad, firstSigs(anc0.atc));
-    log(`ADOPT http=${ad.status}`);
+    // wrappers: adopt through the same code path the app uses
+    {
+        const { ensureOrgRegistry } = await import('../../src/lib/keri/steward/registryAdoption');
+        try {
+            const r = await ensureOrgRegistry(grp.prefix, regk, {
+                listRegistries: async (g) => ((await member.registries().list(g)) as any[]).map((x) => x.regk),
+                heldCredentialSaids: async () => [cred1],
+                exportCredential: async (s) => (await member.credentials().get(s, true)) as string,
+                createFromEvents: async (vcp, anc, sigs, name) => { await member.registries().createFromEvents(await member.identifiers().get(G), G, name, vcp, anc, sigs); },
+                sleep: (ms) => new Promise((x) => setTimeout(x, ms)),
+            });
+            r === 'adopted' ? pass('module: ensureOrgRegistry adopts on 0.4.0') : fail('module: ensureOrgRegistry adopts on 0.4.0', r);
+        } catch (e) { fail('module: ensureOrgRegistry adopts on 0.4.0', String(e)); }
+    }
+    const ad = { status: 'via-module' };
     for (let i = 0; i < 10; i++) { if (((await member.registries().list(G)) as any[]).some((r) => r.regk === regk)) break; await sleep(2000); }
     log(`  member registries: ${JSON.stringify((await member.registries().list(G)) as any[]).slice(0, 120)}`);
 

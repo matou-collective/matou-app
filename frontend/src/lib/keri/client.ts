@@ -19,6 +19,9 @@ import {
 import { extractWitnessAids, witnessOobiBases } from 'src/lib/keri/witnessAssignment';
 import { parseCesrStream, filterKelMessages, mergeKelMessages } from 'src/lib/keri/cesr';
 import { selectGroupKelPushTargets } from 'src/lib/keri/groupKelPush';
+import { syncGroup, type GroupSyncDeps } from 'src/lib/keri/steward/groupSync';
+import { ensureOrgRegistry, type AdoptionDeps } from 'src/lib/keri/steward/registryAdoption';
+import { NotJoined } from 'src/lib/keri/steward/errors';
 
 export interface AIDInfo {
   prefix: string; // The AID string (e.g., "EAbcd...")
@@ -762,6 +765,132 @@ export class KERIClient {
       console.warn('[KERIClient] KEL push failed:', err instanceof Error ? err.message : err);
     }
     return { pushed, failed };
+  }
+
+  /** This steward's member AID (the group's local mhab). Throws NotJoined. */
+  async groupMemberAid(groupPrefix: string): Promise<string> {
+    if (!this.client) throw new Error('Not initialized');
+    let mhab: string | undefined;
+    try {
+      const hab = await this.client.identifiers().get(groupPrefix) as { group?: { mhab?: { prefix?: string } } };
+      mhab = hab.group?.mhab?.prefix;
+    } catch { mhab = undefined; }
+    if (!mhab) throw new NotJoined(`no local group identifier for ${groupPrefix.slice(0, 12)}`);
+    return mhab;
+  }
+
+  /** Bring our agent to the witnesses' group sn, or throw GroupBehind / GroupDiverged. */
+  async syncGroupFromWitnesses(groupPrefix: string): Promise<{ sn: number }> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+    const client = this.client;
+    const base = this.cesrFetchUrl.replace(/\/+$/, '');
+    const memberAid = await this.groupMemberAid(groupPrefix);
+    const localSn = async (g: string): Promise<number> => {
+      const hab = await client.identifiers().get(g) as { state?: { s?: string } };
+      return parseInt(hab.state?.s ?? '0', 16);
+    };
+    // A group with no witnesses has nothing to sync against (and can't have a
+    // second steward) — skip rather than refuse.
+    const own = await client.identifiers().get(groupPrefix) as { state?: { b?: string[] } };
+    if (!own.state?.b?.length) {
+      console.log(`[KERIClient] group ${groupPrefix.slice(0, 12)}... has no witnesses; skipping witness sync`);
+      return { sn: await localSn(groupPrefix) };
+    }
+    const deps: GroupSyncDeps = {
+      witnessUrls: async () => {
+        const { fetchClientConfig } = await import('../clientConfig');
+        return (await fetchClientConfig()).witnesses?.urls ?? [];
+      },
+      fetchText: async (url) => {
+        try {
+          const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+          return r.ok ? await r.text() : null;
+        } catch { return null; }
+      },
+      pushEvent: async (msg, destination) => {
+        const r = await fetch(`${base}/`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/cesr+json',
+            'CESR-ATTACHMENT': msg.attachment.replace(/[\r\n]+/g, ''),
+            'CESR-DESTINATION': destination,
+          },
+          body: msg.eventRaw,
+          signal: AbortSignal.timeout(10000),
+        });
+        return r.ok; // 204 is not proof of acceptance — syncGroup re-reads sn
+      },
+      localGroupSn: localSn,
+    };
+    const res = await syncGroup(groupPrefix, memberAid, deps);
+    console.log(`[KERIClient] group ${groupPrefix.slice(0, 12)}... synced to witnesses at sn=${res.sn}`);
+    return res;
+  }
+
+  /** Make sure our agent can issue into the org registry (adopting it if needed). */
+  async ensureOrgRegistryAdopted(groupPrefix: string, regk: string): Promise<'present' | 'adopted'> {
+    if (!this.client) throw new Error('Not initialized');
+    const client = this.client;
+    const deps: AdoptionDeps = {
+      listRegistries: async (g) => ((await client.registries().list(g)) as Array<{ regk: string }>).map((r) => r.regk),
+      heldCredentialSaids: async (r) => {
+        try {
+          const creds = await client.credentials().list({ filter: { '-ri': r }, limit: 5 }) as Array<{ sad: { d: string } }>;
+          return creds.map((c) => c.sad.d);
+        } catch {
+          // KERIA 0.4.0 may reject the -ri filter key: list and filter client-side.
+          const all = await client.credentials().list() as Array<{ sad: { d: string; ri?: string } }>;
+          return all.filter((c) => c.sad.ri === r).map((c) => c.sad.d);
+        }
+      },
+      exportCredential: (said) => this.exportCredential(said),
+      createFromEvents: async (vcp, anc, sigs, name) => {
+        const hab = await client.identifiers().get(groupPrefix);
+        const res = await client.registries().createFromEvents(hab, groupPrefix, name, vcp, anc, sigs) as unknown as Response;
+        if (res && typeof res.ok === 'boolean' && !res.ok) throw new Error(`createFromEvents HTTP ${res.status}`);
+      },
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    };
+    const out = await ensureOrgRegistry(groupPrefix, regk, deps);
+    if (out === 'adopted') console.log(`[KERIClient] adopted org registry ${regk.slice(0, 12)}...`);
+    return out;
+  }
+
+  /** Personal AIDs of every OTHER current signer of the group. */
+  async otherGroupSigners(groupPrefix: string): Promise<string[]> {
+    const me = await this.groupMemberAid(groupPrefix);
+    const signers = await this.currentGroupSigners(groupPrefix, [me]);
+    return signers.map((s) => s.aid).filter((a) => a !== me);
+  }
+
+  /** CESR export of a held credential: its KELs, TEL and ACDC. */
+  async exportCredential(said: string): Promise<string> {
+    if (!this.client) throw new Error('Not initialized');
+    return await this.client.credentials().get(said, true) as unknown as string;
+  }
+
+  /** Our group-member signature(s) over an event's exact raw text. */
+  async signAsGroupMember(groupPrefix: string, raw: string): Promise<string[]> {
+    if (!this.client) throw new Error('Not initialized');
+    const signify = await import('signify-ts');
+    const hab = await this.client.identifiers().get(groupPrefix);
+    const keeper = this.client.manager!.get(hab);
+    return (await keeper.sign(signify.b(raw))) as unknown as string[];
+  }
+
+  /** Group signing keys, latest establishment sn, and our member's current key. */
+  async groupKeyState(groupPrefix: string): Promise<{ k: string[]; latestEstSn: number; memberKey: string }> {
+    if (!this.client) throw new Error('Not initialized');
+    const hab = await this.client.identifiers().get(groupPrefix) as {
+      state?: { k?: string[]; ee?: { s?: string } };
+      group?: { mhab?: { state?: { k?: string[] } } };
+    };
+    return {
+      k: hab.state?.k ?? [],
+      latestEstSn: parseInt(hab.state?.ee?.s ?? '0', 16),
+      memberKey: hab.group?.mhab?.state?.k?.[0] ?? '',
+    };
   }
 
   /**
@@ -1783,7 +1912,7 @@ export class KERIClient {
    * partial list: the group's own key state says how many keys sign, and
    * every one of them has to be attributable to a member AID.
    */
-  private async currentGroupSigners(
+  async currentGroupSigners(
     groupName: string,
     seedCandidates: string[] = [],
   ): Promise<{ aid: string; state: Record<string, unknown> }[]> {
