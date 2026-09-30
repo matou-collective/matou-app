@@ -1209,4 +1209,4 @@ function printSummary() {
     for (const r of results) console.log(`${r.status.toUpperCase().padEnd(5)} ${r.name.padEnd(76)} ${(r.note || r.error || '').slice(0, 130)}`);
     process.exit(results.some((r) => r.status === 'fail') ? 1 : 0);
 }
-main().catch((e) => { console.error('Fatal', e); printSummary(); });
+main().catch((e) => { console.error('Fatal', e); fail('fatal', e); printSummary(); });

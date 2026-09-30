@@ -6,13 +6,12 @@ against the KERIA IDSS runs. Isolated compose project `stewardpeer`, host ports 
 touches the dev (39xx) or test (49xx) stacks.
 
     cd frontend/tests/infra
+    npm install                            # own signify-ts 0.3.0 + tsx (first time)
     docker compose -f keria-0.4/docker-compose.yml up -d
     npx tsx steward-peer.infra.ts          # MODE=held (default) or MODE=fresh
     docker compose -f keria-0.4/docker-compose.yml down -v
 
 Gotcha: KERIA 0.4.0 must be started with `--name keria` — `--name agent` makes every OOBI empty.
-
-`tsx` and `signify-ts` come from `frontend/node_modules` (no extra dependencies).
 
 Runs need their own `signify-ts@0.3.0` + `tsx` (`npm install` in this directory; `package.json` here
 is separate from `frontend/package.json`) because the frontend's libsodium 0.7.x has a broken ESM entry.
