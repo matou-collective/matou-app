@@ -1,6 +1,13 @@
 import { parseCesrStream, filterKelMessages, mergeKelMessages, type CesrMessage } from 'src/lib/keri/cesr';
 import { GroupBehind, GroupDiverged } from './errors';
 
+/** Strict hex sn parse: NaN-free or null. */
+function parseSn(s: unknown): number | null {
+  if (typeof s !== 'string' || !/^[0-9a-f]+$/i.test(s)) return null;
+  const n = parseInt(s, 16);
+  return Number.isFinite(n) ? n : null;
+}
+
 export interface GroupSyncDeps {
   /** Browser-reachable witness base URLs (client config `witnesses.urls`). */
   witnessUrls(): Promise<string[]>;
@@ -25,16 +32,23 @@ export async function syncGroup(group: string, memberAid: string, deps: GroupSyn
   const streams = await Promise.all(bases.map((b) => deps.fetchText(`${b.replace(/\/+$/, '')}/oobi/${group}`)));
   let msgs: CesrMessage[] = [];
   for (const s of streams) if (s) msgs = mergeKelMessages(msgs, filterKelMessages(parseCesrStream(s)));
-  const own = msgs.filter((m) => m.event.i === group).sort((a, b) => parseInt(a.event.s, 16) - parseInt(b.event.s, 16));
-  if (own.length === 0) throw new GroupBehind('witnesses unreachable or none serves the group');
-  const target = parseInt(own[own.length - 1]!.event.s, 16);
+  const own = msgs
+    .filter((m) => m.event.i === group)
+    .map((m) => ({ m, sn: parseSn(m.event.s) }))
+    .filter((x): x is { m: CesrMessage; sn: number } => x.sn !== null)
+    .sort((a, b) => a.sn - b.sn);
+  if (own.length === 0) throw new GroupBehind('witnesses unreachable or none serves valid group events');
+  const target = own[own.length - 1]!.sn;
+  if (!Number.isFinite(target)) throw new GroupBehind('non-finite witness sn');
 
   const before = await deps.localGroupSn(group);
+  if (!Number.isFinite(before)) throw new GroupBehind(`agent sn is not a finite number (${before})`);
   if (before > target) throw new GroupDiverged(`agent sn=${before}, witnesses sn=${target}`);
-  for (const m of own) {
-    if (parseInt(m.event.s, 16) > before) await deps.pushEvent(m, memberAid);
+  for (const { m, sn } of own) {
+    if (sn > before) await deps.pushEvent(m, memberAid);
   }
   const after = await deps.localGroupSn(group);
+  if (!Number.isFinite(after)) throw new GroupBehind(`agent sn is not a finite number after push (${after})`);
   if (after > target) throw new GroupDiverged(`agent sn=${after}, witnesses sn=${target}`);
   if (after < target) throw new GroupBehind(`agent sn=${after} after push, witnesses sn=${target}`);
   return { sn: after };
