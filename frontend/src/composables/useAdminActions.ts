@@ -15,7 +15,8 @@ import { buildMembershipAttributes, type MembershipBackend } from 'src/lib/membe
 import type { PendingRegistration } from './useRegistrationPolling';
 import { buildOobiCandidates } from 'src/lib/registrationResolve';
 import { BACKEND_URL, createOrUpdateProfile, getProfileById, grantStewardAdmin, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
-import { resolveIssuingRegistry } from 'src/lib/keri/registry';
+import { resolveIssuingRegistry, resolveOrgRegistryId } from 'src/lib/keri/registry';
+import { pushHistoryWhenSigner } from 'src/lib/keri/steward/promotionHistory';
 import { findActiveIssuedCredentialSaid } from 'src/lib/keri/notifications';
 import { secureStorage } from 'src/lib/secureStorage';
 import { NotJoined, userFacingMessage } from 'src/lib/keri/steward/errors';
@@ -902,6 +903,18 @@ export function useAdminActions() {
       } else {
         console.log('[AdminActions] Granted Admin permission to new steward on community + readonly spaces');
       }
+
+      // Spec §3.5: push the org's credential history to the other signers
+      // (now including the new steward) right after the promotion. Best-effort
+      // and in the background — never fails or delays the promotion; the next
+      // sign-in's readiness check retries anything undelivered.
+      void pushHistoryWhenSigner(orgAidPrefix, {
+        sync: (g) => keriClient.syncGroupFromWitnesses(g),
+        keyState: (g) => keriClient.groupKeyState(g),
+        resolveRegistry: () => resolveOrgRegistryId(),
+        pushHistory: (g, r) => keriClient.pushOrgHistory(g, r),
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      });
 
       onStep?.('Complete');
       console.log('[AdminActions] Steward upgrade complete');

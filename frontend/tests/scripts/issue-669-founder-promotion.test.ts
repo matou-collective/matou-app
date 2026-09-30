@@ -66,6 +66,8 @@ const keriClientMock = {
   waitForMemberRotation,
   pushKelToAgent: vi.fn(async () => ({ pushed: 1, failed: 0 })),
   syncGroupFromWitnesses: vi.fn(async () => ({ sn: 3 })),
+  groupKeyState: vi.fn(async () => ({ k: ['KADMIN', 'KSTEWARD'], latestEstSn: 5, memberKey: 'KADMIN' })),
+  pushOrgHistory: vi.fn(async () => 0),
 };
 
 // The promotion drains peer stewards' acts before rotating; drain() never
@@ -79,6 +81,7 @@ vi.mock('src/composables/useOrgActInbox', () => ({
 vi.mock('src/lib/keri/client', () => ({ useKERIClient: () => keriClientMock }));
 vi.mock('src/lib/keri/registry', () => ({
   resolveIssuingRegistry: vi.fn(async () => 'REGID'),
+  resolveOrgRegistryId: vi.fn(async () => 'REGID'),
 }));
 vi.mock('src/lib/clientConfig', () => ({
   getMembershipSchemaSaid: vi.fn(async () => IDSS_MEMBERSHIP_SCHEMA),
@@ -141,6 +144,7 @@ describe('#669 founding-member upgrade runs the IDSS promotion rail', () => {
     inbox.lastError.value = null;
     drain.mockClear();
     keriClientMock.syncGroupFromWitnesses.mockReset().mockResolvedValue({ sn: 3 });
+    keriClientMock.pushOrgHistory.mockReset().mockResolvedValue(0);
   });
 
   it('rotates the group identity to add the member as a signer (AC1)', async () => {
@@ -206,5 +210,28 @@ describe('#669 founding-member upgrade runs the IDSS promotion rail', () => {
     expect(ok).toBe(false);
     expect(drain).not.toHaveBeenCalled();
     expect(addMemberRound1).not.toHaveBeenCalled();
+  });
+
+  it('pushes the org history to the peers right after the promotion completes (spec §3.5, I4)', async () => {
+    const ok = await useAdminActions().upgradeMemberToSteward(STEWARD_AID, 'Founding Member');
+    expect(ok).toBe(true);
+    await vi.waitFor(() => expect(keriClientMock.pushOrgHistory).toHaveBeenCalledWith('ORGAID', 'REGID'));
+  });
+
+  it('a failing history push never fails the promotion', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    keriClientMock.pushOrgHistory.mockRejectedValue(new Error('peer unreachable'));
+    const ok = await useAdminActions().upgradeMemberToSteward(STEWARD_AID, 'Founding Member');
+    expect(ok).toBe(true);
+    await vi.waitFor(() => expect(keriClientMock.pushOrgHistory).toHaveBeenCalled());
+    warn.mockRestore();
+  });
+
+  it('pushes no history when the promotion fails', async () => {
+    addMemberRound1.mockRejectedValue(new Error('co-signers unavailable'));
+    const ok = await useAdminActions().upgradeMemberToSteward(STEWARD_AID, 'Founding Member');
+    expect(ok).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(keriClientMock.pushOrgHistory).not.toHaveBeenCalled();
   });
 });

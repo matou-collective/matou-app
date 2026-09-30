@@ -19,6 +19,8 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useBackendEvents } from './useBackendEvents';
 import { BACKEND_URL, authHeaders } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
+import { resolveOrgRegistryId } from 'src/lib/keri/registry';
+import { pushHistoryWhenSigner } from 'src/lib/keri/steward/promotionHistory';
 
 interface RotationSignalEvent {
   signalId: string;
@@ -141,6 +143,22 @@ export function useMultisigRotationSignal() {
       }
     } catch (err) {
       console.warn('[RotationSignal] ack POST failed:', err);
+    }
+
+    // Spec §3.5: a co-signer that holds the org's history pushes it to the
+    // new steward right after the promotion — i.e. once the round-2 group
+    // rotation our ack unblocks lands in our agent. Background, best-effort.
+    if (sig.action === 'rotate' && sig.round === 'round-2') {
+      const group = sig.groupAid || await secureStorage.getItem('matou_org_aid');
+      if (group) {
+        void pushHistoryWhenSigner(group, {
+          sync: (g) => keriClient.syncGroupFromWitnesses(g),
+          keyState: (g) => keriClient.groupKeyState(g),
+          resolveRegistry: () => resolveOrgRegistryId(),
+          pushHistory: (g, r) => keriClient.pushOrgHistory(g, r),
+          sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        });
+      }
     }
   }
 
