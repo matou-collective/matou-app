@@ -22,9 +22,13 @@
  * `<base>/handover/seal`. Derived from `present_url` (the one address the wallet
  * posts to), NEVER from `door` (#1669).
  *
- * The panel lands only after the OIDC hop, so the wallet polls the key route for
- * a few bounded seconds and then gives up — a panel that was backgrounded or
- * never came back leaves the poll unanswered and lands on PU-M0x cause 1, and
+ * The panel lands only after the OIDC hop, and asks the door only once its
+ * Members tab is open, so the wallet polls the key route for AS LONG AS THE
+ * CHALLENGE LIVES — two minutes (golden `panel.challenge`) — and stops the moment
+ * the door says the challenge is dead. On the first live steward unlock
+ * (Whakatōhea Demo, 2026-09-30) the wallet gave up after ~10 s and the panel first
+ * asked at 11 s. A panel that was backgrounded or never came back leaves the poll
+ * unanswered until the door expires the challenge, lands on PU-M0x cause 1, and
  * nothing is sealed. The passcode leaves only as the sealed cipher, is never
  * logged, and never rides a URL.
  */
@@ -73,10 +77,13 @@ export interface HandoverDeps {
 }
 
 /** How long to wait between key-route polls. */
-const POLL_INTERVAL_MS = 500;
-/** How many polls before giving up — the panel must land within this budget
- *  (~10s: the OIDC hop + panel load), else it shows PU-M0x cause 1. */
-const MAX_POLLS = 20;
+const POLL_INTERVAL_MS = 1000;
+/** How long the door's challenge lives (golden `panel.challenge`, two minutes) —
+ *  the panel may bind at any point in it, so the wallet waits it out, plus a
+ *  margin for the door's own clock. The door answers non-200 once the challenge
+ *  is dead, which ends the wait early. */
+const CHALLENGE_LIFE_MS = 120_000;
+const MAX_WAIT_MS = CHALLENGE_LIFE_MS + 15_000;
 
 function defaultHandoverDeps(): HandoverDeps {
   return {
@@ -91,22 +98,29 @@ function defaultHandoverDeps(): HandoverDeps {
  * bound one yet (`{}`), the challenge is unknown/dead (non-200), or the door
  * could not be reached. Only a PUBLIC key ever rides this wire.
  */
-async function readBoundVerkey(keyUrl: string, fetchImpl: typeof fetch): Promise<string | null> {
+/** One read of the key route: the verkey once the panel has bound (`{}` until then),
+ *  or `dead` when the door answers non-200 — an expired, spent or unknown challenge
+ *  (golden `wallet_key.expired`), after which no poll can succeed. A network fault
+ *  is neither: the door may be back on the next poll. */
+async function readBoundVerkey(
+  keyUrl: string,
+  fetchImpl: typeof fetch,
+): Promise<{ verkey: string | null; dead: boolean }> {
   let res: Response;
   try {
     res = await fetchImpl(keyUrl, { method: 'GET' });
   } catch {
-    return null;
+    return { verkey: null, dead: false };
   }
-  if (res.status !== 200) return null;
+  if (res.status !== 200) return { verkey: null, dead: true };
   let body: HandoverKeyResponse | null = null;
   try {
     body = (await res.json()) as HandoverKeyResponse | null;
   } catch {
-    return null;
+    return { verkey: null, dead: false };
   }
   const key = (body?.sealing_key ?? '').trim();
-  return key || null;
+  return { verkey: key || null, dead: false };
 }
 
 /**
@@ -146,12 +160,16 @@ export async function runHandover(
   const keyUrl = handoverKeyUrl(presentUrl, challenge);
 
   let verkey: string | null = null;
-  for (let attempt = 0; attempt < MAX_POLLS; attempt++) {
-    verkey = await readBoundVerkey(keyUrl, deps.fetchImpl);
-    if (verkey) break;
-    if (attempt < MAX_POLLS - 1) await deps.sleep(POLL_INTERVAL_MS);
+  for (let waitedMs = 0; waitedMs <= MAX_WAIT_MS; waitedMs += POLL_INTERVAL_MS) {
+    const read = await readBoundVerkey(keyUrl, deps.fetchImpl);
+    if (read.dead) return; // the door says the challenge is over — nothing is sealed
+    if (read.verkey) {
+      verkey = read.verkey;
+      break;
+    }
+    await deps.sleep(POLL_INTERVAL_MS);
   }
-  if (!verkey) return; // the panel never bound — nothing is sealed (PU-M0x cause 1)
+  if (!verkey) return; // the panel never bound in the challenge's life — nothing is sealed (PU-M0x cause 1)
 
   // Seal to the verkey the panel actually holds, ONCE. A locked seat, a missing
   // passcode, or an already-consumed arming all yield null — nothing leaves.
