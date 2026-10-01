@@ -28,8 +28,67 @@ fi
 # matches on "error", so the next occurrence carries the HTTP status. Output-only
 # change: `-S` alters nothing but what curl prints when it already failed, and no
 # token is ever in a URL here (both are headers), so nothing secret is exposed.
-fapi() { curl -sfS -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
-mapi() { curl -sfS -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" "$@"; }
+#
+# curl_retry (#714) rides out a momentary Forgejo/Mattermost 5xx. #511 established
+# that one transient forge 5xx must not red a whole tick, and its fix landed in
+# git-setup.sh as is_transport_error + a bounded backoff loop — but neither half
+# of the verify path inherited it, so run 30372 (2026-10-01) died at
+# `check-verifications` exit 22 on a single 502 that had cleared by the time the
+# runner re-probed. Every fapi/mapi call is a bare `curl -sfS` inside a command
+# substitution under `set -e`: ~a dozen single points of failure per tick. Retry
+# transient failures — 429/5xx (curl rc 22 whose `-S` line names a 5xx/429) and
+# curl's own connect/resolve/timeout/TLS/empty-reply transport codes — with
+# exponential backoff (CV_RETRIES attempts, CV_BACKOFF seconds doubling), the
+# same shape git-setup.sh and forgejo-lib.sh use. A permanent 4xx (401/403/404)
+# fails IDENTICALLY on every attempt, so it is NOT retried — retrying only delays
+# a verdict that will not change. Only idempotent GETs are retried: a write
+# (`-X`/`-d`) runs once, because the POST-before-DELETE label swap below is
+# crash-safe but a blind re-POST/PATCH/DELETE is not a decision to make blindly.
+# On final failure the endpoint URL is named on stderr — curl's -f/-S message
+# omits it (#714 Gap 2), so without this the verdict could not say WHICH service
+# 5xx'd, Forgejo or Mattermost.
+CV_RETRIES="${CV_RETRIES:-3}"
+CV_BACKOFF="${CV_BACKOFF:-2}"
+
+_cv_transient() { # _cv_transient <curl-rc> <stderr-file>; rc 0 iff worth retrying
+  case "$1" in
+    6 | 7 | 28 | 35 | 52 | 55 | 56) return 0 ;; # resolve/connect/timeout/TLS/empty-reply/send/recv
+    22) grep -qE "error: (5[0-9][0-9]|429)" "$2" ;; # HTTP 429/5xx (curl's -f exits 22 for any 4xx/5xx; -S names the code)
+    *) return 1 ;;
+  esac
+}
+
+curl_retry() { # curl_retry <curl-args...> — URL is the LAST arg; GETs retried, writes run once
+  local url="${!#}" is_write=0 a attempt=1 delay="$CV_BACKOFF" rc err
+  for a in "$@"; do
+    case "$a" in -X | -d | --data | --data-* | -T | --upload-file) is_write=1 ;; esac
+  done
+  err="$(mktemp)"
+  while :; do
+    # `|| rc=$?` keeps errexit live for the caller while capturing curl's own
+    # exit code: a bare `if curl ...; then` would leave $? as the `if`
+    # statement's status (0) on the failing branch, not curl's.
+    rc=0
+    curl -sfS --max-time 30 "$@" 2>"$err" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      rm -f "$err"
+      return 0
+    fi
+    if [ "$is_write" -eq 1 ] || ! _cv_transient "$rc" "$err" || [ "$attempt" -ge "$CV_RETRIES" ]; then
+      cat "$err" >&2
+      echo "check-verifications: curl failed (rc $rc) after $attempt attempt(s) on $url" >&2
+      rm -f "$err"
+      return "$rc"
+    fi
+    echo "check-verifications: transient curl failure (rc $rc) on $url — retry $attempt/$CV_RETRIES in ${delay}s" >&2
+    sleep "$delay"
+    delay=$((delay * 2))
+    attempt=$((attempt + 1))
+  done
+}
+
+fapi() { curl_retry -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
+mapi() { curl_retry -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" "$@"; }
 
 post() { # post <message> [root_id] — root_id makes it a thread reply (verbatim from ask-human.sh)
   jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message "$1" --arg root_id "${2:-}" \

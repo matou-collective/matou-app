@@ -35,12 +35,17 @@ git clone -q "$origin" "$workdir"
 
 verdict="$work/verdict.txt"
 run_verify() { # run_verify <git-remote-url> <mattermost-url>
+  # Zero backoff keeps the #714 transport-retry loops (git sync + check-
+  # verifications' curl_retry) instant offline: the connection-refused /
+  # bad-remote failures below are retried before they red, and a 2s/4s sleep per
+  # attempt would otherwise add ~6s per scenario with no change in outcome.
   ( cd "$workdir" && \
     REPO_SLUG="x/y" FORGEJO_TOKEN=dummy \
     FORGEJO_API="https://example.invalid/api/v1/repos/x/y" \
     SERVER_URL="https://example.invalid" \
     MATTERMOST_URL="$2" MATTERMOST_BOT_TOKEN=x MATTERMOST_CHANNEL_ID=c \
     VERIFY_VERDICT_PATH="$verdict" GIT_VERIFY_REMOTE_URL="$1" \
+    VERIFY_SYNC_BACKOFF=0 CV_BACKOFF=0 \
     bash "$sc/run-verify.sh" )
 }
 

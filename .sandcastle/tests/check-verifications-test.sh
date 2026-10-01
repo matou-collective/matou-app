@@ -236,5 +236,59 @@ check "S8b second reply copied nowhere (no guidance comment, content absent)" \
   "! grep -q 'go ahead after all' \"\$FAKE_DIR/forgejo.log\""
 check "S8b second reply id never confirmed in-thread" "! grep -q '\`R2\`' \"\$FAKE_DIR/posts.log\""
 
+# A repo-local curl wrapper that injects a transient-5xx seam in FRONT of the
+# factory-vendored fakebin/curl (which is read-only here — ADR 0180). When
+# $FAKE_DIR/http-5xx-count holds a positive countdown, the next N calls fail the
+# way a momentary Forgejo/Mattermost 502 does under `curl -sfS`: rc 22 with
+# curl's own `-S` error line on stderr, decrementing each call; then it exec's
+# the real fakebin curl. Prepended to PATH only for the #714 scenarios below.
+retrybin="$(mktemp -d)"
+cat >"$retrybin/curl" <<RETRY
+#!/usr/bin/env bash
+if [ -f "\$FAKE_DIR/http-5xx-count" ]; then
+  remaining="\$(cat "\$FAKE_DIR/http-5xx-count" 2>/dev/null || echo 0)"
+  if [ "\$remaining" -gt 0 ] 2>/dev/null; then
+    echo \$((remaining - 1)) >"\$FAKE_DIR/http-5xx-count"
+    echo "curl: (22) The requested URL returned error: 502" >&2
+    exit 22
+  fi
+fi
+exec "$here/fakebin/curl" "\$@"
+RETRY
+chmod +x "$retrybin/curl"
+
+# ---- S9: transient-5xx-ridden-out — a momentary 502 on the first call must NOT
+# red the tick; curl_retry rides it out and the approve still promotes (#714).
+# CV_BACKOFF=0 keeps the retry instant offline.
+setup
+CV_BACKOFF=0 && export CV_BACKOFF
+PATH="$retrybin:$PATH"
+echo 1 >"$FAKE_DIR/http-5xx-count"
+jq -n --argjson i "$(mkissue 18 "Transient bug")" '[$i]' >"$FAKE_DIR/issues.json"
+jq -n --argjson t "$(mkpost T18 "" BOTID "$(verify_msg 18 "Transient bug")")" '{posts:{T18:$t}}' >"$FAKE_DIR/channel.json"
+jq -n --argjson t "$(mkpost T18 "" BOTID "$(verify_msg 18 "Transient bug")")" \
+  --argjson r "$(mkpost R1 T18 HUMAN "approve")" \
+  '{posts:{T18:$t, R1:$r}}' >"$FAKE_DIR/thread-T18.json"
+bash "$script" >/dev/null 2>&1
+rc=$?
+check "S9 exit 0 despite a transient 502" "[ $rc -eq 0 ]"
+check "S9 approve still promotes after the retry" \
+  "grep -q 'DELETE .*/issues/18/labels/50' \"\$FAKE_DIR/calls.log\" && grep -q '\"labels\": *\\[36\\]' \"\$FAKE_DIR/forgejo.log\""
+unset CV_BACKOFF
+
+# ---- S10: sustained-5xx-reds-loud — a 5xx that outlasts the retry budget still
+# reds (non-zero exit), and the error names the failing endpoint so the verdict
+# can say WHICH service 5xx'd — curl's -f/-S message omits the URL (#714 Gap 2).
+setup
+CV_BACKOFF=0 && export CV_BACKOFF
+echo 9 >"$FAKE_DIR/http-5xx-count"   # outlasts CV_RETRIES (3) on the first endpoint
+jq -n --argjson i "$(mkissue 19 "Dead forge")" '[$i]' >"$FAKE_DIR/issues.json"
+jq -n '{posts:{}}' >"$FAKE_DIR/channel.json"
+s10_err="$(bash "$script" 2>&1 >/dev/null)"; rc=$?
+check "S10 nonzero exit on a sustained 5xx" "[ $rc -ne 0 ]"
+check "S10 the failure names the endpoint (users/me is the first call)" \
+  "printf '%s' \"\$s10_err\" | grep -q 'users/me'"
+unset CV_BACKOFF
+
 echo "check-verifications: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

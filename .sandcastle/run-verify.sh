@@ -42,22 +42,48 @@ verdict_stage "git sync (fetch/checkout/reset)" "$git_log"
 # git.matou.nz; the test seam points at a local fixture repo offline.
 host="${SERVER_URL#https://}"; host="${host:-git.matou.nz}"
 url="${GIT_VERIFY_REMOTE_URL:-https://swarm:${FORGEJO_TOKEN}@${host}/${repo_slug}.git}"
+# Bounded transient-transport retry around this ONE live git call, mirroring
+# git-setup.sh's #511/#1411 loop (#714): the verify path never inherited #511's
+# fix (git-setup.sh got it, this local sync copy did not), so a momentary Forgejo
+# 5xx / connection blip on fetch-or-clone used to red the whole verify tick with
+# a bare git exit. A transport-class failure (5xx/429, DNS/TCP/TLS, "unable to
+# access") is ridden out; a NON-transport fault — dead auth, repo-not-found, a
+# missing branch — fails FAST (it would fail identically on every attempt and
+# must keep its native git error so the verdict names the real fault). A
+# SUSTAINED outage still reds after the budget: the workdir was never updated, so
+# it must never pass for a clean checkout.
+VERIFY_SYNC_RETRIES="${VERIFY_SYNC_RETRIES:-3}"
+VERIFY_SYNC_BACKOFF="${VERIFY_SYNC_BACKOFF:-2}"
+is_transport_error() { # <git-log>; rc 0 iff the failure looks like a transport fault
+  grep -qiE "returned error: (5[0-9][0-9]|429)|RPC failed|(could not|couldn't|can't) resolve|connection (refused|timed out|reset)|failed to connect|unable to access|gnutls|SSL_|operation timed out|early EOF|the remote end hung up|network is unreachable|temporary failure in name resolution" "$1"
+}
+
 # A real subshell with its OWN `set -e`, so the first failing git command aborts
 # the sequence immediately — mirrors git-setup.sh: without it, a failed `git
 # fetch` would leave `git checkout -f`/`git reset --hard` to run against stale
-# refs and exit 0, masking the fetch failure entirely.
-(
-  set -e
-  if [ -d .git ]; then
-    git remote set-url origin "$url"
-    git fetch origin main
-    git checkout -f main
-    git reset --hard origin/main
-  else
-    git clone "$url" .
-  fi
-) > "$git_log" 2>&1
-ec=$?
+# refs and exit 0, masking the fetch failure entirely. Capturing $? as a separate
+# statement right after keeps errexit live inside the subshell (a one-line
+# `(...) || ec=$?` would disable it); the retry loop re-runs this whole
+# self-contained fetch-or-clone per attempt, so that pin still holds.
+attempt=1; delay="$VERIFY_SYNC_BACKOFF"; ec=0
+while :; do
+  (
+    set -e
+    if [ -d .git ]; then
+      git remote set-url origin "$url"
+      git fetch origin main
+      git checkout -f main
+      git reset --hard origin/main
+    else
+      git clone "$url" .
+    fi
+  ) > "$git_log" 2>&1
+  ec=$?
+  [ "$ec" -eq 0 ] && break
+  is_transport_error "$git_log" || break
+  [ "$attempt" -ge "$VERIFY_SYNC_RETRIES" ] && break
+  sleep "$delay"; delay=$((delay * 2)); attempt=$((attempt + 1))
+done
 cat "$git_log"
 # On failure LEAVE $git_log on disk: the EXIT trap's verdict_write greps it for
 # the error lines. Removing it here would recreate the #18 bug — an `rm` ahead
