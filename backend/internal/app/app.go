@@ -315,11 +315,24 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	}
 
 	// Load additional space IDs from persisted identity
-	communityReadOnlySpaceID := ""
+	// The read-only space ID is resolved through readOnlyResolver (not read
+	// straight off the identity) so a stale persisted ID is healed from org
+	// config before anything captures it (#719). onReadOnlyHealed is bound to
+	// the space manager below, once it exists.
+	var onReadOnlyHealed func(spaceID string)
+	readOnlyResolver := newReadOnlySpaceResolver(readOnlySpaceSources{
+		identityID: userIdentity.GetCommunityReadOnlySpaceID,
+		orgID:      orgConfigHandler.GetReadOnlySpaceID,
+		exists:     anysyncClient.SpaceExists,
+		persist: func(spaceID string) error {
+			if onReadOnlyHealed != nil {
+				onReadOnlyHealed(spaceID)
+			}
+			return userIdentity.SetCommunityReadOnlySpaceID(spaceID)
+		},
+	})
+	communityReadOnlySpaceID := readOnlyResolver.Resolve()
 	adminSpaceID := ""
-	if userIdentity.GetCommunityReadOnlySpaceID() != "" {
-		communityReadOnlySpaceID = userIdentity.GetCommunityReadOnlySpaceID()
-	}
 	if userIdentity.GetAdminSpaceID() != "" {
 		adminSpaceID = userIdentity.GetAdminSpaceID()
 	}
@@ -337,18 +350,10 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		return orgConfigHandler.GetCommunitySpaceID()
 	}
 
-	// resolveCommunityReadOnlySpaceID resolves the read-only space ID live, with
-	// the same identity-then-org-config fallback shape as the community space ID.
-	// The read-only ID previously had no fallback: a stale or empty persisted
-	// value left every role/contribution lookup pointed at a dead space with no
-	// self-heal (issue #539). Falling back to shared org config lets a client
-	// recover the working ID.
-	resolveCommunityReadOnlySpaceID := func() string {
-		if id := userIdentity.GetCommunityReadOnlySpaceID(); id != "" {
-			return id
-		}
-		return orgConfigHandler.GetReadOnlySpaceID()
-	}
+	// resolveCommunityReadOnlySpaceID resolves the read-only space ID live (see
+	// readOnlySpaceResolver): identity first while reachable, otherwise org
+	// config, healing a stale persisted ID (#539, #719).
+	resolveCommunityReadOnlySpaceID := readOnlyResolver.Resolve
 
 	// Initialize space manager
 	_, _ = fmt.Fprintln(out, "Initializing space manager...")
@@ -359,6 +364,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		OrgAID:                   orgAID,
 	}, sdkClient.GetTreeManager())
 	spaceStore := anystore.NewSpaceStoreAdapter(store)
+	onReadOnlyHealed = spaceManager.SetCommunityReadOnlySpaceID
 
 	_, _ = fmt.Fprintf(out, "  Space manager initialized\n")
 	_, _ = fmt.Fprintf(out, "   Community Space ID: %s\n", communitySpaceID)
