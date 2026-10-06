@@ -137,7 +137,15 @@ describe("resolveBackend", () => {
     const f = vi.fn(async () => {
       throw new Error("ECONNREFUSED");
     });
-    await expect(resolveBackend(f as any, () => SS)).rejects.toThrowError(/46505.*set MATOU_BACKEND_URL/i);
+    // SS is `ss` output, so pin the Linux parser — on a macOS host the
+    // platform default would pick the lsof parser and find no ports.
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    try {
+      await expect(resolveBackend(f as any, () => SS)).rejects.toThrowError(/46505.*set MATOU_BACKEND_URL/i);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
   });
 });
 
