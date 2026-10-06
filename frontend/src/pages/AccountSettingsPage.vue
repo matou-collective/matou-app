@@ -500,15 +500,22 @@
       <SignOutEverywhereSection v-if="isSteward" />
 
       <!-- Section 7: Support (mobile only) — the sidebar's "Report an issue"
-           button is hidden on mobile, so surface the same dialog here. -->
+           and "Suggest an improvement" buttons are hidden on mobile, so
+           surface the same two doors here. -->
       <section v-if="isMobile" class="settings-card">
         <div class="card-header">
           <h3 class="card-title"><Bug :size="18" /> Support</h3>
         </div>
-        <button type="button" class="report-issue-btn" @click="showReportDialog = true">
-          <Bug :size="16" />
-          <span>Report an issue</span>
-        </button>
+        <div class="report-issue-actions">
+          <button type="button" class="report-issue-btn" @click="openReport('bug')">
+            <Bug :size="16" />
+            <span>Report an issue</span>
+          </button>
+          <button type="button" class="report-issue-btn" @click="openReport('improvement')">
+            <Lightbulb :size="16" />
+            <span>Suggest an improvement</span>
+          </button>
+        </div>
       </section>
 
       <!-- Unsaved changes bar -->
@@ -527,7 +534,11 @@
       </Transition>
     </div>
 
-    <ReportIssueDialog v-model="showReportDialog" :reporter-name="sharedForm.displayName || 'Member'" />
+    <ReportIssueDialog
+      v-model="showReportDialog"
+      :type="reportType"
+      :reporter-name="sharedForm.displayName || 'Member'"
+    />
 
     <!-- Link another device: the same onboarding screen, shown as a maximized
          dialog. Desktop (and the browser/e2e) shows the QR and approves; a
@@ -602,6 +613,7 @@ import {
   X,
   Loader2,
   Bug,
+  Lightbulb,
   Bell,
   MonitorSmartphone,
   Smartphone,
@@ -620,6 +632,7 @@ import { getFileUrl, uploadFile, clearBackendIdentity } from 'src/lib/api/client
 import { useIsMobile } from 'src/composables/useIsMobile';
 import { applyPushEnabled } from 'src/composables/usePush';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
+import type { IssueType } from 'src/lib/issueReport';
 import SignOutEverywhereSection from 'src/components/settings/SignOutEverywhereSection.vue';
 import TypedForm from 'src/components/profiles/TypedForm.vue';
 import LinkDeviceQrScreen from 'src/components/onboarding/LinkDeviceQrScreen.vue';
@@ -656,6 +669,12 @@ function onPushEnabledChange(event: Event) {
   void applyPushEnabled(enabled);
 }
 const showReportDialog = ref(false);
+const reportType = ref<IssueType>('bug');
+
+function openReport(type: IssueType) {
+  reportType.value = type;
+  showReportDialog.value = true;
+}
 
 // --- Devices: link another device + sign out (#474) ---
 const showLinkDialog = ref(false);
@@ -1958,7 +1977,13 @@ textarea.field-input {
   font-weight: 600;
 }
 
-/* Report an issue (mobile support card) */
+/* Report an issue / Suggest an improvement (mobile support card) */
+.report-issue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 .report-issue-btn {
   display: inline-flex;
   align-items: center;

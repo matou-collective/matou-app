@@ -1,11 +1,26 @@
 /**
- * Issue reporting client. POSTs to the config server's Forgejo proxy —
- * the Forgejo token lives only on the config server, never in the app.
+ * Issue reporting client. POSTs to Mātou's config server Forgejo proxy —
+ * the Forgejo token lives only on that server, never in the app.
+ *
+ * A report is about the app, not the community, so a production build always
+ * sends it to Mātou's own server — never the community's config server. An
+ * IDSS community's config server is its gateway, which does not serve
+ * /api/v1/issues (every report there was a 404).
  */
 
 import { version as appVersion } from '../../../package.json';
 import { getConfigUrl, getEnv } from '../clientConfig';
 import { summarizePlatform, type IssueContext, type IssuePayload } from '../issueReport';
+
+// The same server the Mātou app's own build reports through (.env.production).
+const MATOU_ISSUE_URL = 'http://awa.matou.nz:3904';
+
+/** Base URL reports POST to. Dev/test keep the local config server. */
+export function getIssueReportUrl(): string {
+  const override = import.meta.env.VITE_ISSUE_REPORT_URL as string | undefined;
+  if (override) return override;
+  return getEnv() === 'prod' ? MATOU_ISSUE_URL : getConfigUrl();
+}
 
 export interface IssueResult {
   number: number;
@@ -37,14 +52,14 @@ export function collectIssueContext(reporterName: string): IssueContext {
 export async function submitIssue(payload: IssuePayload): Promise<IssueResult> {
   let res: Response;
   try {
-    res = await fetch(`${getConfigUrl()}/api/v1/issues`, {
+    res = await fetch(`${getIssueReportUrl()}/api/v1/issues`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15000),
     });
   } catch (err) {
-    throw new IssueSubmitError('unreachable', `Config server unreachable: ${String(err)}`);
+    throw new IssueSubmitError('unreachable', `Issue server unreachable: ${String(err)}`);
   }
 
   if (res.status === 503) {

@@ -31,7 +31,8 @@
         <div class="sidebar-nav-bottom">
           <!-- Community Settings gear — shown only for holders of
                open_community_settings (founder by default); sits directly above
-               "Report an issue" (#318). -->
+               "Report an issue" (#318), which sits above "Suggest an
+               improvement" — two doors into the one dialog. -->
           <button
             v-if="rolePolicyStore.can('open_community_settings')"
             class="nav-item community-settings-btn"
@@ -40,9 +41,13 @@
             <Settings class="nav-icon" />
             <span>Community Settings</span>
           </button>
-          <button class="nav-item report-issue-btn" @click="showReportDialog = true">
+          <button class="nav-item report-issue-btn" @click="openReport('bug')">
             <Bug class="nav-icon" />
             <span>Report an issue</span>
+          </button>
+          <button class="nav-item report-issue-btn" @click="openReport('improvement')">
+            <Lightbulb class="nav-icon" />
+            <span>Suggest an improvement</span>
           </button>
         </div>
       </nav>
@@ -70,7 +75,8 @@
     <!-- Mobile bottom tab bar (≤767px) — sidebar is hidden there, so this is
          the only navigation. Shows the primary navItems plus a "More" tab; the
          overflow navItems and the profile link live behind the More sheet.
-         "Report an issue" lives on Account settings on mobile. -->
+         "Report an issue" and "Suggest an improvement" also live on Account
+         settings on mobile. -->
     <nav class="bottom-nav">
       <button
         v-for="item in primaryNavItems"
@@ -134,12 +140,21 @@
           </button>
           <button
             class="more-sheet-item more-sheet-item-separated"
-            @click="showMoreSheet = false; showReportDialog = true"
+            @click="showMoreSheet = false; openReport('bug')"
           >
             <span class="more-sheet-icon-wrap">
               <Bug class="more-sheet-icon" />
             </span>
             <span class="more-sheet-label">Report an issue</span>
+          </button>
+          <button
+            class="more-sheet-item"
+            @click="showMoreSheet = false; openReport('improvement')"
+          >
+            <span class="more-sheet-icon-wrap">
+              <Lightbulb class="more-sheet-icon" />
+            </span>
+            <span class="more-sheet-label">Suggest an improvement</span>
           </button>
         </div>
       </div>
@@ -152,7 +167,7 @@
       :community-profile="profileViewer.communityProfile"
       @close="profileViewer.close()"
     />
-    <ReportIssueDialog v-model="showReportDialog" :reporter-name="userName" />
+    <ReportIssueDialog v-model="showReportDialog" :type="reportType" :reporter-name="userName" />
   </div>
 </template>
 
@@ -167,6 +182,7 @@ import {
   MessageSquare,
   Hammer,
   Bug,
+  Lightbulb,
   Menu,
   Settings,
 } from 'lucide-vue-next';
@@ -192,6 +208,7 @@ import { fetchOrgConfig } from 'src/api/config';
 import { getFileUrl } from 'src/lib/api/client';
 import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
+import type { IssueType } from 'src/lib/issueReport';
 import { useProfileViewer } from 'stores/profileViewer';
 import { KIT } from 'src/generated/kit';
 import kitLogo from 'src/assets/kit/logo.png';
@@ -217,6 +234,12 @@ const identityStore = useIdentityStore();
 const scope = useCommentScope();
 const profileViewer = useProfileViewer();
 const showReportDialog = ref(false);
+const reportType = ref<IssueType>('bug');
+
+function openReport(type: IssueType) {
+  reportType.value = type;
+  showReportDialog.value = true;
+}
 
 // Hide the mobile bottom tab bar while the soft keyboard is open so it doesn't
 // float above the keyboard and eat vertical space (#126). Web/Electron never
@@ -593,7 +616,7 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--matou-sidebar-border);
 }
 
-// The bottom cluster (Community Settings + Report an issue) is pushed to the
+// The bottom cluster (Community Settings + the two report doors) is pushed to the
 // foot of the nav column so it keeps its place whether or not the gear shows.
 .sidebar-nav-bottom {
   margin-top: auto;
