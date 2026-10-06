@@ -1986,6 +1986,9 @@ func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID, a
 		c.AttachmentFiles = req.AttachmentFiles
 	}
 	c.Status = ContribNeedsReview
+	// Submitting for review promotes any saved draft into a real submission, so
+	// the unsubmitted-draft marker no longer applies (issue #722).
+	c.EvidenceDraftSavedAt = nil
 	c.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
@@ -1996,6 +1999,63 @@ func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID, a
 		if err := s.recomputeMilestoneActualCost(ctx, spaceID, c.MilestoneID); err != nil {
 			log.Printf("[Contributions] recomputeMilestoneActualCost %s: %v", c.MilestoneID, err)
 		}
+	}
+	return c, nil
+}
+
+// SaveEvidenceDraft persists evidence on an assigned contribution as a draft,
+// WITHOUT transitioning it to needs_review (issue #722). It lets the assigned
+// contributor save partial evidence, close the dialog, and resume later — the
+// draft survives dialog close, app restart, and syncs across the owner's
+// devices because it lives inline on the contribution record.
+//
+// Ownership mirrors SubmitEvidence: only the contribution's assigned
+// contributor may save its draft (actorAID may be "" only in unit tests that
+// bypass the HTTP layer). The contribution must be in `assigned` — a draft is
+// a pre-submission artifact, so there is no draft concept once evidence has
+// been submitted (needs_review onwards use EditEvidence instead).
+//
+// Unlike SubmitEvidence this does not require child contributions to be signed
+// off and does not require completion_notes — a draft is explicitly allowed to
+// be incomplete. The request is the complete draft: evidence URLs, acceptance
+// notes, attachments and the time report are replaced wholesale (an omitted or
+// empty list clears the field), so saving again any number of times replaces
+// the prior draft content and the form's remove buttons stick. Because the
+// draft is not a submission, it is deliberately NOT folded into the parent
+// milestone's actual-cost aggregation until it is submitted for review.
+func (s *Service) SaveEvidenceDraft(ctx context.Context, spaceID, contributionID, actorAID string, req SubmitEvidenceRequest) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	// Resource-level ownership: only the assigned contributor may save a draft
+	// (mirrors SubmitEvidence/EditEvidence). A draft is owner-private.
+	if actorAID == "" || c.AssignedContributorID == "" || c.AssignedContributorID != actorAID {
+		return nil, ErrNotEvidenceOwner
+	}
+	if c.Status != ContribAssigned {
+		return nil, fmt.Errorf("evidence can only be saved as a draft while the contribution is assigned, current: %s", c.Status)
+	}
+
+	c.CompletionNotes = req.CompletionNotes
+	c.EvidenceURLs = req.EvidenceURLs
+	c.AcceptanceNotes = req.AcceptanceNotes
+	if req.ActualDuration > 0 {
+		c.ActualDuration = req.ActualDuration
+	}
+	if req.ActualCost > 0 {
+		c.ActualCost = req.ActualCost
+	}
+	c.TimeReportFile = req.TimeReportFile
+	c.AttachmentFiles = req.AttachmentFiles
+
+	now := time.Now()
+	c.EvidenceDraftSavedAt = &now
+	c.UpdatedAt = now
+	// Status stays ContribAssigned — no transition, so the contribution is not
+	// reviewable while only a draft exists.
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
 	return c, nil
 }

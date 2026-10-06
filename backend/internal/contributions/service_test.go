@@ -2290,6 +2290,177 @@ func TestEditEvidence_RejectsSignedOffAndAssigned(t *testing.T) {
 	}
 }
 
+// setupAssignedContribution builds a contribution assigned to contributor-1,
+// in the pre-submission `assigned` state (no evidence submitted yet).
+func setupAssignedContribution(t *testing.T) (*Service, context.Context, *Contribution) {
+	t.Helper()
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	c, err := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Task", Description: "Do it",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityLow,
+		CreatedBy: "lead-1", Objectives: []string{"o"},
+		Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+		SkillRequirements: []string{"s"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, _ = svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
+	c, err = svc.AssignContributor(ctx, "space-1", c.ID, "contributor-1")
+	if err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if c.Status != ContribAssigned {
+		t.Fatalf("precondition: status = %s, want assigned", c.Status)
+	}
+	return svc, ctx, c
+}
+
+// A saved draft persists the evidence fields and keeps the contribution in
+// `assigned` — it does NOT transition to needs_review (issue #722, AC: save +
+// reload, and no transition).
+func TestSaveEvidenceDraft_PersistsWithoutTransition(t *testing.T) {
+	svc, ctx, c := setupAssignedContribution(t)
+
+	got, err := svc.SaveEvidenceDraft(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
+		CompletionNotes: "half done",
+		EvidenceURLs:    []string{"https://example.com/wip"},
+		AcceptanceNotes: []string{"partial"},
+	})
+	if err != nil {
+		t.Fatalf("SaveEvidenceDraft: %v", err)
+	}
+	if got.Status != ContribAssigned {
+		t.Errorf("status = %s, want assigned (draft must not transition)", got.Status)
+	}
+	if got.EvidenceDraftSavedAt == nil {
+		t.Error("EvidenceDraftSavedAt should be set after saving a draft")
+	}
+
+	// Reload: the draft fields survive a round-trip through the store.
+	reloaded, err := svc.GetContribution(ctx, "space-1", c.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.CompletionNotes != "half done" {
+		t.Errorf("completion notes not persisted: %q", reloaded.CompletionNotes)
+	}
+	if len(reloaded.EvidenceURLs) != 1 || reloaded.EvidenceURLs[0] != "https://example.com/wip" {
+		t.Errorf("evidence urls not persisted: %v", reloaded.EvidenceURLs)
+	}
+	if reloaded.Status != ContribAssigned || reloaded.EvidenceDraftSavedAt == nil {
+		t.Errorf("reloaded draft state wrong: status=%s draftAt=%v", reloaded.Status, reloaded.EvidenceDraftSavedAt)
+	}
+}
+
+// While only a draft exists the contribution is not reviewable — a reviewer
+// cannot act on it because it is still `assigned` (issue #722 AC).
+func TestSaveEvidenceDraft_NotReviewable(t *testing.T) {
+	svc, ctx, c := setupAssignedContribution(t)
+
+	if _, err := svc.SaveEvidenceDraft(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
+		CompletionNotes: "draft",
+	}); err != nil {
+		t.Fatalf("SaveEvidenceDraft: %v", err)
+	}
+	if _, err := svc.ReviewContribution(ctx, "space-1", c.ID, ReviewRequest{Decision: "approved"}); err == nil {
+		t.Error("a reviewer must not be able to review a contribution whose evidence is only a draft")
+	}
+}
+
+// Saving the draft repeatedly replaces the prior draft content wholesale, so
+// the form's remove buttons stick (issue #722 AC: multiple saves).
+func TestSaveEvidenceDraft_ReplacesPriorDraft(t *testing.T) {
+	svc, ctx, c := setupAssignedContribution(t)
+
+	if _, err := svc.SaveEvidenceDraft(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
+		CompletionNotes: "v1",
+		EvidenceURLs:    []string{"https://example.com/a", "https://example.com/b"},
+		AttachmentFiles: []FileRef{{FileName: "a.pdf"}},
+	}); err != nil {
+		t.Fatalf("SaveEvidenceDraft v1: %v", err)
+	}
+
+	got, err := svc.SaveEvidenceDraft(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
+		CompletionNotes: "v2",
+		EvidenceURLs:    []string{},
+		AttachmentFiles: []FileRef{},
+	})
+	if err != nil {
+		t.Fatalf("SaveEvidenceDraft v2: %v", err)
+	}
+	if got.CompletionNotes != "v2" {
+		t.Errorf("completion notes not replaced: %q", got.CompletionNotes)
+	}
+	if len(got.EvidenceURLs) != 0 || len(got.AttachmentFiles) != 0 {
+		t.Errorf("prior draft content not cleared: urls=%v files=%v", got.EvidenceURLs, got.AttachmentFiles)
+	}
+}
+
+// Only the assigned contributor may save a draft; everyone else is refused and
+// the record is left untouched (issue #722 AC: owner-private).
+func TestSaveEvidenceDraft_OnlyAssignedContributor(t *testing.T) {
+	svc, ctx, c := setupAssignedContribution(t)
+
+	for _, actor := range []string{"", "lead-1", "steward-1", "someone-else"} {
+		_, err := svc.SaveEvidenceDraft(ctx, "space-1", c.ID, actor, SubmitEvidenceRequest{CompletionNotes: "x"})
+		if !errors.Is(err, ErrNotEvidenceOwner) {
+			t.Errorf("actor %q: err = %v, want ErrNotEvidenceOwner", actor, err)
+		}
+	}
+	got, _ := svc.GetContribution(ctx, "space-1", c.ID)
+	if got.CompletionNotes != "" || got.EvidenceDraftSavedAt != nil {
+		t.Errorf("rejected draft mutated the record: %+v", got)
+	}
+}
+
+// Submitting a saved draft for review promotes it: the contribution moves to
+// needs_review and the unsubmitted-draft marker is cleared (issue #722 AC:
+// distinct submit-for-review action performs the transition).
+func TestSaveEvidenceDraft_ThenSubmitForReview(t *testing.T) {
+	svc, ctx, c := setupAssignedContribution(t)
+
+	if _, err := svc.SaveEvidenceDraft(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
+		CompletionNotes: "draft notes",
+		EvidenceURLs:    []string{"https://example.com/wip"},
+	}); err != nil {
+		t.Fatalf("SaveEvidenceDraft: %v", err)
+	}
+
+	got, err := svc.SubmitEvidence(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
+		CompletionNotes: "final notes",
+		EvidenceURLs:    []string{"https://example.com/final"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitEvidence: %v", err)
+	}
+	if got.Status != ContribNeedsReview {
+		t.Errorf("status = %s, want needs_review after submit", got.Status)
+	}
+	if got.EvidenceDraftSavedAt != nil {
+		t.Error("EvidenceDraftSavedAt should be cleared once evidence is submitted")
+	}
+	if got.CompletionNotes != "final notes" {
+		t.Errorf("submitted notes not applied: %q", got.CompletionNotes)
+	}
+	// The contribution is now reviewable.
+	if _, err := svc.ReviewContribution(ctx, "space-1", c.ID, ReviewRequest{Decision: "approved"}); err != nil {
+		t.Errorf("submitted contribution should be reviewable: %v", err)
+	}
+}
+
+// A draft can only be saved while the contribution is assigned — once evidence
+// is submitted, the draft path is closed (edits go through EditEvidence).
+func TestSaveEvidenceDraft_RejectsNonAssigned(t *testing.T) {
+	svc, ctx, c := setupSubmittedContribution(t) // status needs_review
+	if _, err := svc.SaveEvidenceDraft(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
+		CompletionNotes: "x",
+	}); err == nil {
+		t.Error("expected error saving a draft on a submitted (needs_review) contribution")
+	}
+}
+
 // TestRewardContribution_KeepsSignOffProof pins the per-transition proof
 // storage (issue #20): rewarding must not destroy the sign-off proof — #19's
 // verifier needs both to hold simultaneously.

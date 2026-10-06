@@ -145,6 +145,9 @@ export interface Contribution {
   attachment_files?: AttachedFile[];
   // Last time the assigned contributor edited their submission (pre sign-off).
   evidence_edited_at?: string;
+  // Set while unsubmitted draft evidence exists on an assigned contribution
+  // (issue #722). Cleared once the evidence is submitted for review.
+  evidence_draft_saved_at?: string;
   // Review
   review_outcome?: 'approved' | 'incomplete' | 'declined';
   review_feedback?: string;

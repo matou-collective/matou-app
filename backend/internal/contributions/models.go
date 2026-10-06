@@ -564,8 +564,15 @@ type Contribution struct {
 	// EvidenceEditedAt records the last time the assigned contributor edited
 	// their submitted evidence (contributor self-edit before sign-off).
 	EvidenceEditedAt *time.Time `json:"evidence_edited_at,omitempty"`
-	RewardedBy       string     `json:"rewarded_by,omitempty"`
-	RewardedAt       *time.Time `json:"rewarded_at,omitempty"`
+	// EvidenceDraftSavedAt records the last time the assigned contributor saved
+	// evidence as a draft on an assigned contribution, before submitting it for
+	// review (issue #722). Non-nil means unsubmitted draft evidence exists; it
+	// is cleared when the evidence is submitted for review. Saving a draft does
+	// NOT transition the contribution out of `assigned`, so the contribution is
+	// not reviewable while only a draft exists.
+	EvidenceDraftSavedAt *time.Time `json:"evidence_draft_saved_at,omitempty"`
+	RewardedBy           string     `json:"rewarded_by,omitempty"`
+	RewardedAt           *time.Time `json:"rewarded_at,omitempty"`
 
 	// KERI-anchored proof envelopes (issue #20), one per proof-bearing
 	// transition so a later reward can never destroy the sign-off proof —

@@ -327,7 +327,13 @@
 
         <!-- Evidence submission / edit form (toggled by footer button) -->
         <div v-if="(canSubmitEvidenceNow || canEditEvidenceNow) && showEvidenceForm" class="submit-completion-form">
-          <h3 class="completion-form-title">{{ isEditingEvidence ? 'Edit Submission' : 'Submit Completion' }}</h3>
+          <h3 class="completion-form-title">
+            {{ isEditingEvidence ? 'Edit Submission' : (hasDraftEvidence ? 'Continue Draft' : 'Submit Completion') }}
+          </h3>
+          <div v-if="!isEditingEvidence && hasDraftEvidence" class="evidence-draft-note">
+            <FileEdit class="evidence-draft-icon" />
+            Resuming your saved draft. Keep saving as a draft, or submit it for review when ready.
+          </div>
 
           <!-- Completion Notes -->
           <div class="completion-field">
@@ -487,7 +493,7 @@
             </div>
           </div>
 
-          <!-- Submit / Cancel -->
+          <!-- Submit / Save draft / Cancel -->
           <div class="dialog-btn-row q-mt-md">
             <q-btn
               unelevated
@@ -501,7 +507,21 @@
               @click="handleSubmitEvidence"
             />
             <q-btn
+              v-if="!isEditingEvidence"
               outline
+              no-caps
+              color="primary"
+              icon="save"
+              label="Save Draft"
+              class="dialog-btn-half"
+              :loading="actionLoading === 'save-draft'"
+              :disable="!canSaveDraft"
+              @click="handleSaveDraft"
+            >
+              <q-tooltip>Save your progress and come back to submit it later.</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat
               no-caps
               label="Cancel"
               color="primary"
@@ -511,13 +531,22 @@
           </div>
         </div>
 
-        <!-- Existing evidence (read-only) -->
-        <div v-if="hasEvidence" class="content-section">
+        <!-- Existing evidence (read-only). A draft is owner-private — it is
+             rendered only to the evidence owner and labelled as a draft, never
+             shown to other members as "submitted" until it is submitted. -->
+        <div
+          v-if="hasEvidence && !showEvidenceForm && (!hasDraftEvidence || isEvidenceOwner)"
+          class="content-section"
+        >
           <h3 class="section-title">
             <Paperclip class="section-icon" />
-            Submitted Evidence
+            {{ hasDraftEvidence ? 'Draft Evidence (not yet submitted)' : 'Submitted Evidence' }}
           </h3>
-          <div v-if="contribution.evidence_edited_at" class="evidence-edited-note">
+          <div v-if="hasDraftEvidence" class="evidence-draft-note">
+            <FileEdit class="evidence-draft-icon" />
+            This evidence is a draft — it has not been submitted for review yet.
+          </div>
+          <div v-if="!hasDraftEvidence && contribution.evidence_edited_at" class="evidence-edited-note">
             <Pencil class="evidence-edited-icon" />
             Edited by the contributor on {{ formatDateTime(contribution.evidence_edited_at) }}
             <span v-if="contribution.status === 'needs_review'"> — needs re-review</span>
@@ -844,8 +873,8 @@
             unelevated
             no-caps
             color="primary"
-            label="Submit Evidence & Complete"
-            icon="check_circle"
+            :label="hasDraftEvidence ? 'Continue Draft Evidence' : 'Submit Evidence & Complete'"
+            :icon="hasDraftEvidence ? 'edit_note' : 'check_circle'"
             class="footer-action-btn"
             @click="openSubmitEvidence"
           />
@@ -955,6 +984,7 @@ import {
   AlertTriangle,
   Paperclip,
   Pencil,
+  FileEdit,
   ClipboardCheck,
   GitBranch,
   UserCheck,
@@ -1326,6 +1356,35 @@ const hasEvidence = computed(
 );
 const hasReview = computed(() => !!props.contribution.review_outcome);
 
+// True when the current viewer is the assigned contributor (the evidence owner).
+const isEvidenceOwner = computed(
+  () => !!props.currentUserId && !!assignedAid.value && assignedAid.value === props.currentUserId,
+);
+
+// Unsubmitted draft evidence exists on this still-assigned contribution
+// (issue #722). The draft is owner-private: only the owner sees it, and it
+// does not make the contribution reviewable.
+const hasDraftEvidence = computed(
+  () => !!props.contribution.evidence_draft_saved_at && props.contribution.status === 'assigned',
+);
+
+// Save Draft is allowed from the first-submission form (not the edit path) as
+// long as the form carries at least some content — a draft may be partial, so
+// completion notes are not required, but a fully-empty draft is pointless.
+const canSaveDraft = computed(() => {
+  if (isEditingEvidence.value) return false;
+  const f = evidenceForm.value;
+  return (
+    !!f.completion_notes.trim() ||
+    f.evidence_urls.some((u) => u.trim()) ||
+    f.acceptance_notes.some((n) => n.trim()) ||
+    f.time_report_files.length > 0 ||
+    f.attachment_files.length > 0 ||
+    f.actual_duration !== undefined ||
+    f.actual_cost !== undefined
+  );
+});
+
 
 const outcomeOptions: { value: '' | 'approved' | 'incomplete' | 'declined'; label: string; icon: typeof ThumbsUp }[] = [
   { value: 'approved', label: 'Approve', icon: ThumbsUp },
@@ -1482,10 +1541,25 @@ const emptyEvidenceForm = () => ({
   attachment_files: [] as AttachedFile[],
 });
 
-// Open the evidence form for a first submission (status assigned).
+// Open the evidence form for a first submission (status assigned). If the
+// owner previously saved a draft, prefill the form from it so they can resume
+// (issue #722).
 function openSubmitEvidence() {
   isEditingEvidence.value = false;
-  evidenceForm.value = emptyEvidenceForm();
+  const c = props.contribution;
+  if (hasDraftEvidence.value) {
+    evidenceForm.value = {
+      completion_notes: c.completion_notes ?? '',
+      evidence_urls: c.evidence_urls?.length ? [...c.evidence_urls] : [''],
+      actual_duration: c.actual_duration,
+      actual_cost: c.actual_cost,
+      acceptance_notes: c.acceptance_notes ? [...c.acceptance_notes] : [],
+      time_report_files: c.time_report_file ? [fromBackendFileRef(c.time_report_file)] : [],
+      attachment_files: c.attachment_files ? c.attachment_files.map(fromBackendFileRef) : [],
+    };
+  } else {
+    evidenceForm.value = emptyEvidenceForm();
+  }
   showEvidenceForm.value = true;
 }
 
@@ -1583,6 +1657,21 @@ async function handleSubmitEvidence() {
     emit('update', updated as unknown as Contribution);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Submission failed' });
+  } finally {
+    actionLoading.value = null;
+  }
+}
+
+async function handleSaveDraft() {
+  if (!canSaveDraft.value) return;
+  actionLoading.value = 'save-draft';
+  try {
+    const updated = await store.saveEvidenceDraft(props.contribution.id, buildEvidenceRequest());
+    $q.notify({ type: 'positive', message: 'Draft saved — you can come back and submit later.' });
+    closeEvidenceForm();
+    emit('update', updated as unknown as Contribution);
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Saving draft failed' });
   } finally {
     actionLoading.value = null;
   }
@@ -2631,6 +2720,21 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 }
 
 .evidence-edited-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.evidence-draft-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--matou-warning, #b26a00);
+  margin-bottom: 12px;
+}
+
+.evidence-draft-icon {
   width: 14px;
   height: 14px;
   flex-shrink: 0;

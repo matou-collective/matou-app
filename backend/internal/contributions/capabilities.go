@@ -170,7 +170,7 @@ var capabilityActions = map[Capability][]Action{
 	CapContribute: {
 		ActionCreateContribution, ActionConfirmContribution, ActionRegisterInterest,
 		ActionShareContribution, ActionOfferContribution, ActionAcceptOffer,
-		ActionSubmitEvidence, ActionEditEvidence, ActionAssignContribution,
+		ActionSubmitEvidence, ActionSaveEvidenceDraft, ActionEditEvidence, ActionAssignContribution,
 		ActionTransitionContribution, ActionUpdateContribution,
 		ActionStoreCredential, ActionWriteProfile,
 	},
