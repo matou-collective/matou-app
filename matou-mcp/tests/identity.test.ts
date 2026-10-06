@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { resolveActingAid, detectEnv, resolveApiToken } from "../src/identity.js";
+import { join } from "node:path";
+import { resolveActingAid, detectEnv, resolveApiToken, matouDataDir } from "../src/identity.js";
 
 afterEach(() => {
   delete process.env.MATOU_USER_AID;
@@ -7,19 +8,48 @@ afterEach(() => {
 });
 
 describe("resolveActingAid", () => {
-  it("prefers the MATOU_USER_AID env override", () => {
+  const none = async () => undefined;
+  it("prefers the MATOU_USER_AID env override", async () => {
     process.env.MATOU_USER_AID = "EOVERRIDE";
-    expect(resolveActingAid(() => '{"aid":"EFILE"}')).toBe("EOVERRIDE");
+    expect(await resolveActingAid(async () => "EBACKEND", () => '{"aid":"EFILE"}')).toBe("EOVERRIDE");
   });
-  it("reads aid from identity.json when no override", () => {
-    expect(resolveActingAid(() => '{"aid":"EFILE"}')).toBe("EFILE");
+  it("uses the running backend's identity before the file", async () => {
+    expect(await resolveActingAid(async () => "EBACKEND", () => '{"aid":"EFILE"}')).toBe("EBACKEND");
   });
-  it("throws a helpful error when the file is unreadable", () => {
-    expect(() =>
-      resolveActingAid(() => {
+  it("reads aid from a plaintext identity.json when the backend has none", async () => {
+    expect(await resolveActingAid(none, () => '{"aid":"EFILE"}')).toBe("EFILE");
+  });
+  it("explains an encrypted identity.json instead of a JSON parse error", async () => {
+    await expect(resolveActingAid(none, () => "MATOU-IDENC1\n\u0000garbage")).rejects.toThrowError(
+      /encrypted.*set MATOU_USER_AID/,
+    );
+  });
+  it("throws a helpful error when the file is unreadable", async () => {
+    await expect(
+      resolveActingAid(none, () => {
         throw new Error("ENOENT");
       }),
-    ).toThrowError(/set MATOU_USER_AID/);
+    ).rejects.toThrowError(/set MATOU_USER_AID/);
+  });
+});
+
+describe("matouDataDir", () => {
+  it("uses Application Support on macOS", () => {
+    expect(matouDataDir("darwin", {}, "/Users/me")).toBe(
+      join("/Users/me", "Library", "Application Support", "Matou", "matou-data"),
+    );
+  });
+  it("uses ~/.config (or XDG_CONFIG_HOME) on Linux", () => {
+    expect(matouDataDir("linux", {}, "/home/me")).toBe(join("/home/me", ".config", "Matou", "matou-data"));
+    expect(matouDataDir("linux", { XDG_CONFIG_HOME: "/xdg" }, "/home/me")).toBe(join("/xdg", "Matou", "matou-data"));
+  });
+  it("uses %APPDATA% on Windows", () => {
+    expect(matouDataDir("win32", { APPDATA: "C:\\Users\\me\\AppData\\Roaming" }, "C:\\Users\\me")).toBe(
+      join("C:\\Users\\me\\AppData\\Roaming", "Matou", "matou-data"),
+    );
+  });
+  it("honours MATOU_DATA_DIR (kit builds with another productName)", () => {
+    expect(matouDataDir("darwin", { MATOU_DATA_DIR: "/custom" }, "/Users/me")).toBe("/custom");
   });
 });
 

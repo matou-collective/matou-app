@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { resolveBackend, MatouClient } from "./backend.js";
+import { resolveBackend, fetchBackendAid, MatouClient } from "./backend.js";
 import { resolveActingAid, resolveApiToken } from "./identity.js";
 import { MemberDirectory } from "./members.js";
 import type { BackendConfig, ToolContext } from "./context.js";
@@ -13,7 +13,7 @@ import { registerNoticeTools } from "./tools/notices.js";
 
 async function buildContext(): Promise<ToolContext> {
   const { baseUrl, env } = await resolveBackend();
-  const actingAid = resolveActingAid();
+  const actingAid = await resolveActingAid(() => fetchBackendAid(baseUrl));
   const apiToken = resolveApiToken(env);
   const config: BackendConfig = {
     baseUrl,

@@ -157,8 +157,18 @@ export class MatouClient {
 }
 
 export function discoverPortFromSs(ssOutput: string): number | null {
-  const m = ssOutput.match(/127\.0\.0\.1:(\d+)\b[^\n]*matou-backend/);
-  return m ? Number(m[1]) : null;
+  return discoverPortsFromSs(ssOutput)[0] ?? null;
+}
+
+/** Every loopback port the matou-backend process listens on, per `ss -tlnp`. */
+export function discoverPortsFromSs(ssOutput: string): number[] {
+  const ports: number[] = [];
+  for (const line of ssOutput.split("\n")) {
+    if (!line.includes("matou-backend")) continue;
+    const m = line.match(/127\.0\.0\.1:(\d+)\b/);
+    if (m) ports.push(Number(m[1]));
+  }
+  return [...new Set(ports)];
 }
 
 /**
@@ -169,26 +179,47 @@ export function discoverPortFromSs(ssOutput: string): number | null {
  * default ("matou-bac"), so match on that prefix.
  */
 export function discoverPortFromLsof(lsofOutput: string): number | null {
+  return discoverPortsFromLsof(lsofOutput)[0] ?? null;
+}
+
+/** Every loopback port the matou-backend process listens on, per `lsof`. */
+export function discoverPortsFromLsof(lsofOutput: string): number[] {
+  const ports: number[] = [];
   for (const line of lsofOutput.split("\n")) {
     if (!/^matou-bac/.test(line)) continue;
     const m = line.match(/\b127\.0\.0\.1:(\d+)\b/);
-    if (m) return Number(m[1]);
+    if (m) ports.push(Number(m[1]));
   }
-  return null;
+  return [...new Set(ports)];
 }
 
 /** The platform-native listener query and its parser. */
-function listenerDiscovery(): { run: () => string; parse: (out: string) => number | null } {
+function listenerDiscovery(): { run: () => string; parse: (out: string) => number[] } {
   if (process.platform === "darwin") {
     return {
       run: () => execFileSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "+c", "0"], { encoding: "utf8" }),
-      parse: discoverPortFromLsof,
+      parse: discoverPortsFromLsof,
     };
   }
   return {
     run: () => execFileSync("ss", ["-tlnp"], { encoding: "utf8" }),
-    parse: discoverPortFromSs,
+    parse: discoverPortsFromSs,
   };
+}
+
+/**
+ * True when a /health body is the Matou API's own health response
+ * (`{"status":"healthy",...}`, backend/internal/api/health.go). The backend
+ * process also listens on helper ports (e.g. the KERI proxy) whose /health
+ * answers differently, so "first matou-backend port" is not enough (#588).
+ */
+export function isMatouApiHealth(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    return parsed?.status === "healthy";
+  } catch {
+    return false;
+  }
 }
 
 export async function resolveBackend(
@@ -196,26 +227,58 @@ export async function resolveBackend(
   runListeners?: () => string,
 ): Promise<{ baseUrl: string; env: MatouEnv }> {
   const override = process.env.MATOU_BACKEND_URL;
-  let baseUrl: string;
   if (override) {
-    baseUrl = override.replace(/\/$/, "");
-  } else {
-    const { run, parse } = listenerDiscovery();
-    const runCmd = runListeners ?? run;
-    // A missing command (e.g. no `ss` on macOS) or a failed query must fall
-    // through to the actionable error below, not surface a raw ENOENT.
-    let port: number | null = null;
-    try {
-      port = parse(runCmd());
-    } catch {
-      port = null;
-    }
-    if (!port) {
-      throw new Error("No running matou-backend found — is the Matou app open? Or set MATOU_BACKEND_URL.");
-    }
-    baseUrl = `http://127.0.0.1:${port}`;
+    const baseUrl = override.replace(/\/$/, "");
+    const res = await fetchFn(`${baseUrl}/health`);
+    if (!res.ok) throw new Error(`Matou backend at ${baseUrl} is not healthy (status ${res.status}).`);
+    return { baseUrl, env: detectEnv(baseUrl) };
   }
-  const res = await fetchFn(`${baseUrl}/health`);
-  if (!res.ok) throw new Error(`Matou backend at ${baseUrl} is not healthy (status ${res.status}).`);
-  return { baseUrl, env: detectEnv(baseUrl) };
+
+  const { run, parse } = listenerDiscovery();
+  const runCmd = runListeners ?? run;
+  // A missing command (e.g. no `ss` on macOS) or a failed query must fall
+  // through to the actionable error below, not surface a raw ENOENT.
+  let ports: number[] = [];
+  try {
+    ports = parse(runCmd());
+  } catch {
+    ports = [];
+  }
+  if (ports.length === 0) {
+    throw new Error("No running matou-backend found — is the Matou app open? Or set MATOU_BACKEND_URL.");
+  }
+  for (const port of ports) {
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const res = await fetchFn(`${baseUrl}/health`);
+      if (res.ok && isMatouApiHealth(await res.text())) {
+        return { baseUrl, env: detectEnv(baseUrl) };
+      }
+    } catch {
+      // Port closed or not HTTP — try the next one.
+    }
+  }
+  throw new Error(
+    `matou-backend is listening on ${ports.join(", ")} but none answered /health as the Matou API. Set MATOU_BACKEND_URL.`,
+  );
+}
+
+/**
+ * Ask the running backend which identity it holds (GET /api/v1/identity, a
+ * read — no API token needed). Returns undefined when unavailable. This is the
+ * only way to learn the AID when identity.json is encrypted at rest (#117),
+ * which it is whenever the OS keyring is available (always on macOS).
+ */
+export async function fetchBackendAid(
+  baseUrl: string,
+  fetchFn: FetchFn = fetch as unknown as FetchFn,
+): Promise<string | undefined> {
+  try {
+    const res = await fetchFn(`${baseUrl}/api/v1/identity`);
+    if (!res.ok) return undefined;
+    const parsed = JSON.parse(await res.text()) as Record<string, unknown>;
+    return typeof parsed.aid === "string" && parsed.aid ? parsed.aid : undefined;
+  } catch {
+    return undefined;
+  }
 }
