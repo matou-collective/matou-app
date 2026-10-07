@@ -4,6 +4,8 @@
 export interface ElectronAPI {
   isElectron: true;
   platform: string;
+  // CPU architecture of this build (arm64 | x64)
+  arch: string;
   getBackendPort: () => Promise<number>;
   getDataDir: () => Promise<string>;
   getApiToken: () => Promise<string>;
