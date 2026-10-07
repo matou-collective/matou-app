@@ -120,7 +120,7 @@ test.describe('submit-evidence form has no blank evidence-URL row (#717)', () =>
 
     // Adding a URL via the input + Add button still works and renders one row.
     await dialog.locator('.evidence-url-input input').fill('https://example.org/evidence');
-    await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+    await dialog.locator('.evidence-url-add-btn').click();
     await expect(dialog.locator('.evidence-url-item')).toHaveCount(1);
     await expect(dialog.getByText('https://example.org/evidence')).toBeVisible();
     await snap(adminPage, 'url-added-one-row');
