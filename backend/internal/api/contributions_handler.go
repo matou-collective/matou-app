@@ -151,6 +151,13 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "save-evidence-draft":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionSaveEvidenceDraft, h.HandleSaveEvidenceDraft)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			case "edit-evidence":
 				if r.Method == http.MethodPost {
 					h.withRBAC(contributions.ActionEditEvidence, h.HandleEditEvidence)(w, r)
@@ -871,6 +878,40 @@ func (h *ContributionsHandler) HandleSubmitEvidence(w http.ResponseWriter, r *ht
 			EntityType:  "contribution",
 		})
 	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleSaveEvidenceDraft handles POST /api/v1/contributions/{id}/save-evidence-draft
+// Body: SubmitEvidenceRequest (the complete draft; fields may be partial).
+// RBAC: ActionSaveEvidenceDraft, plus a service-side ownership check — only the
+// assigned contributor (X-User-AID) may save a draft. Saving a draft persists
+// the evidence on the contribution WITHOUT transitioning it to needs_review,
+// so the contribution stays owner-private and non-reviewable until the
+// contributor explicitly submits it for review (issue #722). No reviewer
+// notification is sent — a draft is not a submission.
+func (h *ContributionsHandler) HandleSaveEvidenceDraft(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/save-evidence-draft")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	var req contributions.SubmitEvidenceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.SaveEvidenceDraft(r.Context(), spaceID, id, GetUserAID(r), req)
+	if err != nil {
+		log.Printf("[Contributions] SaveEvidenceDraft failed for %s: %v", id, err)
+		status := http.StatusBadRequest
+		if errors.Is(err, contributions.ErrNotEvidenceOwner) {
+			status = http.StatusForbidden
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] evidence draft saved for %s", id)
 	writeJSON(w, http.StatusOK, contrib)
 }
 

@@ -107,6 +107,7 @@ const (
 	ActionOfferContribution  Action = "offer_contribution"
 	ActionAcceptOffer        Action = "accept_offer"
 	ActionSubmitEvidence     Action = "submit_evidence"
+	ActionSaveEvidenceDraft  Action = "save_evidence_draft"
 	ActionEditEvidence       Action = "edit_evidence"
 	ActionReviewContribution Action = "review_contribution"
 	ActionSignOffPlan        Action = "sign_off_plan"
@@ -241,6 +242,7 @@ var actionPermissions = map[Action][]Role{
 	ActionOfferContribution:      allRoles,
 	ActionAcceptOffer:            allRoles,
 	ActionSubmitEvidence:         allRoles,
+	ActionSaveEvidenceDraft:      allRoles,
 	ActionEditEvidence:           allRoles,
 	ActionReviewContribution:     allRoles,
 	ActionSignOffPlan:            {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},

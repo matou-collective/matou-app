@@ -234,6 +234,23 @@ export async function submitEvidence(
   return response.json();
 }
 
+export async function saveEvidenceDraft(
+  id: string,
+  req: SubmitEvidenceRequest,
+): Promise<Contribution> {
+  log.info('Saving evidence draft for contribution %s', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/save-evidence-draft`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(req),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to save evidence draft');
+  }
+  return response.json();
+}
+
 export async function editEvidence(
   id: string,
   req: SubmitEvidenceRequest,

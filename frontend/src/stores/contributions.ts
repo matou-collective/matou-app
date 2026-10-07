@@ -12,6 +12,7 @@ import {
   acceptOffer as apiAcceptOffer,
   registerInterest as apiRegisterInterest,
   submitEvidence as apiSubmitEvidence,
+  saveEvidenceDraft as apiSaveEvidenceDraft,
   editEvidence as apiEditEvidence,
   submitReview as apiSubmitReview,
   signOffContribution as apiSignOff,
@@ -224,6 +225,18 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  async function saveEvidenceDraft(id: string, req: SubmitEvidenceRequest) {
+    error.value = null;
+    try {
+      const updated = await apiSaveEvidenceDraft(id, req);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Save evidence draft failed';
+      throw e;
+    }
+  }
+
   async function editEvidence(id: string, req: SubmitEvidenceRequest) {
     error.value = null;
     try {
@@ -399,6 +412,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     acceptOffer,
     registerInterest,
     submitEvidence,
+    saveEvidenceDraft,
     editEvidence,
     review,
     signOff,
