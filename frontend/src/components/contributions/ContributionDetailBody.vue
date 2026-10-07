@@ -1046,7 +1046,7 @@ const attachmentInput = ref<HTMLInputElement | null>(null);
 // Forms
 const evidenceForm = ref({
   completion_notes: '',
-  evidence_urls: [''],
+  evidence_urls: [] as string[],
   actual_duration: undefined as number | undefined,
   actual_cost: undefined as number | undefined,
   acceptance_notes: [] as string[],
@@ -1474,7 +1474,7 @@ function fromBackendFileRef(f: AttachedFile): AttachedFile {
 
 const emptyEvidenceForm = () => ({
   completion_notes: '',
-  evidence_urls: [''],
+  evidence_urls: [] as string[],
   actual_duration: undefined as number | undefined,
   actual_cost: undefined as number | undefined,
   acceptance_notes: [] as string[],
@@ -1496,7 +1496,7 @@ function openEditEvidence() {
   isEditingEvidence.value = true;
   evidenceForm.value = {
     completion_notes: c.completion_notes ?? '',
-    evidence_urls: c.evidence_urls?.length ? [...c.evidence_urls] : [''],
+    evidence_urls: c.evidence_urls?.length ? [...c.evidence_urls] : [],
     actual_duration: c.actual_duration,
     actual_cost: c.actual_cost,
     acceptance_notes: c.acceptance_notes ? [...c.acceptance_notes] : [],
