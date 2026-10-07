@@ -146,6 +146,13 @@ test.describe('draft submit evidence (#722)', () => {
     // Now explicitly SUBMIT FOR REVIEW — this performs the assigned →
     // needs_review transition.
     await resumedNotes.fill('Finished the korowai — ready for review.');
+    // Submit (unlike Save Draft) requires a note against every acceptance
+    // criterion; the button stays disabled until the one seeded criterion
+    // has its "how it was met" note.
+    await dialog
+      .locator('.criterion-block input')
+      .first()
+      .fill('Saved a draft, resumed it, and submitted it.');
     await dialog.getByRole('button', { name: /Submit for Review/i }).click();
     await expect(adminPage.getByText(/Submitted for review/i)).toBeVisible({ timeout: 10_000 });
     await snap(adminPage, 'submitted-for-review');
