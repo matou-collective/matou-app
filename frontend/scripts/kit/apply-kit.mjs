@@ -70,6 +70,10 @@ export function androidSegment(slug) {
   return /^[0-9]/.test(s) ? `_${s}` : s;
 }
 
+// Coa builds' installers are hosted at coa.matou.nz/dl/<slug>/v<build>/ and the newest
+// successful build is always reachable as /dl/<slug>/current (Matou/coa app-updates spec).
+const COA_DOWNLOADS = 'https://coa.matou.nz/dl';
+
 export function buildInfo(kit) {
   const isMatou = kit.slug === 'matou';
   return {
@@ -87,8 +91,10 @@ export function buildInfo(kit) {
     executableName: isMatou ? 'matou' : kit.slug,
     androidApplicationId: isMatou ? 'nz.matou.app' : `org.matou.coa.${androidSegment(kit.slug)}`,
     urlScheme: isMatou ? 'nz.matou.app' : `org.matou.coa.${kit.slug}`,
-    publish: isMatou ? [{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }] : null,
-    updates: isMatou,
+    publish: isMatou
+      ? [{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }]
+      : [{ provider: 'generic', url: `${COA_DOWNLOADS}/${kit.slug}/current` }],
+    updates: true,
     primaryColour: kit.brand.primaryColour,
     backgroundColour: kit.brand.primaryColour,
   };

@@ -135,9 +135,11 @@ if (!gotSingleInstanceLock) {
   });
 }
 
-// Auto-Updater setup. Only kits with a publish target (KIT_BUILD.updates) ship
-// an app-update.yml, so gate the updater on it — a community kit has none.
-const enableAutoUpdate = app.isPackaged && KIT_BUILD.updates;
+// Auto-Updater setup. Only kits with a publish target (KIT_BUILD.updates) ship an
+// app-update.yml. A Coa build's Mac app is unsigned and cannot apply an update, so it
+// never runs the updater — UpdateNoticeBanner tells the member instead.
+const enableAutoUpdate =
+  app.isPackaged && KIT_BUILD.updates && !(process.platform === 'darwin' && KIT.slug !== 'matou');
 
 autoUpdater.logger = log;
 autoUpdater.logger.transports.file.level = 'info';
