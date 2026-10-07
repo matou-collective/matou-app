@@ -70,6 +70,10 @@ export function androidSegment(slug) {
   return /^[0-9]/.test(s) ? `_${s}` : s;
 }
 
+// Coa builds' installers are hosted at coa.matou.nz/dl/<slug>/v<build>/ and the newest
+// successful build is always reachable as /dl/<slug>/current (Matou/coa app-updates spec).
+const COA_DOWNLOADS = 'https://coa.matou.nz/dl';
+
 export function buildInfo(kit) {
   const isMatou = kit.slug === 'matou';
   return {
@@ -87,8 +91,12 @@ export function buildInfo(kit) {
     executableName: isMatou ? 'matou' : kit.slug,
     androidApplicationId: isMatou ? 'nz.matou.app' : `org.matou.coa.${androidSegment(kit.slug)}`,
     urlScheme: isMatou ? 'nz.matou.app' : `org.matou.coa.${kit.slug}`,
-    publish: isMatou ? [{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }] : null,
-    updates: isMatou,
+    publish: isMatou
+      ? [{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }]
+      // electron-builder otherwise detects the channel from the version's prerelease tag — `build`
+      // for `0.8.7-build.17` — and would write `build.yml`, not the `latest.yml` the coa server and coa-builds expect.
+      : [{ provider: 'generic', url: `${COA_DOWNLOADS}/${kit.slug}/current`, channel: 'latest' }],
+    updates: true,
     primaryColour: kit.brand.primaryColour,
     backgroundColour: kit.brand.primaryColour,
   };

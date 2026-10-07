@@ -13,6 +13,9 @@ export function electronBuilderConfig(kit: KitBuild) {
     p = '${os}',
     a = '${arch}',
     e = '${ext}';
+  // A Coa kit's feed is generic (coa.matou.nz). Its Mac build is unsigned and cannot apply
+  // an update, so it publishes no Mac feed and gets the update notice instead (app-updates spec §1).
+  const coaFeed = (kit.publish ?? []).some((p) => p.provider === 'generic');
   return {
     appId: kit.appId,
     productName: kit.productName,
@@ -56,6 +59,7 @@ export function electronBuilderConfig(kit: KitBuild) {
       entitlements: 'build/entitlements.mac.plist',
       entitlementsInherit: 'build/entitlements.mac.plist',
       icon: 'src-electron/icons/icon.png',
+      ...(coaFeed ? { publish: null } : {}),
     },
     linux: {
       target: 'AppImage',

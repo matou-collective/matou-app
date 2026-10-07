@@ -2,6 +2,7 @@
   <TitleBar />
   <div v-if="electron" class="titlebar-spacer" />
   <UpdateBanner />
+  <UpdateNoticeBanner />
   <router-view />
 </template>
 
@@ -9,6 +10,7 @@
 import { onMounted } from 'vue';
 import TitleBar from 'src/components/base/TitleBar.vue';
 import UpdateBanner from 'src/components/base/UpdateBanner.vue';
+import UpdateNoticeBanner from 'src/components/base/UpdateNoticeBanner.vue';
 import { isElectron } from 'src/lib/platform';
 
 const electron = isElectron();
