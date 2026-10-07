@@ -63,7 +63,7 @@ describe('apply-kit (core)', () => {
     await applyKit(await kitDir({ slug: 'ngati-example', brand: { name: 'Ngāti Example', slug: 'ngati-example', primaryColour: '#0A5C6B', secondaryColour: '#F2B134', contactEmail: 'k@x.nz' } }), root, { icons: false });
     const build = JSON.parse(await readFile(join(root, 'kit.build.json'), 'utf8'));
     expect(build).toMatchObject({ appId: 'org.matou.coa.ngati-example', productName: 'Ngati Example', artifactBase: 'ngati-example', executableName: 'ngati-example', androidApplicationId: 'org.matou.coa.ngati_example', urlScheme: 'org.matou.coa.ngati-example', updates: true });
-    expect(build.publish).toEqual([{ provider: 'generic', url: 'https://coa.matou.nz/dl/ngati-example/current' }]);
+    expect(build.publish).toEqual([{ provider: 'generic', url: 'https://coa.matou.nz/dl/ngati-example/current', channel: 'latest' }]);
     expect(JSON.parse(await readFile(join(root, 'src-capacitor/capacitor.config.json'), 'utf8'))).toMatchObject({ appId: 'org.matou.coa.ngati_example', appName: 'Ngāti Example' });
     const strings = await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/strings.xml'), 'utf8');
     expect(strings).toContain('<string name="app_name">Ngāti Example</string>');

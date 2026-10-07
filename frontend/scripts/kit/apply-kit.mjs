@@ -93,7 +93,9 @@ export function buildInfo(kit) {
     urlScheme: isMatou ? 'nz.matou.app' : `org.matou.coa.${kit.slug}`,
     publish: isMatou
       ? [{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }]
-      : [{ provider: 'generic', url: `${COA_DOWNLOADS}/${kit.slug}/current` }],
+      // electron-builder otherwise detects the channel from the version's prerelease tag — `build`
+      // for `0.8.7-build.17` — and would write `build.yml`, not the `latest.yml` the coa server and coa-builds expect.
+      : [{ provider: 'generic', url: `${COA_DOWNLOADS}/${kit.slug}/current`, channel: 'latest' }],
     updates: true,
     primaryColour: kit.brand.primaryColour,
     backgroundColour: kit.brand.primaryColour,
