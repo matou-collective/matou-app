@@ -13,7 +13,11 @@ import { getConfigUrl, getEnv } from '../clientConfig';
 import { summarizePlatform, type IssueContext, type IssuePayload } from '../issueReport';
 
 // The same server the Mātou app's own build reports through (.env.production).
-const MATOU_ISSUE_URL = 'http://awa.matou.nz:3904';
+// Must be https: — Capacitor/Android forbids cleartext to any non-loopback
+// host, so a plain-http endpoint is killed before the request leaves the app
+// (thrown fetch → "unreachable"). This is the Caddy-terminated HTTPS front
+// door; a VITE_ISSUE_REPORT_URL override, if set, takes precedence. See #727.
+const MATOU_ISSUE_URL = 'https://coa-infra.matou.nz';
 
 /** Base URL reports POST to. Dev/test keep the local config server. */
 export function getIssueReportUrl(): string {
