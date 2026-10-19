@@ -74,13 +74,14 @@
   --matou-primary-light: rgba(37, 99, 235, 0.08);
 
   // "Tinted field" style used by read-only/editable field boxes and chips
-  // (AccountSettingsPage) — previously hardcoded, now tokenised so dark mode
-  // can override them.
-  --matou-field-tint-bg: #f0f9fa;
-  --matou-field-tint-border: #d1e7ea;
-  --matou-field-tint-hover-border: #a8d4da;
-  --matou-field-tint-focus-border: #1a4f5e;
-  --matou-field-tint-focus-shadow: rgba(26, 79, 94, 0.1);
+  // (AccountSettingsPage) — a wash of the kit primary over white, so a
+  // community build's fields tint to its own colour, not Mātou's teal. Dark
+  // mode overrides the set below.
+  --matou-field-tint-bg: color-mix(in srgb, var(--matou-primary) 6%, white);
+  --matou-field-tint-border: color-mix(in srgb, var(--matou-primary) 20%, white);
+  --matou-field-tint-hover-border: color-mix(in srgb, var(--matou-primary) 35%, white);
+  --matou-field-tint-focus-border: var(--matou-primary);
+  --matou-field-tint-focus-shadow: color-mix(in srgb, var(--matou-primary) 10%, transparent);
   --matou-field-tint-placeholder: #9ca3af;
   --matou-switch-thumb: #ffffff;
 
