@@ -358,8 +358,8 @@ async function copy(text: string, field = 'said') {
 .chip {
   display: inline-block;
   padding: 0.2rem 0.625rem;
-  background: #e0f2f1;
-  color: #1a4f5e;
+  background: color-mix(in srgb, var(--matou-primary) 12%, transparent);
+  color: var(--matou-primary);
   border-radius: 999px;
   font-size: 0.75rem;
   font-weight: 500;
@@ -474,7 +474,7 @@ async function copy(text: string, field = 'said') {
 }
 
 .copy-btn:hover {
-  background: rgba(26, 79, 94, 0.1);
+  background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
 }
 
 /* Revoke section */

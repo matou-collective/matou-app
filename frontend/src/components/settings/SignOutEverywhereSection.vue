@@ -137,7 +137,7 @@ function openRekey(): void {
   font-size: 0.875rem;
   font-weight: 500;
   border-radius: 0.5rem;
-  border: 1px solid var(--matou-border, #d1e7ea);
+  border: 1px solid var(--matou-border);
   background: var(--matou-card, white);
   color: var(--matou-foreground, #1f2937);
   cursor: pointer;
@@ -145,8 +145,8 @@ function openRekey(): void {
 }
 
 .soe-action-btn:hover:not(:disabled) {
-  background: #f0f9fa;
-  border-color: #a8d4da;
+  background: var(--matou-field-tint-bg);
+  border-color: var(--matou-field-tint-hover-border);
 }
 
 .soe-action-btn:disabled {

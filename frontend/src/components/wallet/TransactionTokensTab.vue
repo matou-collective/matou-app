@@ -189,7 +189,7 @@ async function copyAid() {
 
 /* Balance card */
 .balance-card {
-  background: linear-gradient(135deg, #2a7f8f, var(--matou-accent));
+  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
   border-radius: var(--matou-radius, 0.75rem);
   padding: 1.75rem;
   color: white;
@@ -506,6 +506,6 @@ async function copyAid() {
 }
 
 .copy-btn:hover {
-  background: rgba(26, 79, 94, 0.1);
+  background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
 }
 </style>
