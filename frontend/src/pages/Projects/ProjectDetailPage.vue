@@ -772,6 +772,8 @@ async function confirmDestroy() {
     await projectsStore.archive(project.value.id);
     showDestroy.value = false;
     await router.push({ name: 'projects' });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to delete project' });
   } finally {
     archivingProject.value = false;
   }
