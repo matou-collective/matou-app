@@ -2,8 +2,13 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
-import { toWalletCredential, type WalletCredential } from 'src/lib/walletCredential';
+import {
+  roleCredentialsForBackendSync,
+  toWalletCredential,
+  type WalletCredential,
+} from 'src/lib/walletCredential';
 import { withLiveStanding } from 'src/lib/keri/communityStanding';
+import { syncCredentials } from 'src/lib/api/client';
 
 // --- Types ---
 
@@ -144,12 +149,35 @@ export const useWalletStore = defineStore('wallet', () => {
       credentials.value = rawCredentials.map((c: unknown) =>
         mapRawCredential(c as Record<string, unknown>, schemaMap)
       );
+
+      // Push the member's own role credentials to the backend cache so RBAC
+      // role resolution sees a received steward credential even when the
+      // community trees won't sync (no read key) — see #744.
+      await syncRoleCredentialsToBackend();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[WalletStore] Failed to load credentials:', err);
       credentialsError.value = msg;
     } finally {
       credentialsLoading.value = false;
+    }
+  }
+
+  // Sync the member's own role credentials to the backend's credential cache.
+  // The backend derives RBAC roles from that cache (CredentialRoleLookup,
+  // #739); a received Operations Steward credential that only lives in the
+  // KERIA wallet otherwise never upgrades the member's effective role, leaving
+  // them stuck on "insufficient permissions" (#744). Non-fatal: a failed sync
+  // must not break the wallet view, and the next refresh retries.
+  async function syncRoleCredentialsToBackend(): Promise<void> {
+    const myAid = identityStore.currentAID?.prefix;
+    if (!myAid) return;
+    const toSync = roleCredentialsForBackendSync(credentials.value, myAid);
+    if (toSync.length === 0) return;
+    try {
+      await syncCredentials({ userAid: myAid, credentials: toSync });
+    } catch (err) {
+      console.warn('[WalletStore] Role-credential backend sync deferred:', err);
     }
   }
 

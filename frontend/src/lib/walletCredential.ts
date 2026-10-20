@@ -96,6 +96,52 @@ export function isIssuedByMe(cred: Pick<WalletCredential, 'issuerAid'>, myAid: s
   return !!myAid && cred.issuerAid === myAid;
 }
 
+/**
+ * One role-bearing credential shaped for the backend's
+ * `POST /api/v1/sync/credentials` (the backend's `keri.Credential`).
+ */
+export interface BackendSyncCredential {
+  said: string;
+  issuer: string;
+  recipient: string;
+  schema: string;
+  data: { communityName: string; role: string; joinedAt: string };
+}
+
+/**
+ * The role-bearing credentials a member holds on their own AID, shaped for the
+ * backend sync endpoint.
+ *
+ * The backend resolves a caller's RBAC roles from its local credential cache
+ * (CredentialRoleLookup, #739). That cache is populated only from credentials
+ * the frontend syncs, or from the community credential tree — which a member
+ * cannot read while their any-sync ACL lacks the read key. So a received
+ * Operations Steward credential that shows in the wallet (read straight from
+ * KERIA) never reached the cache, and the member stayed "insufficient
+ * permissions" (#744). Syncing every held role credential from the wallet
+ * closes that gap, so a received steward credential upgrades the effective role
+ * even while the profile/credential trees lag.
+ *
+ * Only self-held role credentials carry an RBAC role, so credentials issued to
+ * someone else and non-role credentials (endorsements, event attendance) are
+ * left out; a revoked credential must not re-grant a role, so it is skipped too.
+ */
+export function roleCredentialsForBackendSync(
+  creds: readonly WalletCredential[],
+  myAid: string,
+): BackendSyncCredential[] {
+  if (!myAid) return [];
+  return creds
+    .filter((c) => !!c.role && c.issueeAid === myAid && !isRevokedStatus(c.status))
+    .map((c) => ({
+      said: c.said,
+      issuer: c.issuerAid,
+      recipient: c.issueeAid,
+      schema: c.schemaSaid,
+      data: { communityName: c.communityName, role: c.role, joinedAt: c.joinedAt },
+    }));
+}
+
 /** True when a credential's status says it has been revoked. */
 export function isRevokedStatus(status: string): boolean {
   const s = status.toLowerCase();
