@@ -871,8 +871,9 @@ onBeforeUnmount(() => {
     width: 100%;
     // On mobile there is no top sidebar/header, so page content starts at the
     // very top of an edge-to-edge WebView — clear the status bar with the top
-    // safe-area inset (0 on web/Electron).
-    padding-top: env(safe-area-inset-top);
+    // safe-area inset (0 on web/Electron, and 0 while the update notice above
+    // the router view has already cleared the bar — App.vue's token).
+    padding-top: var(--matou-safe-area-top);
     // Keep content clear of the fixed bottom bar (bar height + safe area).
     padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
   }

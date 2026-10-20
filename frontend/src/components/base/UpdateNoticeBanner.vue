@@ -10,7 +10,7 @@
 // The Coa update notice for Mac and Android (Matou/coa app-updates spec §4). Windows
 // and Linux Coa builds update themselves through UpdateBanner; the Mātou app never
 // shows this (noticeTarget returns null for it).
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { KIT } from 'src/generated/kit';
 import { getCapacitorPlatform } from 'src/lib/capacitor';
 import {
@@ -69,6 +69,13 @@ function dismiss() {
   update.value = null;
 }
 
+// While the notice is showing it occupies the top of the window and pads itself
+// by the status-bar inset; tell the page below (through App.vue's
+// --matou-safe-area-top) not to clear the bar a second time.
+watch(update, (u) => {
+  document.documentElement.classList.toggle('has-update-notice', u !== null);
+});
+
 onMounted(() => {
   if (!target) return;
   void check();
@@ -77,6 +84,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer);
+  document.documentElement.classList.remove('has-update-notice');
 });
 </script>
 
@@ -86,8 +94,10 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  padding: 6px 16px;
-  background: #1a7f8a;
+  /* Sits at the very top of the window, so on Android (edge-to-edge WebView) it
+     must clear the status bar itself; env() is 0 on web/Electron. */
+  padding: calc(6px + env(safe-area-inset-top)) 16px 6px;
+  background: var(--matou-primary);
   color: #ffffff;
   font-size: 13px;
   flex-shrink: 0;

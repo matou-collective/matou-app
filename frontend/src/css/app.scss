@@ -114,15 +114,17 @@ select {
 // device inset on top of the onboarding screens' standard `p-6 md:p-8` padding
 // (1.5rem → 2rem) so that content clears those system bars.
 //
-// On web/Electron `env(safe-area-inset-*)` resolves to 0, leaving the padding
+// On web/Electron the insets resolve to 0, leaving the padding
 // identical to `p-6 md:p-8` — no visual change. The doubled selector (`.x.x`)
 // raises specificity above Tailwind's `p-6`/`md:p-8` utilities so it wins
 // regardless of stylesheet order.
+// The top inset comes through --matou-safe-area-top (App.vue), which the update
+// notice zeroes while it is showing because it has already cleared the bar.
 .pt-safe-area.pt-safe-area {
-  padding-top: calc(1.5rem + env(safe-area-inset-top));
+  padding-top: calc(1.5rem + var(--matou-safe-area-top));
 
   @media (min-width: 768px) {
-    padding-top: calc(2rem + env(safe-area-inset-top));
+    padding-top: calc(2rem + var(--matou-safe-area-top));
   }
 }
 

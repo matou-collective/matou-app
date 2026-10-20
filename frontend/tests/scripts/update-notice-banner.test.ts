@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 vi.mock('src/generated/kit', () => ({ KIT: { slug: 's', build: 4 } }));
 vi.mock('src/lib/capacitor', () => ({ getCapacitorPlatform: () => 'android', isCapacitor: () => true }));
@@ -70,6 +72,27 @@ describe('UpdateNoticeBanner', () => {
     expect(w.text()).toContain('A new version is available.');
   });
 
+  // On Android the WebView is edge-to-edge and the notice sits at the very top of
+  // the window, so it clears the status bar itself and flags <html> so the page
+  // below stops clearing the bar a second time (App.vue's --matou-safe-area-top).
+  it('marks <html> while showing so the page below does not double-pad the status bar', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(status(5)));
+    const w = mount(UpdateNoticeBanner);
+    await flushPromises();
+    expect(document.documentElement.classList.contains('has-update-notice')).toBe(true);
+    await w.get('button.update-notice-dismiss').trigger('click');
+    expect(document.documentElement.classList.contains('has-update-notice')).toBe(false);
+  });
+
+  it('clears the <html> mark when it unmounts while showing', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(status(5)));
+    const w = mount(UpdateNoticeBanner);
+    await flushPromises();
+    expect(document.documentElement.classList.contains('has-update-notice')).toBe(true);
+    w.unmount();
+    expect(document.documentElement.classList.contains('has-update-notice')).toBe(false);
+  });
+
   it('stops checking when it unmounts', async () => {
     const fetchMock = vi.fn().mockResolvedValue(status(4));
     vi.stubGlobal('fetch', fetchMock);
@@ -78,5 +101,32 @@ describe('UpdateNoticeBanner', () => {
     w.unmount();
     vi.advanceTimersByTime(6 * 60 * 60 * 1000);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the status-bar inset is shared through --matou-safe-area-top', () => {
+  const SRC = join(__dirname, '../../src');
+  const read = (rel: string) => readFileSync(join(SRC, rel), 'utf8');
+
+  it('App.vue defines the token from env() and zeroes it under html.has-update-notice', () => {
+    const app = read('App.vue');
+    expect(app).toMatch(/--matou-safe-area-top:\s*env\(safe-area-inset-top\)/);
+    expect(app).toMatch(/html\.has-update-notice\s*\{[^}]*--matou-safe-area-top:\s*0px/);
+  });
+
+  it('both banners clear the status bar themselves and wear the kit primary', () => {
+    for (const rel of ['components/base/UpdateNoticeBanner.vue', 'components/base/UpdateBanner.vue']) {
+      const css = read(rel);
+      expect(css, rel).toMatch(/padding:\s*calc\(6px \+ env\(safe-area-inset-top\)\) 16px 6px/);
+      expect(css, rel).toContain('background: var(--matou-primary)');
+    }
+  });
+
+  it('no page or layout reads env(safe-area-inset-top) directly any more', () => {
+    for (const rel of ['css/app.scss', 'layouts/DashboardLayout.vue', 'pages/DashboardPage.vue', 'pages/ChatPage.vue']) {
+      const src = read(rel);
+      expect(src, rel).not.toContain('env(safe-area-inset-top)');
+      expect(src, rel).toContain('var(--matou-safe-area-top)');
+    }
   });
 });
