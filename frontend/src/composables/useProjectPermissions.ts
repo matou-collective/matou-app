@@ -35,7 +35,10 @@ export function useProjectPermissions(
 
   const canDeleteProject = computed(() => isAdmin.value);
 
-  const canAssignRoles = computed(() => isAdmin.value);
+  // assign_project_role maps to the backend's stewardScope: a community admin
+  // (Operations Steward / Founding Member) on any project, or the project's own
+  // assigned steward. A bare project lead cannot assign roles (#749).
+  const canAssignRoles = computed(() => isAdmin.value || isSteward.value);
 
   const canAddMilestones = computed(
     () => (isAdmin.value || isLead.value) && project.value?.status !== 'archived',

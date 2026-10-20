@@ -572,6 +572,10 @@ const profilesStore = useProfilesStore();
 const appStore = useAppStore();
 const isAdmin = computed(() => identityStore.isAdmin);
 const isSteward = computed(() => identityStore.isSteward);
+// Community-admin tier only (Operations Steward / Founding Member) — the narrow
+// flag that matches the backend's adminScope, unlike the loose isAdmin/isSteward
+// substring match. Used to gate assign-lead/steward (#749).
+const isCommunityAdmin = computed(() => identityStore.isCommunityAdmin);
 const { lastEvent } = useBackendEvents();
 
 // ── Real-time updates ─────────────────────────────────────────────────────────
@@ -658,7 +662,17 @@ const endorsementProgress = computed(() => {
   return (proposalsStore.endorsements.length / threshold) * 100;
 });
 
-const canAssignRoles = computed(() => isAdmin.value || isSteward.value);
+// Assign proposal lead/steward: a community admin (Operations Steward /
+// Founding Member), the proposer, or the proposal's own assigned lead/steward.
+// Not the loose isAdmin/isSteward substring match, which showed the button for
+// every *-Steward credential (#749).
+const canAssignRoles = computed(
+  () =>
+    isCommunityAdmin.value ||
+    isProposer.value ||
+    isProposalLead.value ||
+    isProposalSteward.value,
+);
 
 const resolvedLeadName = computed(() => {
   const id = proposal.value?.proposal_lead_id;
