@@ -112,6 +112,7 @@
 import { ref, computed } from 'vue';
 import { ChevronDown, CheckCircle, Lock, AlertCircle, AlertTriangle, Plus } from 'lucide-vue-next';
 import type { Milestone, Contribution } from 'src/types/projects';
+import { parseBudget, formatCurrency } from 'src/lib/milestoneBudget';
 import ContributionCardCompact from './ContributionCardCompact.vue';
 
 interface Props {
@@ -173,16 +174,6 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-// Parse a free-form budget string ("$1,234.50", "1234", "USD 500") to a number.
-// Returns 0 when nothing parseable is found.
-function parseBudget(s: string | undefined): number {
-  if (!s) return 0;
-  const cleaned = s.replace(/[^0-9.-]/g, '');
-  if (!cleaned) return 0;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : 0;
-}
-
 const actualCost = computed(() =>
   contributions.value.reduce((sum, c) => sum + parseBudget(c.budget), 0),
 );
@@ -192,14 +183,6 @@ const hasBudget = computed(() => (props.milestone.budget_allocation ?? 0) > 0);
 const isOverBudget = computed(
   () => hasBudget.value && actualCost.value > (props.milestone.budget_allocation ?? 0),
 );
-
-function formatCurrency(n: number): string {
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  }).format(n);
-}
 </script>
 
 <style scoped lang="scss">
