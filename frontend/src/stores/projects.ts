@@ -49,6 +49,11 @@ export const useProjectsStore = defineStore('projects', () => {
   // Keyed by project ID
   const projectContributions = ref<Record<string, Contribution[]>>({});
 
+  // Monotonic per-project sequence guarding against out-of-order plan fetches.
+  // When a save handler and an SSE refresh both call fetchImplementationPlan,
+  // a slower earlier response must not clobber a newer one (#751, symptom 2).
+  const planFetchSeq = new Map<string, number>();
+
   const activeProjects = computed(() => projects.value.filter(p => p.status === 'active'));
 
   async function fetchProjects() {
@@ -213,8 +218,15 @@ export const useProjectsStore = defineStore('projects', () => {
 
   async function fetchImplementationPlan(projectId: string) {
     error.value = null;
+    const seq = (planFetchSeq.get(projectId) ?? 0) + 1;
+    planFetchSeq.set(projectId, seq);
     try {
       const plan = await getImplementationPlanForProject(projectId);
+      // Drop a stale response: a newer fetch for this project has started since
+      // we began, so applying our (older) result would regress the UI.
+      if (seq !== planFetchSeq.get(projectId)) {
+        return plan;
+      }
       if (plan) {
         implementationPlans.value = { ...implementationPlans.value, [projectId]: plan };
       }
