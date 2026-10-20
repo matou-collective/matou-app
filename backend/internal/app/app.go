@@ -648,7 +648,17 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	orgConfigRoleLookup := api.NewOrgConfigAdminLookup(orgConfigHandler)
 	credentialRoleLookup := api.NewCredentialRoleLookup(store)
 	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
-	roleLookup := api.NewCompositeRoleLookup(profileRoleLookup, orgConfigRoleLookup, credentialRoleLookup, identityRoleLookup)
+	// Resolve the profile role and the holder's own role credentials together
+	// as a union so a received role credential (e.g. Operations Steward) takes
+	// effect even while the synced CommunityProfile still mirrors the old role
+	// (#739). The union is additive, so an admin-set profile role can never be
+	// downgraded by a credential; the trailing org-config/identity lookups stay
+	// as admin backstops.
+	roleLookup := api.NewCompositeRoleLookup(
+		api.NewUnionRoleLookup(profileRoleLookup, credentialRoleLookup),
+		orgConfigRoleLookup,
+		identityRoleLookup,
+	)
 
 	// Signed-challenge authentication (issue #18): make X-User-AID trustworthy.
 	// The backend resolves an AID's current signing keys read-only from KERIA's

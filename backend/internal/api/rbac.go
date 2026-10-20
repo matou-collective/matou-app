@@ -149,8 +149,13 @@ func NewCredentialRoleLookup(store *anystore.LocalStore) *CredentialRoleLookup {
 	return &CredentialRoleLookup{store: store}
 }
 
-// GetUserRoles returns roles mapped from the cached credential whose
-// recipient matches aid, or an empty slice if none is found.
+// GetUserRoles returns the union of roles mapped from every cached credential
+// whose recipient matches aid, or an empty slice if none is found. A member
+// can hold several role credentials at once (e.g. the baseline Member
+// credential plus an Operations Steward credential received later). Returning
+// the first match would let the baseline Member credential mask the steward
+// one depending on store iteration order (#739), so every matching credential
+// contributes its mapped roles.
 func (l *CredentialRoleLookup) GetUserRoles(aid string) ([]contributions.Role, error) {
 	if l.store == nil {
 		return []contributions.Role{}, nil
@@ -159,6 +164,7 @@ func (l *CredentialRoleLookup) GetUserRoles(aid string) ([]contributions.Role, e
 	if err != nil {
 		return []contributions.Role{}, nil
 	}
+	var roles []contributions.Role
 	for _, cred := range creds {
 		if cred.SubjectAID != aid {
 			continue
@@ -174,13 +180,13 @@ func (l *CredentialRoleLookup) GetUserRoles(aid string) ([]contributions.Role, e
 		if err := json.Unmarshal(dataBytes, &data); err != nil || data.Role == "" {
 			continue
 		}
-		roles := contributions.MapKERIRole(data.Role)
-		if len(roles) > 0 {
-			log.Printf("[RoleLookup] credential match: aid=%s role=%q → %v", aid, data.Role, roles)
-			return roles, nil
+		mapped := contributions.MapKERIRole(data.Role)
+		if len(mapped) > 0 {
+			log.Printf("[RoleLookup] credential match: aid=%s role=%q → %v", aid, data.Role, mapped)
+			roles = append(roles, mapped...)
 		}
 	}
-	return []contributions.Role{}, nil
+	return dedupeRoles(roles), nil
 }
 
 // IdentityAIDProvider returns the current identity AID. This allows
@@ -236,4 +242,56 @@ func (c *CompositeRoleLookup) GetUserRoles(aid string) ([]contributions.Role, er
 		}
 	}
 	return []contributions.Role{}, nil
+}
+
+// UnionRoleLookup combines several RoleLookup implementations and returns the
+// union (superset) of every role they resolve, rather than the first
+// non-empty result. Use it where a role credential a member holds must be able
+// to *upgrade* the role recorded on their synced CommunityProfile: the profile
+// role is a cached mirror written by the approving steward, while the held
+// credential is the admin-signed source of truth the frontend already treats
+// as authoritative (identity store isSteward/canManageMembers). Combining them
+// is strictly additive — a credential can grant extra roles but never strip a
+// role the profile grants — so it cannot be used to self-downgrade or lock out
+// an admin. See #739: a received Operations Steward credential now takes effect
+// on the holder's own backend without waiting for a separate profile patch.
+type UnionRoleLookup struct {
+	lookups []RoleLookup
+}
+
+// NewUnionRoleLookup constructs a UnionRoleLookup from lookups.
+func NewUnionRoleLookup(lookups ...RoleLookup) *UnionRoleLookup {
+	return &UnionRoleLookup{lookups: lookups}
+}
+
+// GetUserRoles returns the de-duplicated union of every lookup's roles.
+func (u *UnionRoleLookup) GetUserRoles(aid string) ([]contributions.Role, error) {
+	var roles []contributions.Role
+	for _, l := range u.lookups {
+		r, err := l.GetUserRoles(aid)
+		if err != nil {
+			continue
+		}
+		roles = append(roles, r...)
+	}
+	return dedupeRoles(roles), nil
+}
+
+// dedupeRoles returns roles with duplicates removed, preserving first-seen
+// order. It returns a nil slice (not a shared empty literal) when given no
+// roles so callers treat "no roles" as empty.
+func dedupeRoles(roles []contributions.Role) []contributions.Role {
+	if len(roles) == 0 {
+		return nil
+	}
+	seen := make(map[contributions.Role]bool, len(roles))
+	out := make([]contributions.Role, 0, len(roles))
+	for _, r := range roles {
+		if seen[r] {
+			continue
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+	return out
 }

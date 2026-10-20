@@ -1,12 +1,52 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/contributions"
 )
+
+// TestCredentialRoleLookup_AggregatesAllCredentials proves a member holding
+// both a baseline Member credential and an Operations Steward credential
+// resolves to the steward bundle regardless of store iteration order (#739):
+// the earlier code returned the first match, so a Member credential seen first
+// masked the steward one.
+func TestCredentialRoleLookup_AggregatesAllCredentials(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := anystore.NewLocalStore(anystore.DefaultConfig(tmpDir))
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+	aid := "ECherese739"
+	creds := []*anystore.CachedCredential{
+		{ID: "ECredMember", IssuerAID: "EOrg", SubjectAID: aid, SchemaID: "S",
+			Data: map[string]interface{}{"role": "Member"}, CachedAt: time.Now().UTC(), Verified: true},
+		{ID: "ECredSteward", IssuerAID: "EOrg", SubjectAID: aid, SchemaID: "S",
+			Data: map[string]interface{}{"role": "Operations Steward"}, CachedAt: time.Now().UTC(), Verified: true},
+	}
+	for _, c := range creds {
+		if err := store.StoreCredential(ctx, c); err != nil {
+			t.Fatalf("failed to store credential: %v", err)
+		}
+	}
+
+	lookup := NewCredentialRoleLookup(store)
+	roles, err := lookup.GetUserRoles(aid)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !contributions.HasRole(roles, contributions.RoleOperationsSteward) {
+		t.Errorf("expected operations_steward from aggregated credentials, got %v", roles)
+	}
+}
 
 // mockOrgConfigProvider implements OrgConfigProvider for tests.
 type mockOrgConfigProvider struct {
@@ -125,6 +165,82 @@ func TestCompositeRoleLookup_AllEmpty(t *testing.T) {
 	roles, _ := composite.GetUserRoles("EUnknown")
 	if len(roles) != 0 {
 		t.Errorf("expected empty roles, got %v", roles)
+	}
+}
+
+// TestUnionRoleLookup_CredentialUpgradesProfile proves the #739 fix: a member
+// whose synced CommunityProfile still says Member but who holds an Operations
+// Steward credential resolves to the steward role bundle (profile ∪ credential).
+func TestUnionRoleLookup_CredentialUpgradesProfile(t *testing.T) {
+	profile := &mockRoleLookup{
+		roles: map[string][]contributions.Role{
+			"ECherese": {contributions.RoleMember},
+		},
+	}
+	credential := &mockRoleLookup{
+		roles: map[string][]contributions.Role{
+			"ECherese": contributions.MapKERIRole("Operations Steward"),
+		},
+	}
+	union := NewUnionRoleLookup(profile, credential)
+
+	roles, err := union.GetUserRoles("ECherese")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !contributions.HasRole(roles, contributions.RoleOperationsSteward) {
+		t.Errorf("expected credential to upgrade role to operations_steward, got %v", roles)
+	}
+	if !contributions.HasRole(roles, contributions.RoleMember) {
+		t.Errorf("expected member role to be retained, got %v", roles)
+	}
+	if !contributions.IsAdminScope(roles) {
+		t.Errorf("expected admin scope so change_member_role is permitted, got %v", roles)
+	}
+}
+
+// TestUnionRoleLookup_NeverDowngrades proves the union is additive: a credential
+// cannot strip a role the profile grants, so it can't be used to self-downgrade
+// or lock out an admin.
+func TestUnionRoleLookup_NeverDowngrades(t *testing.T) {
+	profile := &mockRoleLookup{
+		roles: map[string][]contributions.Role{
+			"EFounder": contributions.MapKERIRole("Founding Member"),
+		},
+	}
+	credential := &mockRoleLookup{
+		roles: map[string][]contributions.Role{
+			"EFounder": {contributions.RoleMember},
+		},
+	}
+	union := NewUnionRoleLookup(profile, credential)
+
+	roles, _ := union.GetUserRoles("EFounder")
+	if !contributions.HasRole(roles, contributions.RoleFoundingMember) {
+		t.Errorf("expected founding_member to be retained despite member credential, got %v", roles)
+	}
+}
+
+// TestUnionRoleLookup_Dedupes checks the union removes duplicate roles that
+// the profile and credential both grant.
+func TestUnionRoleLookup_Dedupes(t *testing.T) {
+	profile := &mockRoleLookup{roles: map[string][]contributions.Role{
+		"EUser": {contributions.RoleMember, contributions.RoleContributor},
+	}}
+	credential := &mockRoleLookup{roles: map[string][]contributions.Role{
+		"EUser": {contributions.RoleMember, contributions.RoleContributor},
+	}}
+	union := NewUnionRoleLookup(profile, credential)
+
+	roles, _ := union.GetUserRoles("EUser")
+	count := 0
+	for _, r := range roles {
+		if r == contributions.RoleMember {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected member role once after dedupe, got %d in %v", count, roles)
 	}
 }
 
