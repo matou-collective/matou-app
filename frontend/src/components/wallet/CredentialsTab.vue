@@ -185,6 +185,7 @@ import {
   credentialCardServiceName as credentialServiceName,
   credentialStatusLabel as statusLabel,
   isRevokedStatus as isRevoked,
+  isIssuedByMe as isIssuedByMeHelper,
 } from 'src/lib/walletCredential';
 import { isCoaBuild } from 'src/kit/build';
 import { KIT } from 'src/generated/kit';
@@ -447,7 +448,7 @@ function isOrgIssuer(aid: string): boolean {
 
 function isIssuedByMe(cred: WalletCredential): boolean {
   const myAid = identityStore.currentAID?.prefix || identityStore.aidPrefix;
-  return !!myAid && cred.issueeAid !== myAid;
+  return isIssuedByMeHelper(cred, myAid || '');
 }
 
 /** For graph: the "other party" AID — issuee for issued creds, issuer for received */

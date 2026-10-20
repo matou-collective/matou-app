@@ -82,6 +82,20 @@ export function toWalletCredential(
   };
 }
 
+/**
+ * True when the current member (`myAid`) is the credential's issuer.
+ *
+ * The wallet uses this to word a card "Issued" (with a "To:" recipient line)
+ * versus "Received", and to orient the relationship graph's edges. It must test
+ * the *issuer*, not merely that the recipient is someone else: a credential
+ * issued to another member can still surface in a member's wallet (e.g. a shared
+ * registry), and labelling every such credential "Issued" falsely claims the
+ * member issued it (#740).
+ */
+export function isIssuedByMe(cred: Pick<WalletCredential, 'issuerAid'>, myAid: string): boolean {
+  return !!myAid && cred.issuerAid === myAid;
+}
+
 /** True when a credential's status says it has been revoked. */
 export function isRevokedStatus(status: string): boolean {
   const s = status.toLowerCase();
