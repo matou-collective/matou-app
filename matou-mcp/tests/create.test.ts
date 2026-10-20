@@ -36,6 +36,54 @@ describe("addContribution", () => {
     expect(calls[0].init.headers["X-User-AID"]).toBe("EBEN");
   });
 
+  it("forwards parent_contribution for a sub-contribution with no milestone", async () => {
+    const { ctx, calls } = recordingCtx();
+    await addContribution(ctx, {
+      project_id: "proj_1",
+      parent_contribution: "ctr_parent",
+      title: "T",
+      description: "D",
+      contribution_type: "research_knowledge",
+      objectives: ["o"],
+      deliverables: ["d"],
+    });
+    const body = JSON.parse(calls[0].init.body);
+    expect(body.parent_contribution).toBe("ctr_parent");
+    expect(body.milestone_id).toBeUndefined();
+  });
+
+  it("forwards tags to the backend", async () => {
+    const { ctx, calls } = recordingCtx();
+    await addContribution(ctx, {
+      project_id: "proj_1",
+      milestone_id: "ms_1",
+      title: "T",
+      description: "D",
+      contribution_type: "research_knowledge",
+      objectives: ["o"],
+      deliverables: ["d"],
+      tags: ["ref:2.1", "phase1"],
+    });
+    const body = JSON.parse(calls[0].init.body);
+    expect(body.tags).toEqual(["ref:2.1", "phase1"]);
+  });
+
+  it("omits parent_contribution and tags when not supplied", async () => {
+    const { ctx, calls } = recordingCtx();
+    await addContribution(ctx, {
+      project_id: "proj_1",
+      milestone_id: "ms_1",
+      title: "T",
+      description: "D",
+      contribution_type: "research_knowledge",
+      objectives: ["o"],
+      deliverables: ["d"],
+    });
+    const body = JSON.parse(calls[0].init.body);
+    expect("parent_contribution" in body).toBe(false);
+    expect("tags" in body).toBe(false);
+  });
+
   it("rejects an invalid contribution_type before calling the backend", async () => {
     const { ctx, calls } = recordingCtx();
     await expect(
