@@ -132,6 +132,12 @@
             :error-message="adoptError ?? undefined"
             @adopt="adoptWitnesses"
           />
+          <StewardInboxNotice
+            v-if="isSteward"
+            :message="orgActInbox.lastError.value"
+            :pending-count="orgActInbox.pending.value"
+            :affected="skippedAffected"
+          />
           <div
             v-if="isSteward && (pollingError || unreachableApplicants.length > 0 || expiredRegistrations.length > 0)"
             class="card registration-alert"
@@ -269,6 +275,8 @@ import { useIsMobile } from 'src/composables/useIsMobile';
 import { buildHeaderStats } from 'src/pages/dashboardHeaderStats';
 import { useOrgWitnessState } from 'src/composables/useOrgWitnessState';
 import WitnessAdoptionBanner from 'src/components/dashboard/WitnessAdoptionBanner.vue';
+import StewardInboxNotice, { type AffectedMember } from 'src/components/dashboard/StewardInboxNotice.vue';
+import { useKERINotificationService } from 'src/composables/useKERINotificationService';
 import { fetchOrgConfig } from 'src/api/config';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
@@ -336,6 +344,30 @@ const { hasWitnesses: orgHasWitnesses, refresh: refreshOrgWitnesses } = useOrgWi
 // steward's app has joined, synced and adopted the org registry.
 const orgActInbox = useOrgActInbox();
 const stewardReadiness = useStewardReadiness();
+const notificationService = useKERINotificationService();
+
+// Map each skipped credential SAID (keys[0] unsignable, #709) to the member it
+// concerns: the credential's holder is its `sad.a.i`, resolved to a name via
+// the member list. Unresolvable SAIDs fall back to the truncated SAID.
+const skippedAffected = computed<AffectedMember[]>(() => {
+  const saids = orgActInbox.skipped.value;
+  if (saids.length === 0) return [];
+  const holderBySaid = new Map<string, string>();
+  for (const cred of notificationService.credentials.value as Array<{ sad?: { d?: string; a?: { i?: string } } }>) {
+    const sad = cred?.sad;
+    if (sad?.d && sad?.a?.i) holderBySaid.set(sad.d, sad.a.i);
+  }
+  const nameByAid = new Map<string, string>();
+  for (const m of allMembers.value) {
+    const aid = m.profile.aid as string | undefined;
+    const name = m.profile.name as string | undefined;
+    if (aid && name) nameByAid.set(aid, name);
+  }
+  return saids.map((said) => {
+    const aid = holderBySaid.get(said);
+    return { said, name: aid ? nameByAid.get(aid) ?? null : null };
+  });
+});
 const isAdoptingWitnesses = ref(false);
 const adoptError = ref<string | null>(null);
 
