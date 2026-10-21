@@ -119,6 +119,10 @@ export interface Contribution {
   // Hierarchy
   parent_contribution?: string;
   child_contributions?: string[];
+  // Explicit sibling order within the milestone (top-level) or parent (sub).
+  // Undefined for contributions created before ordering existed — those fall
+  // back to a numeric-aware title sort. See src/lib/contributions/ordering.ts.
+  sort_order?: number;
   // Assignment
   assigned_contributor?: string;
   assigned_contributor_id?: string;

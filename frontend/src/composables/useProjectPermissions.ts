@@ -54,6 +54,13 @@ export function useProjectPermissions(
   const canArchiveContribution = computed(() => isAdmin.value || isLead.value || isSteward.value);
   const canUnassignContributor = computed(() => isAdmin.value || isLead.value || isSteward.value);
   const canEditMilestone = computed(() => isAdmin.value || isLead.value || isSteward.value);
+  // Re-ordering contributions is a structural plan change, gated like the
+  // other lead/steward structural mutations (and disabled on archived
+  // projects, matching canAddMilestones). Mirrors the backend
+  // ActionReorderContribution (leadStewardScope, project-scoped) for #754.
+  const canReorderContributions = computed(
+    () => (isAdmin.value || isLead.value || isSteward.value) && project.value?.status !== 'archived',
+  );
   const canSubmitProjectCompletion = computed(() => isAdmin.value || isLead.value);
   const canApproveProjectCompletion = computed(() => isAdmin.value || isSteward.value);
   const canRejectProjectCompletion = computed(() => isAdmin.value || isSteward.value);
@@ -93,6 +100,7 @@ export function useProjectPermissions(
     canArchiveContribution,
     canUnassignContributor,
     canEditMilestone,
+    canReorderContributions,
     canSubmitProjectCompletion,
     canApproveProjectCompletion,
     canRejectProjectCompletion,

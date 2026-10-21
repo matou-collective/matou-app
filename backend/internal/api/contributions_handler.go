@@ -207,6 +207,15 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "reorder":
+				if r.Method == http.MethodPost {
+					h.withProjectRBAC(contributions.ActionReorderContribution, id, func(w http.ResponseWriter, r *http.Request) {
+						h.HandleReorder(w, r, id)
+					})(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			case "comments":
 				switch r.Method {
 				case http.MethodGet:
@@ -1202,6 +1211,39 @@ func (h *ContributionsHandler) HandleUnassign(w http.ResponseWriter, r *http.Req
 		})
 	}
 	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleReorder handles POST /api/v1/contributions/{id}/reorder.
+// {id} is any contribution in the target sibling group; the request body
+// supplies the full new order of that group's non-archived contributions.
+// RBAC: ActionReorderContribution (lead/steward, project-scoped).
+func (h *ContributionsHandler) HandleReorder(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		OrderedIDs []string `json:"ordered_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	actorID := GetUserAID(r)
+	if actorID == "" {
+		actorID = r.Header.Get("X-User-AID")
+	}
+	reordered, err := h.service.ReorderContributions(r.Context(), spaceID, id, body.OrderedIDs, actorID)
+	if err != nil {
+		log.Printf("[Contributions] reorder failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] reordered %d siblings of %s", len(reordered), id)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:reordered",
+			Data: map[string]string{"contribution_id": id},
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"contributions": reordered, "total": len(reordered)})
 }
 
 // transitionGuardAction returns the stricter Action required to move a

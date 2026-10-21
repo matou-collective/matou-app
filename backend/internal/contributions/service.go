@@ -1467,6 +1467,9 @@ func (s *Service) HydratePlan(ctx context.Context, spaceID string, plan *Impleme
 				ms.Contributions = append(ms.Contributions, c)
 			}
 		}
+		// Render the milestone's top-level contributions in canonical sibling
+		// order rather than raw ContributionIDs (creation) order.
+		SortSiblings(ms.Contributions)
 	}
 }
 
@@ -1491,6 +1494,9 @@ type CreateContributionRequest struct {
 	Deadline              string       `json:"deadline,omitempty"`
 	Budget                string       `json:"budget,omitempty"`
 	Tags                  []string     `json:"tags,omitempty"`
+	// Order, when set, pins the new contribution's sibling SortOrder; when nil
+	// the contribution defaults to the end of its sibling list.
+	Order *int `json:"order,omitempty"`
 }
 
 // CreateContribution creates and persists a new Contribution in spaceID.
@@ -1539,6 +1545,26 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 		CreatedAt:             now,
 		UpdatedAt:             now,
 	}
+	// Assign the sibling SortOrder: an explicit request value when given,
+	// otherwise the next position at the end of the sibling group (its parent's
+	// children for a sub-contribution, otherwise the milestone's top-level
+	// contributions). Computed before the id is appended to those lists below.
+	if req.Order != nil {
+		order := *req.Order
+		c.SortOrder = &order
+	} else {
+		var siblingIDs []string
+		if parentForLink != nil {
+			siblingIDs = parentForLink.ChildContributionIDs
+		} else if c.MilestoneID != "" {
+			if ms, err := s.GetMilestone(ctx, spaceID, c.MilestoneID); err == nil {
+				siblingIDs = ms.ContributionIDs
+			}
+		}
+		next := s.nextSortOrder(ctx, spaceID, siblingIDs)
+		c.SortOrder = &next
+	}
+
 	errs := ValidateContribution(c)
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("validation failed: %v", errs)
@@ -1651,6 +1677,7 @@ func (s *Service) ListContributions(_ context.Context, spaceID string) ([]*Contr
 			contribs = append(contribs, &c)
 		}
 	}
+	SortContributionsStable(contribs)
 	return contribs, nil
 }
 

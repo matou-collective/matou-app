@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { addContribution } from "../src/tools/create.js";
+import { addContribution, reorderContributions } from "../src/tools/create.js";
 import { MatouClient } from "../src/backend.js";
 import { MemberDirectory } from "../src/members.js";
 
@@ -84,6 +84,37 @@ describe("addContribution", () => {
     expect("tags" in body).toBe(false);
   });
 
+  it("includes order in the payload when supplied", async () => {
+    const { ctx, calls } = recordingCtx();
+    await addContribution(ctx, {
+      project_id: "proj_1",
+      milestone_id: "ms_1",
+      title: "T",
+      description: "D",
+      contribution_type: "research_knowledge",
+      objectives: ["o"],
+      deliverables: ["d"],
+      order: 2,
+    });
+    const body = JSON.parse(calls[0].init.body);
+    expect(body.order).toBe(2);
+  });
+
+  it("omits order when not supplied", async () => {
+    const { ctx, calls } = recordingCtx();
+    await addContribution(ctx, {
+      project_id: "proj_1",
+      milestone_id: "ms_1",
+      title: "T",
+      description: "D",
+      contribution_type: "research_knowledge",
+      objectives: ["o"],
+      deliverables: ["d"],
+    });
+    const body = JSON.parse(calls[0].init.body);
+    expect("order" in body).toBe(false);
+  });
+
   it("rejects an invalid contribution_type before calling the backend", async () => {
     const { ctx, calls } = recordingCtx();
     await expect(
@@ -97,5 +128,16 @@ describe("addContribution", () => {
       }),
     ).rejects.toThrowError(/contribution_type must be one of/);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("reorderContributions", () => {
+  it("posts to the reorder endpoint of the first id with the full ordered list", async () => {
+    const { ctx, calls } = recordingCtx('{"contributions":[],"total":0}');
+    await reorderContributions(ctx, ["ctr_a", "ctr_b", "ctr_c"]);
+    expect(calls[0].url).toContain("/api/v1/contributions/ctr_a/reorder");
+    const body = JSON.parse(calls[0].init.body);
+    expect(body.ordered_ids).toEqual(["ctr_a", "ctr_b", "ctr_c"]);
+    expect(calls[0].init.headers["X-User-AID"]).toBe("EBEN");
   });
 });

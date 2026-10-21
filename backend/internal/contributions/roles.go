@@ -132,6 +132,11 @@ const (
 	ActionArchiveContribution  Action = "archive_contribution"
 	ActionUnassignContribution Action = "unassign_contribution"
 	ActionEditMilestone        Action = "edit_milestone"
+	// ActionReorderContribution gates re-ordering contributions within a
+	// milestone or a parent contribution's sub-list. Like the other structural
+	// plan mutations it is lead/steward-scoped (not the permissive
+	// update_contribution gate) and project-scoped.
+	ActionReorderContribution Action = "reorder_contribution"
 
 	// ActionSubmitProjectCompletion and the following are project completion
 	// workflow actions.
@@ -263,6 +268,7 @@ var actionPermissions = map[Action][]Role{
 	ActionArchiveContribution:      leadStewardScope,
 	ActionUnassignContribution:     leadStewardScope,
 	ActionEditMilestone:            leadStewardScope,
+	ActionReorderContribution:      leadStewardScope,
 	ActionSubmitProjectCompletion:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
 	ActionApproveProjectCompletion: stewardScope,
 	ActionRejectProjectCompletion:  stewardScope,
