@@ -5,7 +5,7 @@
     @click="$emit('click')"
   >
     <div class="slim-card-row top">
-      <span class="slim-card-title">{{ contribution.title }}</span>
+      <span class="slim-card-title"><span v-if="contribution.reference" class="contribution-ref">{{ contribution.reference }}</span>{{ contribution.title }}</span>
       <ContributionStatusBadge :status="contribution.status" />
       <UserAvatar v-if="assignedAid" :aid="assignedAid" :name="assignedName ?? undefined" :size="24" />
     </div>
@@ -68,6 +68,7 @@ const projectName = computed(() => {
 
 <style scoped lang="scss">
 @import 'src/css/contribution-status.scss';
+@include contribution-reference;
 
 .slim-card {
   display: flex;

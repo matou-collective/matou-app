@@ -123,6 +123,11 @@ export interface Contribution {
   // Undefined for contributions created before ordering existed — those fall
   // back to a numeric-aware title sort. See src/lib/contributions/ordering.ts.
   sort_order?: number;
+  // Derived "M.C.S" display reference (milestone.contribution.sub, e.g. "1.2.0"
+  // for a top-level contribution, "1.2.1" for its first sub). Computed by the
+  // backend from the contribution's position at read time; never part of the
+  // stored title. See issue #753.
+  reference?: string;
   // Assignment
   assigned_contributor?: string;
   assigned_contributor_id?: string;

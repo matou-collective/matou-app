@@ -556,7 +556,13 @@ type Contribution struct {
 	// an explicit 0 and falls back to a numeric-aware title sort. New
 	// contributions default to the end of their sibling list; a reorder assigns
 	// contiguous positions. See SortSiblings for the canonical ordering.
-	SortOrder             *int       `json:"sort_order,omitempty"`
+	SortOrder *int `json:"sort_order,omitempty"`
+	// Reference is the derived "M.C.S" display reference (milestone.contribution.sub,
+	// e.g. "1.2.0" for a top-level contribution, "1.2.1" for its first sub). It is
+	// computed from the contribution's position within its plan at read time and
+	// stamped onto read responses — never stored (omitempty keeps it out of
+	// persisted records, and no write path sets it). See reference.go / issue #753.
+	Reference             string     `json:"reference,omitempty"`
 	AssignedContributorID string     `json:"assigned_contributor,omitempty"`
 	ReviewerID            string     `json:"contribution_reviewer,omitempty"`
 	Reviewers             []string   `json:"reviewers,omitempty"`

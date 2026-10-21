@@ -303,6 +303,7 @@ func (h *ProjectsHandler) HandleListProjectContributions(w http.ResponseWriter, 
 		contribs = []*contributions.Contribution{}
 	}
 	contribs = h.visibleAmountsList(r, contribs)
+	h.service.StampReferences(r.Context(), spaceID, contribs)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"contributions": contribs,
 		"total":         len(contribs),

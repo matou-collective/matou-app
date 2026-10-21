@@ -15,7 +15,9 @@
       </span>
     </div>
 
-    <h3 class="card-title">{{ contribution.title }}</h3>
+    <h3 class="card-title">
+      <span v-if="contribution.reference" class="contribution-ref">{{ contribution.reference }}</span>{{ contribution.title }}
+    </h3>
 
     <p class="card-description">{{ contribution.description }}</p>
 
@@ -114,6 +116,7 @@ const assignedName = computed(() => {
 
 <style scoped lang="scss">
 @import 'src/css/contribution-status.scss';
+@include contribution-reference;
 
 .contribution-card {
   position: relative;

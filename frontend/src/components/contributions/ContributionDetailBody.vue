@@ -8,7 +8,7 @@
         </div>
         <UserAvatar v-if="assignedAid" :aid="assignedAid" :name="assignedName ?? undefined" :size="36" class="assigned-avatar" />
         <h2 class="header-title">
-          <span>{{ contribution.title }}</span>
+          <span><span v-if="contribution.reference" class="contribution-ref">{{ contribution.reference }}</span>{{ contribution.title }}</span>
           <q-btn
             v-if="canEditContribution"
             flat
@@ -296,7 +296,7 @@
               <div class="sub-item-badges">
                 <ContributionStatusBadge :status="child.status" />
               </div>
-              <span class="sub-item-title">{{ child.title }}</span>
+              <span class="sub-item-title"><span v-if="child.reference" class="contribution-ref">{{ child.reference }}</span>{{ child.title }}</span>
               <span v-if="childAssignee(child)" class="sub-item-assignee" @click.stop>
                 <q-tooltip>Will be assigned to {{ assigneeName(child) }}</q-tooltip>
                 <span class="sub-item-assignee-name">{{ assigneeName(child) }}</span>
@@ -1895,6 +1895,9 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 </script>
 
 <style scoped lang="scss">
+@import 'src/css/contribution-status.scss';
+@include contribution-reference;
+
 .detail-dialog {
   width: 100%;
   max-width: 800px;

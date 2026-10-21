@@ -143,6 +143,17 @@ describe('searchContributions', () => {
   it('returns empty when nothing matches', () => {
     expect(searchContributions(list, 'zzz')).toEqual([]);
   });
+
+  it('matches the derived reference (issue #753)', () => {
+    const refList = [
+      make({ id: 'a', title: 'Audit planning', reference: '1.2.0' }),
+      make({ id: 'b', title: 'Onboarding', reference: '1.2.1' }),
+      make({ id: 'c', title: 'Branding', reference: '2.1.0' }),
+    ];
+    expect(searchContributions(refList, '1.2.1').map((c) => c.id)).toEqual(['b']);
+    // A prefix query matches every reference under it.
+    expect(searchContributions(refList, '1.2.').map((c) => c.id)).toEqual(['a', 'b']);
+  });
 });
 
 describe('sortContributions', () => {

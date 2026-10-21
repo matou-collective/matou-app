@@ -304,6 +304,7 @@ func (h *ContributionsHandler) HandleCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	log.Printf("[Contributions] contribution created: %s in project %s", contrib.ID, contrib.ProjectID)
+	h.service.StampReferences(r.Context(), spaceID, []*contributions.Contribution{contrib})
 	writeJSON(w, http.StatusCreated, contrib)
 }
 
@@ -316,6 +317,7 @@ func (h *ContributionsHandler) HandleList(w http.ResponseWriter, r *http.Request
 		return
 	}
 	contribs = h.visibleAmountsList(r, contribs)
+	h.service.StampReferences(r.Context(), spaceID, contribs)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"contributions": contribs, "total": len(contribs)})
 }
 
@@ -327,7 +329,9 @@ func (h *ContributionsHandler) HandleGet(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "contribution not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, h.visibleAmounts(r, contrib))
+	visible := h.visibleAmounts(r, contrib)
+	h.service.StampReferences(r.Context(), spaceID, []*contributions.Contribution{visible})
+	writeJSON(w, http.StatusOK, visible)
 }
 
 // HandleTransition handles POST /api/v1/contributions/{id}/transition
@@ -1237,6 +1241,7 @@ func (h *ContributionsHandler) HandleReorder(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	log.Printf("[Contributions] reordered %d siblings of %s", len(reordered), id)
+	h.service.StampReferences(r.Context(), spaceID, reordered)
 	if h.broker != nil {
 		h.broker.Broadcast(SSEEvent{
 			Type: "contribution:reordered",
