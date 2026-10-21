@@ -35,6 +35,7 @@ var projectScopedActions = map[Action]bool{
 	ActionArchiveContribution:      true,
 	ActionUnassignContribution:     true,
 	ActionEditMilestone:            true,
+	ActionReorderContribution:      true,
 	ActionLinkProposal:             true,
 	ActionAssignProjectRole:        true,
 	ActionAssignProjectSteward:     true,

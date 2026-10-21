@@ -549,18 +549,26 @@ type Contribution struct {
 	TimeReport             string             `json:"time_report,omitempty"`
 	ParentContributionID   string             `json:"parent_contribution,omitempty"`
 	ChildContributionIDs   []string           `json:"child_contributions,omitempty"`
-	AssignedContributorID  string             `json:"assigned_contributor,omitempty"`
-	ReviewerID             string             `json:"contribution_reviewer,omitempty"`
-	Reviewers              []string           `json:"reviewers,omitempty"`
-	EvidenceSubmitted      []string           `json:"evidence_submitted,omitempty"`
-	CompletionNotes        string             `json:"completion_notes,omitempty"`
-	ReviewOutcome          string             `json:"review_outcome,omitempty"`
-	ReviewFeedback         string             `json:"review_feedback,omitempty"`
-	ReviewedBy             string             `json:"reviewed_by,omitempty"`
-	ReviewedAt             *time.Time         `json:"reviewed_at,omitempty"`
-	QualityRating          int                `json:"quality_rating,omitempty"`
-	SignedOffBy            string             `json:"signed_off_by,omitempty"`
-	SignedOffAt            *time.Time         `json:"signed_off_at,omitempty"`
+	// SortOrder is the explicit sibling-order position within this
+	// contribution's parent group (a milestone's top-level contributions, or a
+	// parent contribution's children). It is a pointer so a nil value —
+	// contributions created before ordering existed — is distinguishable from
+	// an explicit 0 and falls back to a numeric-aware title sort. New
+	// contributions default to the end of their sibling list; a reorder assigns
+	// contiguous positions. See SortSiblings for the canonical ordering.
+	SortOrder             *int       `json:"sort_order,omitempty"`
+	AssignedContributorID string     `json:"assigned_contributor,omitempty"`
+	ReviewerID            string     `json:"contribution_reviewer,omitempty"`
+	Reviewers             []string   `json:"reviewers,omitempty"`
+	EvidenceSubmitted     []string   `json:"evidence_submitted,omitempty"`
+	CompletionNotes       string     `json:"completion_notes,omitempty"`
+	ReviewOutcome         string     `json:"review_outcome,omitempty"`
+	ReviewFeedback        string     `json:"review_feedback,omitempty"`
+	ReviewedBy            string     `json:"reviewed_by,omitempty"`
+	ReviewedAt            *time.Time `json:"reviewed_at,omitempty"`
+	QualityRating         int        `json:"quality_rating,omitempty"`
+	SignedOffBy           string     `json:"signed_off_by,omitempty"`
+	SignedOffAt           *time.Time `json:"signed_off_at,omitempty"`
 	// EvidenceEditedAt records the last time the assigned contributor edited
 	// their submitted evidence (contributor self-edit before sign-off).
 	EvidenceEditedAt *time.Time `json:"evidence_edited_at,omitempty"`

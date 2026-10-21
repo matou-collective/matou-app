@@ -31,6 +31,8 @@ export interface CreateContributionRequest {
   budget?: string;
   created_by: string;
   assigned_contributor_id?: string;
+  // Explicit sibling-order position; omit to append to the end of the list.
+  order?: number;
 }
 
 export interface Contribution {
@@ -46,6 +48,9 @@ export interface Contribution {
   deliverables: string[];
   acceptance_criteria: string[];
   skill_requirements: string[];
+  sort_order?: number;
+  parent_contribution?: string;
+  child_contributions?: string[];
   estimated_duration?: number;
   actual_duration?: number;
   actual_cost?: number;
@@ -375,6 +380,28 @@ export async function unassignContribution(id: string): Promise<Contribution> {
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(err.error || 'Failed to unassign contribution');
+  }
+  return response.json();
+}
+
+/**
+ * Reorder a sibling group of contributions. orderedIds must be the full new
+ * order of one group's non-archived siblings — either a milestone's top-level
+ * contributions or one parent's children — as a permutation (no adds/drops).
+ * The first id is used as the path representative; the backend validates the
+ * rest belong to the same group. Lead/steward only (project-scoped RBAC).
+ */
+export async function reorderContributions(orderedIds: string[]): Promise<{ contributions: Contribution[]; total: number }> {
+  if (orderedIds.length === 0) throw new Error('reorderContributions requires at least one id');
+  log.info('Reordering %d contributions', orderedIds.length);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${orderedIds[0]}/reorder`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ ordered_ids: orderedIds }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to reorder contributions');
   }
   return response.json();
 }

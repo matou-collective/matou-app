@@ -398,3 +398,59 @@ func TestContributionsHandler_EditEvidence_OwnerNotifiesAndBroadcasts(t *testing
 		t.Errorf("recipients = %v, want {lead-1, reviewer-1}", recipients)
 	}
 }
+
+func TestContributionsHandler_Reorder(t *testing.T) {
+	handler := setupTestContributionsHandler()
+	ctx := context.Background()
+	spaceID := resolveCommunitySpaceID(httptest.NewRequest(http.MethodGet, "/", nil), handler.spaceManager)
+
+	proj, err := handler.service.CreateProject(ctx, spaceID, &contributions.CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	plan, err := handler.service.CreateImplementationPlan(ctx, spaceID, &contributions.CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+	if err != nil {
+		t.Fatalf("CreateImplementationPlan: %v", err)
+	}
+	ms, err := handler.service.AddMilestone(ctx, spaceID, "u", &contributions.CreateMilestoneRequest{ImplementationPlanID: plan.ID, Title: "M", Duration: "1w"})
+	if err != nil {
+		t.Fatalf("AddMilestone: %v", err)
+	}
+	mk := func(title string) *contributions.Contribution {
+		c, err := handler.service.CreateContribution(ctx, spaceID, &contributions.CreateContributionRequest{
+			ProjectID: proj.ID, MilestoneID: ms.MilestoneID, Title: title, Description: "d",
+			ContributionType: contributions.ProposalTypeTechnical, Priority: contributions.PriorityMedium,
+			CreatedBy: "u", Objectives: []string{"o"}, Deliverables: []string{"d"},
+			AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		})
+		if err != nil {
+			t.Fatalf("CreateContribution: %v", err)
+		}
+		return c
+	}
+	a, b, c := mk("A"), mk("B"), mk("C")
+
+	body, _ := json.Marshal(map[string]interface{}{"ordered_ids": []string{c.ID, a.ID, b.ID}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+b.ID+"/reorder", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.HandleReorder(w, req, b.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	gotA, _ := handler.service.GetContribution(ctx, spaceID, a.ID)
+	gotB, _ := handler.service.GetContribution(ctx, spaceID, b.ID)
+	gotC, _ := handler.service.GetContribution(ctx, spaceID, c.ID)
+	if gotC.SortOrder == nil || *gotC.SortOrder != 0 || gotA.SortOrder == nil || *gotA.SortOrder != 1 || gotB.SortOrder == nil || *gotB.SortOrder != 2 {
+		t.Fatalf("reorder not persisted: C=%v A=%v B=%v", gotC.SortOrder, gotA.SortOrder, gotB.SortOrder)
+	}
+
+	// A bad reorder list (missing a sibling) is a 400.
+	body, _ = json.Marshal(map[string]interface{}{"ordered_ids": []string{c.ID}})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+b.ID+"/reorder", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	handler.HandleReorder(w, req, b.ID)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad reorder list, got %d", w.Code)
+	}
+}

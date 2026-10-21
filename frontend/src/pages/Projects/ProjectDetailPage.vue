@@ -275,6 +275,7 @@
               :project-id="project.id"
               :can-edit="perms.canAddMilestones.value"
               :can-confirm="perms.canConfirmContribution.value"
+              :can-reorder="perms.canReorderContributions.value"
               :is-plan-signed-off="implementationPlan.signed_off"
               :user-role="currentUserRole"
               :current-user-id="currentUserId"
@@ -288,6 +289,7 @@
               @archive-milestone="confirmArchiveMilestone"
               @edit-contribution="openEditContribution"
               @archive-contribution="confirmArchiveContribution"
+              @reorder-contributions="handleReorderContributions"
             />
           </div>
         </template>
@@ -1481,6 +1483,20 @@ async function handleContributionUpdate(updated: Contribution & { _action?: stri
       projectsStore.fetchImplementationPlan(project.value.id),
       projectsStore.fetchProjectContributions(project.value.id),
     ]);
+  }
+}
+
+async function handleReorderContributions(orderedIds: string[]) {
+  try {
+    await contributionsStore.reorder(orderedIds);
+    if (project.value) {
+      await Promise.all([
+        projectsStore.fetchImplementationPlan(project.value.id),
+        projectsStore.fetchProjectContributions(project.value.id),
+      ]);
+    }
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to reorder contributions' });
   }
 }
 

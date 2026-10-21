@@ -124,6 +124,7 @@
 import { computed, ref } from 'vue';
 import { ChevronDown } from 'lucide-vue-next';
 import type { Contribution, ProjectRole } from 'src/types/projects';
+import { sortSiblings } from 'src/lib/contributions/ordering';
 import ContributionStatusBadge from 'src/components/contributions/ContributionStatusBadge.vue';
 import ContributionOverdueTag from 'src/components/contributions/ContributionOverdueTag.vue';
 import ContributionTypeBadge from './ContributionTypeBadge.vue';
@@ -215,7 +216,13 @@ const canAssign = computed(() =>
 const childContributions = computed(() => {
   const childIds = props.contribution.child_contributions ?? [];
   if (!childIds.length || !props.allContributions?.length) return [];
-  return props.allContributions.filter(c => childIds.includes(c.id) && c.status !== 'archived');
+  const byId = new Map<string, Contribution>(props.allContributions.map(c => [c.id, c] as const));
+  const children = childIds
+    .map(id => byId.get(id))
+    .filter((c): c is Contribution => !!c && c.status !== 'archived');
+  // Display in canonical sibling order (sort_order, else natural title),
+  // consistent with the milestone list and the detail view.
+  return sortSiblings(children);
 });
 
 const isSubExpanded = ref(false);

@@ -274,11 +274,25 @@
 
           <div v-else class="sub-list">
             <div
-              v-for="child in childContributions"
+              v-for="(child, childIndex) in orderedChildren"
               :key="child.id"
               class="sub-item clickable"
+              :class="{ 'is-dragging': subDragIndex === childIndex, 'drag-over': subDragOverIndex === childIndex }"
+              :draggable="canReorderSubs"
               @click="selectedChildContribution = child"
+              @dragstart="onSubDragStart(childIndex)"
+              @dragover.prevent="onSubDragOver(childIndex)"
+              @drop="onSubDrop(childIndex)"
+              @dragend="onSubDragEnd"
             >
+              <q-icon
+                v-if="canReorderSubs"
+                name="drag_indicator"
+                class="sub-drag-handle"
+                @click.stop
+              >
+                <q-tooltip>Drag to reorder</q-tooltip>
+              </q-icon>
               <div class="sub-item-badges">
                 <ContributionStatusBadge :status="child.status" />
               </div>
@@ -1009,6 +1023,7 @@ import { useProfilesStore } from 'stores/profiles';
 import { uploadFile, getFileUrl } from 'src/lib/api/client';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
 import { buildEvidenceRequest as buildEvidencePayload, round2 } from 'src/lib/evidenceRequest';
+import { sortSiblings } from 'src/lib/contributions/ordering';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
 import UserAvatar from 'src/components/profiles/UserAvatar.vue';
@@ -1173,6 +1188,9 @@ const role = computed(() => props.userRole as ProjectRole);
 const isSteward = computed(() => ['community_admin', 'project_steward'].includes(props.userRole));
 const isLead = computed(() => ['community_admin', 'project_lead'].includes(props.userRole));
 const isSubContribution = computed(() => !!props.contribution.parent_contribution);
+// Lead/steward (and admin) may drag to re-order sub-contributions, mirroring
+// the backend ActionReorderContribution gate. #754
+const canReorderSubs = computed(() => isLead.value || isSteward.value);
 
 // Child contributions — from allContributions prop + locally fetched children
 const localChildren = ref<Contribution[]>([]);
@@ -1184,11 +1202,14 @@ const childContributions = computed<Contribution[]>(() => {
   // to localChildren only when a child id is missing from allContributions
   // (e.g. just-created sub not yet in the parent fetch).
   const localMap = new Map((localChildren.value || []).map(c => [c.id, c]));
-  return ids
+  const resolved = ids
     .map(id => props.allContributions.find(c => c.id === id) ?? localMap.get(id))
     .filter((c): c is Contribution => !!c)
     // Hide archived sub-contributions from the active sub-list.
     .filter(c => c.status !== 'archived');
+  // Canonical sibling order (sort_order, else natural title), consistent with
+  // the milestone list and the compact card.
+  return sortSiblings(resolved);
 });
 
 // Fetch children that aren't in allContributions
@@ -1210,6 +1231,43 @@ watch(
   },
   { immediate: true },
 );
+
+// Local, drag-mutable mirror of the canonical child order so a drag reorders
+// immediately before the backend round-trip + parent refresh lands.
+const orderedChildren = ref<Contribution[]>([]);
+watch(childContributions, (val) => { orderedChildren.value = [...val]; }, { immediate: true });
+
+const subDragIndex = ref<number | null>(null);
+const subDragOverIndex = ref<number | null>(null);
+
+function onSubDragStart(index: number) {
+  if (!canReorderSubs.value) return;
+  subDragIndex.value = index;
+}
+function onSubDragOver(index: number) {
+  if (!canReorderSubs.value || subDragIndex.value === null) return;
+  subDragOverIndex.value = index;
+}
+function onSubDragEnd() {
+  subDragIndex.value = null;
+  subDragOverIndex.value = null;
+}
+async function onSubDrop(index: number) {
+  const from = subDragIndex.value;
+  onSubDragEnd();
+  if (!canReorderSubs.value || from === null || from === index) return;
+  const arr = [...orderedChildren.value];
+  const [moved] = arr.splice(from, 1);
+  if (!moved) return;
+  arr.splice(index, 0, moved);
+  orderedChildren.value = arr;
+  try {
+    await store.reorder(arr.map(c => c.id));
+    emit('update', props.contribution);
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to reorder sub-contributions' });
+  }
+}
 
 const allChildrenSignedOff = computed(() =>
   childContributions.value.every(
@@ -2220,6 +2278,22 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
       background-color: rgba(0, 0, 0, 0.04);
     }
   }
+
+  &.is-dragging {
+    opacity: 0.5;
+  }
+
+  &.drag-over {
+    outline: 2px dashed var(--matou-primary, #1976d2);
+    outline-offset: 1px;
+  }
+}
+
+.sub-drag-handle {
+  flex-shrink: 0;
+  color: #9ca3af;
+  cursor: grab;
+  font-size: 18px;
 }
 
 .sub-item-badges {

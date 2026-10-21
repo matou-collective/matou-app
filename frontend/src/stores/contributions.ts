@@ -21,6 +21,7 @@ import {
   approveSub as apiApproveSub,
   archiveContribution as apiArchiveContrib,
   unassignContribution as apiUnassign,
+  reorderContributions as apiReorder,
   addContributionComment as apiAddComment,
   listContributionComments as apiListComments,
   type Contribution,
@@ -341,6 +342,24 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  /**
+   * Reorder a sibling group. orderedIds is the full new order of one group's
+   * non-archived siblings (milestone top-level or one parent's children). The
+   * returned contributions carry their new sort_order, which we patch into the
+   * local list so views re-sort immediately.
+   */
+  async function reorder(orderedIds: string[]) {
+    error.value = null;
+    try {
+      const { contributions: updated } = await apiReorder(orderedIds);
+      for (const c of updated) _patch(c);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Reorder failed';
+      throw e;
+    }
+  }
+
   const commentsByContribution = ref<Record<string, ContributionComment[]>>({});
 
   async function fetchComments(contributionId: string) {
@@ -421,6 +440,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     approveSub,
     archive,
     unassign,
+    reorder,
     commentsByContribution,
     fetchComments,
     addComment,
