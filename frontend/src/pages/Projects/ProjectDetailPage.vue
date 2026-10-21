@@ -371,7 +371,7 @@
     <!-- Destroy project confirm -->
     <ConfirmDestroyDialog
       v-model="showDestroy"
-      title="Delete Project"
+      title="Archive Project"
       :entity-label="project?.title ?? ''"
       :cascade-summary="cascadeSummary"
       :loading="archivingProject"
@@ -670,7 +670,14 @@ const identityStore = useIdentityStore();
 const contributionsStore = useContributionsStore();
 const profilesStore = useProfilesStore();
 const workflow = useContributionWorkflow();
-const isKeriAdmin = computed(() => identityStore.isAdmin);
+// Community-admin tier only (Operations Steward / Founding Member) — the roles
+// the backend grants a community-wide pass on project actions. Must NOT use the
+// loose identityStore.isAdmin/isSteward, which also flips on for Technical /
+// Financial / Cultural / Community Steward credentials: those do not confer
+// community-wide project powers, so gating on them rendered Delete/Assign
+// buttons the backend then refused (#749). Everyone else falls through to the
+// per-project project_lead_id/project_steward_id match below.
+const isCommunityAdmin = computed(() => identityStore.isCommunityAdmin);
 const { lastEvent } = useBackendEvents();
 
 // ── Current user context ─────────────────────────────────────────────────────
@@ -683,8 +690,9 @@ const currentUserName = computed(() => {
   return member?.name || '';
 });
 const currentUserRole = computed(() => {
-  // KERI-verified admin (founding member, steward, etc.) gets full admin role
-  if (isKeriAdmin.value) return 'community_admin';
+  // Community admin (Operations Steward / Founding Member) gets the full admin
+  // role on every project.
+  if (isCommunityAdmin.value) return 'community_admin';
   const p = project.value;
   if (!p) return 'member';
   if (p.project_lead_id === currentUserId.value) return 'project_lead';
