@@ -140,7 +140,73 @@ To see a task in full:
    A human reviews and merges; the merge closes the issue and the
    push-mirror carries it to GitLab.
 
+## Landing — read your ticket's `landing` field
 
+The claimed ticket's JSON (the ready-tasks block at the top) carries a
+`landing` field. Land your commit the way it names, THEN run the Close step
+(the workflow's close-report gate). A closed issue never retries, so an
+unlanded commit is lost work: land FIRST, then close.
+
+### `"landing": "push"` — the HOST lands on `main` after verify
+
+You do **NOT** push to `main` from the sandbox, and you NEVER run `git push
+origin HEAD:refs/heads/main`. Your commit reaches `main` only after the run
+exits, when the HOST promotes it — and ONLY once the host's post-run gates
+pass: the worker-birth check and the protected-path boundary (a machinery
+edit is rolled back, parked on a rescue branch, and reds the run — it never
+reaches `main`). This is the human-or-host gate AFTER the agent, never
+before: nothing you do in the sandbox puts unverified work on `main`.
+
+Push your commit to THIS run's worker branch, so it is durable and the host
+can land it — never to `main`:
+
+    git push origin "HEAD:refs/heads/$(git rev-parse --abbrev-ref HEAD)"
+
+(`origin` in your sandbox is credential-free: it carries no token, and the
+harness wires a token-free credential helper, so `git push origin`
+authenticates with no token in the remote URL or on the command line. You
+never embed a token in the remote URL; if a push is ever rejected
+unauthenticated, that is a harness fault to report, not a token to paste.)
+
+You do NOT rebase `main` and you do NOT resolve a `main` conflict in the
+sandbox — the HOST owns the rebase-rescue ladder. When it lands your worker
+branch it rebases onto the current `main`, and a conflict it resolves is
+re-tested and routed to a rescue PR or a park, never pushed to `main`
+unverified. So there is no in-sandbox rebase, no in-sandbox re-test, and no
+way for a conflict you touched to reach `main` from here.
+
+If your worker-branch push cannot land after honest attempts, do NOT close
+the issue — follow the blocked path below instead.
+
+### `"landing": "pr"` — a human merges your pull request
+
+The ticket carries the `landing-pr` label. Its work reaches main ONLY
+through a pull request that a HUMAN merges. The push step above does NOT
+apply:
+
+1. NEVER push to main — not once, not "just the docs part", not after a
+   rebase. Do not merge the pull request. Do not close the issue by hand.
+2. Commit as usual, then land with ONE command:
+
+       bash .sandcastle/land-pr.sh <NUMBER> "<concise title> (#<NUMBER>)" <body-file> [screenshot.png ...]
+
+   It pushes `agent/issue-<NUMBER>` (never force), opens the pull request
+   with `closes #<NUMBER>` as its first line followed by your body file,
+   attaches each screenshot, and checks the evidence rule below. If the
+   branch already exists with commits that are not yours, STOP and follow
+   the blocked path — never force-push over unmerged work.
+3. Evidence is mandatory. Either pass at least one screenshot taken AFTER
+   your fix (add a before-shot when you could reproduce the fault), or —
+   only when the fix has no visible surface — put this line in the body
+   file, on a line of its own, with a real reason:
+
+       **Screenshots:** none — <reason>
+
+   Your repo's workflow section says how to produce the screenshots.
+4. Then run the close-report gate as usual. It verifies your commits
+   against the pull request's head, refuses if the evidence is missing,
+   and leaves the issue OPEN: the human's merge closes it.
+5. Never remove the `landing-pr` label. Only a human lifts it.
 
 ## When you are blocked
 

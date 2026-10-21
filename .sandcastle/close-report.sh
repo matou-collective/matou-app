@@ -29,6 +29,14 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/policy-lib.sh"
 # shellcheck source=landing-lib.sh
 . "$here/landing-lib.sh"
+# model-lib.sh (#197): SWARM_REVIEW_MODEL — the tier the reviewer gate runs on,
+# defaulting to the heal tier. swarm-db-lib.sh: swarmdb_spend_from_result records
+# the review call's token spend. Both are sourceable with no side effects beyond
+# defining vars/functions; best-effort, so a host without them never fails a close.
+# shellcheck source=model-lib.sh
+. "$here/model-lib.sh" 2>/dev/null || true
+# shellcheck source=swarm-db-lib.sh
+. "$here/swarm-db-lib.sh" 2>/dev/null || true
 policy_load "${SWARM_POLICY_FILE:-}"
 
 issue="${1:-}"
@@ -71,6 +79,12 @@ if ! landing="$(landing_mode_for "$issue")"; then
   exit 1
 fi
 gate_head="${CR_MAIN_HEAD:-origin/main}"
+# What the final verified-close comment says gate 1 checked against (#283). The
+# default is `main` (CR_MAIN_HEAD, or the pr-merged fall-through where the merge
+# landed on main); the push-mode PRE-land case below rewrites it to name the
+# worker branch, so the comment never falsely claims "verified against main" when
+# it only verified the pushed worker branch the host has not yet promoted.
+gate_head_desc="main"
 pr_number="" pr_no_pr="" pr_merged="" pr_superseded=""
 if [ "$landing" = pr ]; then
   if pr_number="$(landing_merged_pr_for "$issue")"; then
@@ -97,7 +111,89 @@ if [ "$landing" = pr ]; then
   else
     pr_no_pr=1
   fi
+else
+  # push mode (#193): the worker pushed HEAD to its per-run worker branch, NOT
+  # `main` — the HOST promotes it to `main` only after the post-run verify gates.
+  # So PRE-land (this close-report runs in the sandbox, before the host lands)
+  # the claimed commits are reachable from the worker-branch head, not from
+  # origin/main; gate 1 must check THAT head. The worker branch always contains
+  # the worker's commits — a superset of `main` even after the host lands — so a
+  # later re-run still verifies against it (the "then from main after the host
+  # lands" phase is the host's own post-land check, not this one). Only when the
+  # caller has NOT pinned CR_MAIN_HEAD (a test, or a deliberate main re-check) and
+  # HEAD is actually a `sandcastle/worker/*` branch; otherwise gate_head stays
+  # origin/main (today's behaviour for any other checkout).
+  if [ -z "${CR_MAIN_HEAD:-}" ]; then
+    wb="$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    case "$wb" in
+      sandcastle/worker/*)
+        # Prefer the PUSHED remote ref (it proves the land to the worker branch);
+        # fetch it if this checkout lacks the tracking ref. If it still cannot be
+        # resolved, leave gate_head at origin/main — a safe refusal (gate 1 fails
+        # loud) rather than a false close, and by a late re-run the host will have
+        # landed `main` anyway.
+        git -C "$root" rev-parse -q --verify "origin/$wb^{commit}" >/dev/null 2>&1 ||
+          git -C "$root" fetch --quiet origin "$wb" 2>/dev/null || true
+        if git -C "$root" rev-parse -q --verify "origin/$wb^{commit}" >/dev/null 2>&1; then
+          gate_head="origin/$wb"
+          # PRE-land: gate 1 verified the pushed worker branch, NOT main — the
+          # host promotes it to main only after its post-run verify (#193), and
+          # that land can still roll back (#283). Say so, so the close comment is
+          # honest about what it proved.
+          gate_head_desc="the pushed worker branch \`$wb\` (pre-land — the host promotes it to \`main\` only after its post-run verify, #193/#283)"
+        fi ;;
+      *)
+        # #244: a NON-worker-branch push-mode checkout gates against origin/main,
+        # but that tracking ref was captured at run start and is NEVER refreshed
+        # after the worker's push. A commit that landed on `main` DURING the run
+        # is a descendant of a head this checkout never saw, so gate 1 refuses it
+        # as "not landed" — the #237 stall (53793ce on main, every close refused;
+        # #238/#239/#241 blocked ~22h). Refresh the LIVE remote main head here, in
+        # the same checkout gate 1 evaluates, before the reachability check, and
+        # gate against the fetched sha. FETCH_HEAD resolves the just-fetched head
+        # deterministically (no dependence on an opportunistic tracking-ref
+        # update). On a fetch failure (no origin / offline) gate_head stays
+        # origin/main — today's safe refusal, never a false close. The fetch time
+        # is carried into the gate-1 refusal message (CR_HEAD_FETCHED_AT) so a
+        # future stall is diagnosable from the message alone.
+        if git -C "$root" fetch --quiet origin main 2>/dev/null; then
+          live="$(git -C "$root" rev-parse -q --verify FETCH_HEAD 2>/dev/null || true)"
+          if [ -n "$live" ]; then
+            gate_head="$live"
+            CR_HEAD_FETCHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+          fi
+        fi ;;
+    esac
+  fi
 fi
+export CR_HEAD_FETCHED_AT="${CR_HEAD_FETCHED_AT:-}"
+
+# #206 gate seams — all additive (the lib no-ops when a seam resolves empty).
+#  - CR_START_SHA: gate 1's start..head membership + the #<issue> subject check.
+#    run-swarm drops the run's start sha in the host-signals dir, mounted
+#    read-only in the sandbox at /run/host-signals/start-sha.
+#  - CR_ISSUE_BODY: gate 5b's acceptance-clause ↔ `criteria` presence check.
+#  - CR_TEST_HOST_EC: gate 4b — re-run the repo's pinned TEST_CMD host-side and
+#    let the lib compare its exit code to the self-report. Only on a claimed
+#    success, and only when a consumer opted in by declaring TEST_CMD (the empty
+#    default leaves it inert — no command is honest across repos, CLAUDE.md).
+cr_start_sha_file="${CR_START_SHA_FILE:-/run/host-signals/start-sha}"
+if [ -z "${CR_START_SHA:-}" ] && [ -r "$cr_start_sha_file" ]; then
+  CR_START_SHA="$(tr -d '[:space:]' < "$cr_start_sha_file" 2>/dev/null || true)"
+fi
+export CR_START_SHA="${CR_START_SHA:-}"
+if [ -z "${CR_ISSUE_BODY:-}" ]; then
+  CR_ISSUE_BODY="$(forgejo_get "/issues/$issue" 2>/dev/null | jq -r '.body // ""' 2>/dev/null || true)"
+fi
+export CR_ISSUE_BODY="${CR_ISSUE_BODY:-}"
+env_status="$(jq -r '.status // ""' <<<"$json")"
+if [ "$env_status" = success ] && [ -z "${pr_superseded:-}" ] && [ -n "${SWARM_POLICY_TEST_CMD:-}" ] && [ -z "${CR_TEST_HOST_EC:-}" ]; then
+  echo "close-report: re-running the pinned test command host-side (gate 4b, #206): $SWARM_POLICY_TEST_CMD" >&2
+  cr_test_ec=0
+  ( cd "$root" && eval "$SWARM_POLICY_TEST_CMD" ) >/dev/null 2>&1 || cr_test_ec=$?
+  CR_TEST_HOST_EC="$cr_test_ec"
+fi
+export CR_TEST_HOST_EC="${CR_TEST_HOST_EC:-}"
 
 # Deterministic verdict. cr_violations echoes one line per failed gate. The
 # superseded path (#151) skips it: the winner's PR carries the work, and this
@@ -131,8 +227,171 @@ if [ "$landing" = pr ] && [ -n "$pr_number" ] && [ -z "$pr_merged" ] && [ -z "$p
   fi
 fi
 
+# ── the reviewer gate's seams (#197) ──────────────────────────────────────────
+# cr_review_enabled — the gate is ON when a reviewer can actually RUN: the test
+# seam CR_REVIEW_CMD is set, OR a review model is configured AND `claude` is on
+# PATH. CR_REVIEW_DISABLE is the explicit escape hatch. The fail-CLOSED posture
+# (#197) is about a reviewer that RAN and returned garbage — cr_review_parse
+# refuses on empty/unparseable output. The ABSENCE of a reviewer binary is an
+# environment fact, not a bad review: skipping the gate there is no worse than
+# the pre-#197 world (no review at all), where failing the close closed would
+# brick every close on a host whose worker sandbox has no `claude`.
+cr_review_enabled() {
+  [ -z "${CR_REVIEW_DISABLE:-}" ] || return 1
+  [ -n "${CR_REVIEW_CMD:-}" ] && return 0
+  [ -n "${SWARM_REVIEW_MODEL:-}" ] && command -v claude >/dev/null 2>&1
+}
+
+# cr_review_build_prompt — the reviewer prompt: the fixed skeleton (rendered into
+# .sandcastle/review-prompt.md beside this script) followed by the issue body, the
+# worker's criteria/tests, and the diff of the claimed commits. Best-effort — any
+# piece that cannot be read is simply omitted; the reviewer still has read-only
+# tools to explore the checkout.
+# _cr_review_prompt_default — the reviewer-prompt skeleton's location, resolved
+# across the two layouts close-report runs from (#228): beside this script in the
+# vendored .sandcastle/ copy (where render-prompts drops review-prompt.md), or
+# under prompts/ when running from the repo root (the skeleton's home — the root
+# has no review-prompt.md beside the script). Echoes the first that exists; else
+# $here/review-prompt.md so a missing skeleton still degrades to a best-effort
+# prompt (cr_review_build_prompt simply skips a non-existent skel).
+_cr_review_prompt_default() {
+  if [ -f "$here/review-prompt.md" ]; then
+    printf '%s\n' "$here/review-prompt.md"
+  elif [ -f "$here/prompts/review-prompt.md" ]; then
+    printf '%s\n' "$here/prompts/review-prompt.md"
+  else
+    printf '%s\n' "$here/review-prompt.md"
+  fi
+}
+
+cr_review_build_prompt() {
+  local skel="${CR_REVIEW_PROMPT_FILE:-$(_cr_review_prompt_default)}" shas diff body
+  if [ -f "$skel" ]; then cat "$skel"; fi
+  printf '\n\n## The issue\n\n'
+  body="$(forgejo_get "/issues/$issue" 2>/dev/null | jq -r '.body // ""' 2>/dev/null || true)"
+  printf '%s\n' "${body:-(issue body unavailable)}"
+  printf '\n## The worker'\''s envelope (criteria + tests)\n\n'
+  jq '{criteria: (.criteria // {}), tests: (.tests // [])}' <<<"$json" 2>/dev/null || true
+  printf '\n## The diff\n\n'
+  shas="$(jq -r '(.commits // []) | join(" ")' <<<"$json" 2>/dev/null || true)"
+  if [ -n "$shas" ]; then
+    # shellcheck disable=SC2086  # intentional word-split of the sha list
+    diff="$(git -C "$root" show --format=medium $shas 2>/dev/null | head -c 200000 || true)"
+  fi
+  printf '```diff\n%s\n```\n' "${diff:-(diff unavailable)}"
+}
+
+# cr_review_invoke <prompt-file> <result-file> <log-file> — run the read-only
+# reviewer. CR_REVIEW_CMD is the test seam (the stub receives the prompt file as
+# $1 and writes the claude-shaped result to stdout). Production runs headless
+# `claude --output-format json` on SWARM_REVIEW_MODEL with a READ-ONLY tool
+# allowlist — no Edit/Write/push, so the reviewer can never mutate the checkout
+# (the review-prompt.md "read-only" contract, enforced not just asked). A missing
+# `claude` leaves the result empty → cr_review_parse fails CLOSED.
+cr_review_invoke() {
+  local prompt_file="$1" result="$2" log="$3"
+  : > "$result"
+  if [ -n "${CR_REVIEW_CMD:-}" ]; then
+    ${CR_REVIEW_CMD} "$prompt_file" > "$result" 2>"$log" || true
+    return 0
+  fi
+  command -v claude >/dev/null 2>&1 || return 0
+  local tools="${CR_REVIEW_ALLOWED_TOOLS:-Read,Grep,Glob,Bash(git diff:*),Bash(git show:*),Bash(git log:*),Bash(git status:*)}"
+  ( cd "$root" && timeout "${CR_REVIEW_TIMEOUT:-600}" claude -p --model "$SWARM_REVIEW_MODEL" \
+      --allowedTools "$tools" --output-format json "$(cat "$prompt_file")" ) \
+    > "$result" 2>"$log" || true
+}
+
+# cr_post_review <normalised-json> <verdict> — post the review verdict + findings
+# on the thread, like the envelope (#197 AC). Best-effort: never fails the close.
+cr_post_review() {
+  local rjson="$1" verdict="$2" lines body emoji
+  lines="$(cr_review_finding_lines "$rjson")"
+  case "$verdict" in
+    approve)         emoji=":white_check_mark:" ;;
+    reject)          emoji=":no_entry:" ;;
+    unsure)          emoji=":grey_question:" ;;
+    unauthenticated) emoji=":fast_forward:" ;;
+    *)               emoji=":warning:" ;;
+  esac
+  body="$emoji **independent reviewer** for #$issue — verdict \`$verdict\`
+${lines:+
+$(printf '%s\n' "$lines" | sed 's/^/- /')
+}
+<details><summary>review JSON</summary>
+
+\`\`\`json
+$(jq . <<<"$rjson" 2>/dev/null || printf '%s' "$rjson")
+\`\`\`
+</details>"
+  jq -n --arg b "$body" '{body:$b}' |
+    curl -sf -X POST -H "Authorization: token $token" -H "Content-Type: application/json" \
+      -d @- "$FORGEJO_API/issues/$issue/comments" >/dev/null 2>&1 || true
+}
+
 status="$(jq -r '.status // "?"' <<<"$json")"
 pretty="$(jq . <<<"$json")"
+
+# ── gate: the independent reviewer (#197) ─────────────────────────────────────
+# A SECOND, read-only agent reads the run's diff before the close can proceed —
+# the deterministic gates above only check envelope self-consistency, never code
+# quality or spec conformance. Runs ONLY when the close would otherwise succeed:
+# the deterministic gates passed (gate_rc==0), the worker claims success, and this
+# is none of: a superseded race, a no-PR dead-end, or an already-merged PR whose
+# work has already landed (nothing of it is still gated here). In
+# pr mode this sits BEFORE the mode branch below, so it gates the close ahead of
+# landing_merge_if_green. The reviewer emits JSON {verdict, findings}; reject →
+# fold the findings into the violation list (refuse), unsure → park the ticket
+# ready-for-human with the findings attached, approve → proceed, unauthenticated
+# → SKIP the gate (a claude -p child that is not logged in is treated as an
+# absent reviewer, #228). Unparseable / empty output from a reviewer that
+# genuinely RAN still fails CLOSED (refuse). The review JSON is posted on the thread like
+# the envelope, and the review call's token spend is recorded (swarm.db, #94).
+park_for_human=""
+if cr_review_enabled && [ "$gate_rc" -eq 0 ] && [ "$status" = success ] \
+   && [ -z "$pr_superseded" ] && [ -z "$pr_no_pr" ] && [ -z "$pr_merged" ]; then
+  cr_review_result="$(mktemp 2>/dev/null || echo /tmp/cr-review-$issue.json)"
+  cr_review_log="$(mktemp 2>/dev/null || echo /tmp/cr-review-$issue.log)"
+  cr_review_build_prompt > "$cr_review_result.prompt" 2>/dev/null || true
+  cr_review_invoke "$cr_review_result.prompt" "$cr_review_result" "$cr_review_log"
+  # Spend for the review call (#197/#94): best-effort, a no-op without swarm.db.
+  if declare -F swarmdb_spend_from_result >/dev/null 2>&1; then
+    cr_spent="$(swarmdb_spend_from_result "${SWARM_RUN_ID:-close-report-$issue}" "$issue" \
+      "${CLAUDE_ACTIVE_ACCOUNT:-}" "$cr_review_result" 2>/dev/null || echo 0)"
+    if [ "$cr_spent" = 1 ]; then
+      echo "close-report: recorded the review call's token spend (#197/#94)"
+    fi
+  fi
+  review_json="$(cr_review_parse "$cr_review_result")"
+  review_verdict="$(jq -r '.verdict // "malformed"' <<<"$review_json" 2>/dev/null || echo malformed)"
+  review_lines="$(cr_review_finding_lines "$review_json")"
+  cr_post_review "$review_json" "$review_verdict"   # on the thread, like the envelope
+  case "$review_verdict" in
+    approve) ;;  # proceed to the mode branch / direct close
+    unauthenticated)
+      # #228: the reviewer subprocess could not AUTHENTICATE — a `claude -p`
+      # child in an interactive standing session is not logged in. Treat it like
+      # an ABSENT reviewer binary and SKIP the gate (no violation, no gate_rc=1);
+      # the close proceeds on the deterministic gates alone, no worse than the
+      # pre-#197 world. Visible on stdout + the thread (cr_post_review above),
+      # never a silent pass. Fail-CLOSED is retained for a reviewer that genuinely
+      # ran and returned garbage (the malformed case below).
+      echo "close-report: the independent reviewer could not authenticate (claude -p is not logged in) — SKIPPING the reviewer gate, treated as an absent reviewer (#228)" ;;
+    reject)
+      # The findings become the close's violation list, verbatim (#197).
+      if [ -n "$review_lines" ]; then
+        violations="${violations:+$violations$'\n'}$review_lines"
+      else
+        violations="${violations:+$violations$'\n'}reviewer rejected the diff (no findings enumerated)"
+      fi
+      gate_rc=1 ;;
+    unsure)
+      park_for_human=1 ;;
+    *)  # malformed / empty — fail CLOSED
+      violations="${violations:+$violations$'\n'}reviewer output was empty or unparseable — failing the close CLOSED (#197)"
+      gate_rc=1 ;;
+  esac
+fi
 
 # #574: close_outcome — the value swarm-db.py's attempts.close_outcome column
 # exists for (success|blocked|refused|...) — is the GATE's verdict, not merely
@@ -146,6 +405,7 @@ pretty="$(jq . <<<"$json")"
 # capture left (#574 item 1).
 outcome="$status"
 [ "$gate_rc" -ne 0 ] && outcome="refused"
+[ -n "$park_for_human" ] && outcome="parked"      # #197: reviewer said `unsure`
 [ -n "$pr_superseded" ] && outcome="superseded"   # #151: another host won the race
 commits_csv="$(jq -r '(.commits // []) | join(",")' <<<"$json")"
 echo "SANDCASTLE_ATTEMPT issue=$issue outcome=$outcome commits=$commits_csv"
@@ -153,9 +413,23 @@ echo "SANDCASTLE_ATTEMPT issue=$issue outcome=$outcome commits=$commits_csv"
 # The envelope lands on the issue in EVERY outcome (evidence trail, #444 AC).
 # post_comment wraps the given verdict markdown with the header + envelope.
 post_comment() { # post_comment <verdict-markdown>
+  # #1940: a mirror gate is waivable only by an explicit `mirror_waiver`, which
+  # must sit in the posted comment for a human to read — surface it in the
+  # verdict prose, not just inside the collapsed envelope.
+  local waiver_note="" mw xw
+  mw="$(jq -r '.mirror_waiver // "" | tostring' <<<"$json")"
+  [ -n "$mw" ] && waiver_note="
+
+> :warning: **mirror_waiver:** $mw"
+  # #1963: gate 9's cross-repo waiver is the same bargain — the close asserts no
+  # other repo is left guessing, and a human must be able to check that claim.
+  xw="$(jq -r '.cross_repo_waiver // "" | tostring' <<<"$json")"
+  [ -n "$xw" ] && waiver_note="$waiver_note
+
+> :warning: **cross_repo_waiver:** $xw"
   local body="**close-report** for #$issue — status \`$status\`
 
-$1
+$1$waiver_note
 
 <details><summary>envelope</summary>
 
@@ -212,6 +486,32 @@ if [ -n "$pr_superseded" ]; then
   exit 0
 fi
 
+# #197: the reviewer said `unsure` — a judgement call it will not make and the
+# deterministic gates cannot. Do NOT close and do NOT refuse-for-retry: PARK the
+# ticket for a human, findings attached, so a person rules on it. Hand the claim
+# over like the blocked path does (remove ready-for-agent + agent-working, add
+# ready-for-human) and exit 0 — the worker's part is done, the human takes it.
+if [ -n "$park_for_human" ]; then
+  park_bullets=""
+  [ -n "$review_lines" ] && park_bullets="
+
+$(printf '%s\n' "$review_lines" | sed 's/^/- /')"
+  post_comment ":grey_question: **close-report: reviewer UNSURE — parked \`ready-for-human\`** — every deterministic gate passed, but the independent reviewer (#197) could not rule on the diff and flagged it for a human. The review JSON is on the thread above; its findings:$park_bullets"
+  park_labels_json="$(forgejo_get "/labels?limit=50" 2>/dev/null || true)"
+  rfh_id="$(forgejo_label_id "$park_labels_json" ready-for-human)"
+  if [ -n "$rfh_id" ]; then
+    forgejo_add_labels "$issue" "$rfh_id" >/dev/null 2>&1 || true
+  else
+    echo "close-report: warning: label 'ready-for-human' not on the tracker — cannot park #$issue" >&2
+  fi
+  for lname in ready-for-agent agent-working; do
+    lid="$(forgejo_label_id "$park_labels_json" "$lname")"
+    [ -n "$lid" ] && forgejo_remove_label "$issue" "$lid" >/dev/null 2>&1 || true
+  done
+  echo "close-report: #$issue parked ready-for-human — the reviewer was unsure (#197). Issue left OPEN for a human."
+  exit 0
+fi
+
 if [ "$gate_rc" -ne 0 ]; then
   bullets="$(printf '%s\n' "$violations" | sed 's/^/- /')"
   post_comment ":no_entry: **close-report gates REFUSED this close** — the following claims did not verify:
@@ -231,6 +531,13 @@ if [ "$landing" = pr ]; then
   merge_authority="$(landing_merge_authority_for "$issue")"   # per ticket: landing-pr is ALWAYS human (idss ADR 0267)
   pr_url="$(forgejo_get "/pulls/$pr_number" 2>/dev/null | jq -r '.html_url // empty' 2>/dev/null || true)"
   pr_link="PR #$pr_number${pr_url:+ ($pr_url)}"
+  # #206: stamp the PR with the gates-passed marker BEFORE any agent merge path
+  # reads it (landing_merge_if_green requires it, so a green PR whose worker never
+  # ran a verified close-report is no longer merged on green alone). Best-effort:
+  # a human merge never needs it, and a failed post must not fail a passed close.
+  if [ -n "$pr_number" ]; then
+    forgejo_comment "$pr_number" "$LANDING_GATES_MARKER close-report gates passed for #$issue — every claim verified; this PR is cleared for merge." >/dev/null 2>&1 || true
+  fi
   if [ -n "$pr_merged" ]; then
     # #108: the PR was already merged (a reconcile sweep got there first). If its
     # `closes #N` closed the issue, record the verified close and release the
@@ -304,7 +611,7 @@ state="$(curl -sf -H "Authorization: token $token" "$FORGEJO_API/issues/$issue" 
   jq -r '.state // "?"' 2>/dev/null || true)"
 
 if [ "$state" = "closed" ]; then
-  post_comment ":white_check_mark: **close-report gates passed** — every claim verified against main; issue closed."
+  post_comment ":white_check_mark: **close-report gates passed** — every claim verified against $gate_head_desc; issue closed."
   echo "close-report: issue #$issue closed (all claim gates passed)."
   cr_release_claim_labels "$issue"   # #22: the close stuck — release the claim labels
 else

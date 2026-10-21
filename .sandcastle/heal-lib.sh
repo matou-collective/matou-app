@@ -220,3 +220,26 @@ watchdog_detect() {
       else empty end
   ' "$1"
 }
+
+# watchdog_run_url <runs-json-path> <workflow> — the web URL of the most recent
+# run for <workflow>, folding .workflow_id exactly as watchdog_detect emits its
+# label, so the watchdog can fetch THAT run's own job logs (#188). In watchdog
+# mode there is no RUN_URL env (healer.yml's hourly sweep never sets one), and
+# the only route that serves a job log is the run's WEB url + the job-log path
+# (`<run-url>/jobs/<n>/attempt/1/logs`) — the API url 404s (see the #188 table).
+# So the run's `.html_url` in the payload is the one ratchet-clean source for it:
+# reading it is DATA, never a literal `actions/runs` string in the harness
+# source, so the actions-endpoint ratchet stays green. Echoes empty when the
+# payload carries no html_url for the workflow (an older/foreign shape) — the
+# caller then records that the job log was not fetched (AC4), never a silent
+# empty file.
+watchdog_run_url() {
+  jq -r --arg wf "$2" '
+    [.workflow_runs[]
+      | {wf: (if ((.workflow_id // "") | length) > 0
+              then (.workflow_id | sub("\\.ya?ml$"; "")) else .name end),
+         n: .run_number, url: (.html_url // "")}
+      | select(.wf == $wf and (.url | length) > 0)]
+    | sort_by(-.n) | .[0].url // empty
+  ' "$1" 2>/dev/null
+}

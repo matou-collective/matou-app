@@ -26,7 +26,7 @@ FAKE_DIR="$tmp/fake"; mkdir -p "$FAKE_DIR"; export FAKE_DIR
 jq -n '[{"id":5001,"body":"swarm-claim host=hostA run=900\n(automated)"},
         {"id":5002,"body":"swarm-claim host=hostB run=902\n(automated)"}]' >"$FAKE_DIR/comments-700.json"
 
-git init -q "$tmp/work"; cd "$tmp/work"
+git init -q "$tmp/work"; cd "$tmp/work" || exit 1
 mkdir -p .sandcastle/git-hooks
 cp "$fac/git-hooks/commit-msg" .sandcastle/git-hooks/commit-msg
 cp "$fac/claim-lib.sh"         .sandcastle/claim-lib.sh
@@ -37,7 +37,7 @@ chmod +x .sandcastle/git-hooks/commit-msg
 git config core.hooksPath .sandcastle/git-hooks
 
 echo seed > f.txt; git add -A
-SWARM_RUN_ID= git commit -qm "seed (no run)" || { echo "seed commit failed" >&2; exit 1; }
+SWARM_RUN_ID='' git commit -qm "seed (no run)" || { echo "seed commit failed" >&2; exit 1; }
 
 OUT="$tmp/out"
 # try_commit <run> <message> -> sets global rc; commit output in $OUT

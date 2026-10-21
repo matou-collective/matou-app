@@ -10,6 +10,15 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/../limit-lib.sh"
 
+# Hermetic token env (#227): the offline suite must be byte-identical on every
+# host. A standing session / the matou-workstation CI runner carries a real
+# CLAUDE_CODE_OAUTH_TOKEN(_B) in its process env, which claude_active_fp would
+# otherwise fingerprint — keying the limit marker by fp and diverging from the
+# fingerprint-less paths the early cases assert on (the pre-#200 bare marker).
+# The fp-keyed cases below set their own tokens explicitly, so neutralise any
+# ambient credential first; the suite then controls its whole token world.
+unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_B CLAUDE_TOKEN_PRIMARY CLAUDE_ACCOUNT_FP 2>/dev/null || true
+
 fail() { echo "FAIL: $1" >&2; exit 1; }
 tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
 pass=0
@@ -69,14 +78,38 @@ do
 done
 pass=$((pass+1))
 
+# --- state-dir redirect (#205): the limit + active-token markers live under
+#     HOST_CAPACITY_STATE_DIR (off /tmp, so a reboot no longer wipes the park
+#     edge / drops the host back to the exhausted account). A redirected state
+#     root isolates both, and park() creates the dir it writes into. ---
+sd="$(mktemp -d)"; rmdir "$sd"     # not pre-created: park must mkdir it
+out="$(bash -c '
+  unset CLAUDE_LIMIT_MARKER CLAUDE_ACTIVE_MARKER
+  export HOST_CAPACITY_STATE_DIR="$2"
+  . "$1"
+  printf "LIMIT=%s\n" "$CLAUDE_LIMIT_MARKER"
+  printf "ACTIVE=%s\n" "$CLAUDE_ACTIVE_MARKER"
+  claude_mark_active A              # writes into a not-yet-existing state dir
+  claude_limit_park >/dev/null
+  [ -s "$CLAUDE_LIMIT_MARKER" ] && printf "PARKED=yes\n"
+' _ "$here/../limit-lib.sh" "$sd")"
+[ "$(sed -n 's/^LIMIT=//p' <<<"$out")" = "$sd/matou-swarm-claude-limit" ] \
+  || fail "the limit marker must derive from the state dir, got: $out"
+[ "$(sed -n 's/^ACTIVE=//p' <<<"$out")" = "$sd/matou-swarm-claude-active-token" ] \
+  || fail "the active-token marker must derive from the state dir, got: $out"
+[[ "$out" == *PARKED=yes* ]] \
+  || fail "park() must create the state dir and write the marker there, got: $out"
+rm -rf "$sd"
+pass=$((pass+1))
+
 # --- the host-global limit MARKER matrix (#253): the guard every claude caller
 #     rides. absent → not parked; fresh → parked; stale → not parked; and park()
 #     makes a subsequent parked() true. Point the marker at a temp path so the
 #     test never touches the real /tmp/matou-swarm-claude-limit. ---
-export CLAUDE_LIMIT_MARKER="$(mktemp -u)"; export CLAUDE_LIMIT_TTL=3600
+CLAUDE_LIMIT_MARKER="$(mktemp -u)"; export CLAUDE_LIMIT_MARKER CLAUDE_LIMIT_TTL=3600
 # Pin the active-account marker too (claude_limit_park now reads it for the
 # exhausted account, #100) so this test never reads the real host marker.
-export CLAUDE_ACTIVE_MARKER="$(mktemp -u)"; rm -f "$CLAUDE_ACTIVE_MARKER"
+CLAUDE_ACTIVE_MARKER="$(mktemp -u)"; export CLAUDE_ACTIVE_MARKER; rm -f "$CLAUDE_ACTIVE_MARKER"
 rm -f "$CLAUDE_LIMIT_MARKER"
 claude_limit_parked && fail "an ABSENT marker must not read as parked"
 claude_limit_park
@@ -109,7 +142,7 @@ pass=$((pass+1))
 #     lost-capacity window survives the live marker clearing. limit-lib carries
 #     no hard swarm-db dependency, so the record is a no-op where swarmdb_event
 #     is undefined — but the park itself (marker + account content) still works. ---
-export CLAUDE_ACTIVE_MARKER="$(mktemp -u)"; rm -f "$CLAUDE_ACTIVE_MARKER"
+CLAUDE_ACTIVE_MARKER="$(mktemp -u)"; export CLAUDE_ACTIVE_MARKER; rm -f "$CLAUDE_ACTIVE_MARKER"
 rm -f "$CLAUDE_LIMIT_MARKER"
 # (a) NO mirror wired: park must still stamp the marker with the active account,
 #     and neither park nor sweep may error for want of swarmdb_event.
@@ -153,7 +186,7 @@ pass=$((pass+1))
 # --- two-account failover (#510): ride over an exhausted weekly window ---
 # Marker points at a temp path so the test never touches the real
 # /tmp/matou-swarm-claude-active-token.
-export CLAUDE_ACTIVE_MARKER="$(mktemp -u)"
+CLAUDE_ACTIVE_MARKER="$(mktemp -u)"; export CLAUDE_ACTIVE_MARKER
 rm -f "$CLAUDE_ACTIVE_MARKER"
 
 # no standby token: selection is a NO-OP (single-account hosts unchanged) and
@@ -207,6 +240,88 @@ claude_failover
 touch -d "25 hours ago" "$CLAUDE_ACTIVE_MARKER"
 [ "$(claude_active_account)" = "A" ] || fail "an aged A marker must stay A (sticky, not a B latch)"
 rm -f "$CLAUDE_ACTIVE_MARKER"
+pass=$((pass+1))
+
+# --- #200: the account FINGERPRINT, never the token ---------------------------
+# sha256(token)[:12]; distinct tokens → distinct fingerprints; an empty token
+# fingerprints to the empty string (callers fall back to the bare marker).
+[ "$(claude_fingerprint tok-A)" = "$(printf '%s' tok-A | sha256sum | cut -c1-12)" ] \
+  || fail "claude_fingerprint must be sha256(token)[:12]"
+[ "$(claude_fingerprint tok-A)" != "$(claude_fingerprint tok-B)" ] \
+  || fail "distinct tokens must fingerprint differently"
+[ -z "$(claude_fingerprint "")" ] || fail "an empty token must fingerprint to the empty string"
+# and the fingerprint is NOT the token (it is a 12-hex prefix)
+[ "$(claude_fingerprint tok-A)" != "tok-A" ] || fail "the fingerprint must never be the token itself"
+pass=$((pass+1))
+
+# --- #200: two tokens on one host park INDEPENDENTLY --------------------------
+# The limit marker is keyed by the active token's fingerprint, so account A
+# exhausting its window parks only callers on A; a caller on B (its window still
+# good) is NOT parked, and parks on its OWN fingerprinted marker when it too hits
+# the limit. This is the whole point: a repo/account exhausting ITS token no
+# longer parks every other token on the host.
+CLAUDE_LIMIT_MARKER="$(mktemp -u)"; export CLAUDE_LIMIT_MARKER; export CLAUDE_LIMIT_TTL=3600
+CLAUDE_ACTIVE_MARKER="$(mktemp -u)"; export CLAUDE_ACTIVE_MARKER; rm -f "$CLAUDE_ACTIVE_MARKER"
+export CLAUDE_CODE_OAUTH_TOKEN="tok-A" CLAUDE_CODE_OAUTH_TOKEN_B="tok-B"
+unset CLAUDE_TOKEN_PRIMARY
+claude_select_token
+fpA="$(claude_fingerprint tok-A)"; fpB="$(claude_fingerprint tok-B)"
+# active account A hits its limit and parks:
+[ "$(claude_active_account)" = "A" ] || fail "fp test must start on account A"
+claude_limit_park
+claude_limit_parked || fail "A's own token must read parked on its fingerprinted marker"
+[ -s "${CLAUDE_LIMIT_MARKER}-${fpA}" ] || fail "the limit marker must be keyed by A's fingerprint"
+[ ! -e "${CLAUDE_LIMIT_MARKER}" ] || fail "the bare (unkeyed) marker must NOT be written when a fingerprint exists"
+# fail over to B: B's window is still good, so B must NOT read parked...
+claude_failover
+[ "$(claude_active_account)" = "B" ] || fail "failover must land on B"
+claude_limit_parked && fail "B's token must NOT be parked by A's exhausted window (independent markers)"
+# ...and when B too hits its limit it parks on its OWN fingerprinted marker,
+# leaving A's marker untouched (both windows now independently parked).
+claude_limit_park
+[ -s "${CLAUDE_LIMIT_MARKER}-${fpB}" ] || fail "B's park must key by B's fingerprint"
+claude_limit_parked || fail "B must now read parked on its own marker"
+# flip back to A: still parked (its marker was never cleared by B's park).
+claude_failover
+claude_limit_parked || fail "A must still be parked — B's park must not have cleared A's marker"
+# #200: claude_select_token publishes the active token's fingerprint.
+[ "$CLAUDE_ACCOUNT_FP" = "$fpA" ] || fail "claude_select_token must export CLAUDE_ACCOUNT_FP for the active token"
+claude_failover
+[ "$CLAUDE_ACCOUNT_FP" = "$fpB" ] || fail "a failover must re-export CLAUDE_ACCOUNT_FP for the new account"
+rm -f "${CLAUDE_LIMIT_MARKER}-${fpA}" "${CLAUDE_LIMIT_MARKER}-${fpB}" "$CLAUDE_ACTIVE_MARKER"
+unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_B CLAUDE_TOKEN_PRIMARY CLAUDE_ACCOUNT_FP
+pass=$((pass+1))
+
+# --- #200: the active marker DEFAULT is keyed by the fingerprint PAIR ----------
+# (Only the default — a pinned CLAUDE_ACTIVE_MARKER in env is respected as-is, so
+# every reader above is unaffected.) Both tokens → a `<fpA>-<fpB>` suffix; one
+# token → `<fpA>`; none → the bare base.
+pairout="$(bash -c '
+  unset CLAUDE_ACTIVE_MARKER CLAUDE_TOKEN_PRIMARY
+  export HOST_CAPACITY_STATE_DIR="$2"
+  export CLAUDE_CODE_OAUTH_TOKEN=tok-A CLAUDE_CODE_OAUTH_TOKEN_B=tok-B
+  . "$1"
+  printf "%s\n" "$CLAUDE_ACTIVE_MARKER"
+' _ "$here/../limit-lib.sh" /tmp)"
+[ "$pairout" = "/tmp/matou-swarm-claude-active-token-$(claude_fingerprint tok-A)-$(claude_fingerprint tok-B)" ] \
+  || fail "the active marker default must be keyed by the fingerprint pair, got: $pairout"
+oneout="$(bash -c '
+  unset CLAUDE_ACTIVE_MARKER CLAUDE_TOKEN_PRIMARY CLAUDE_CODE_OAUTH_TOKEN_B
+  export HOST_CAPACITY_STATE_DIR="$2"
+  export CLAUDE_CODE_OAUTH_TOKEN=tok-A
+  . "$1"
+  printf "%s\n" "$CLAUDE_ACTIVE_MARKER"
+' _ "$here/../limit-lib.sh" /tmp)"
+[ "$oneout" = "/tmp/matou-swarm-claude-active-token-$(claude_fingerprint tok-A)" ] \
+  || fail "a single-token host must key the active marker by the one fingerprint, got: $oneout"
+noneout="$(bash -c '
+  unset CLAUDE_ACTIVE_MARKER CLAUDE_TOKEN_PRIMARY CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_B
+  export HOST_CAPACITY_STATE_DIR="$2"
+  . "$1"
+  printf "%s\n" "$CLAUDE_ACTIVE_MARKER"
+' _ "$here/../limit-lib.sh" /tmp)"
+[ "$noneout" = "/tmp/matou-swarm-claude-active-token" ] \
+  || fail "with no token the active marker default must be the bare base (pre-#200 path), got: $noneout"
 pass=$((pass+1))
 
 # --- Claude auth-refusal detection (#632): a DEAD TOKEN is a different

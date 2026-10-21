@@ -11,7 +11,7 @@
 # definitions + trigger rules, not a level ladder); enforcement is built NOW.
 #
 # The knobs (swarm-policy.sh — the consumer's identity layer, ABSENT by default):
-#   LANDING=push|pr                        push: rebase + push HEAD:refs/heads/main
+#   LANDING=push|pr                        push: worker pushes its run branch, HOST lands main after verify (#193)
 #                                          (today's behaviour). pr: branch + PR.
 #   MERGE_AUTHORITY=human|agent-after-green only meaningful when LANDING=pr.
 #   SESSION_RUNNER=on|off                  the ready-for-session drainer — ON for
@@ -28,6 +28,15 @@
 #                                          repos, so an undeclared repo is told
 #                                          so in words rather than sent to a
 #                                          404. Repo-relative, one path.
+#   TEST_CMD="<shell command>"             the repo's pinned OFFLINE test command
+#                                          (its CLAUDE.md loop) that close-report
+#                                          RE-RUNS host-side to refute a false
+#                                          green (#206, gate 4b). EMPTY by
+#                                          default — no universal command is
+#                                          honest across repos (CLAUDE.md's
+#                                          blast-radius rule), and an empty value
+#                                          leaves gate 4b inert. A consumer opts
+#                                          in by declaring its own loop here.
 #
 # The trigger vocabulary (fixed — a policy naming any other trigger fails LOUD):
 #   one-way-door    an irreversible / one-way-door decision (ADR 0174) that needs
@@ -75,10 +84,19 @@ policy_load() {
   local SESSION_RUNNER=on
   local HUMAN_LABELS="ready-for-human:one-way-door agent-blocked:cannot-proceed needs-info:missing-context"
   local PROTECTED_PATHS="${PP_PROTECTED_DIRS_DEFAULT:-.sandcastle .forgejo}"
+  # Enforcement defaults ON (#193 flipped it once the worker stopped pushing main
+  # from the sandbox; the rollback now genuinely keeps a machinery edit off main).
+  # A consumer that still carries tickets landing directly on `.sandcastle/` opts
+  # OUT per repo with PROTECTED_PATH_ENFORCE=off and a dated reason (#208). The
+  # key waits for the pin that knows it before it can be declared (GOTCHAS 17).
+  local PROTECTED_PATH_ENFORCE=on
   # No default: which decision record carries a repo's two-way-door doctrine is
   # per-repo, and defaulting it to any product's path is exactly the 404 #42
   # closes (CLAUDE.md's blast-radius rule).
   local TWO_WAY_DOOR_DOC=""
+  # Empty by default: gate 4b (#206) stays inert until a consumer declares its
+  # own offline loop — no single command is honest across repos.
+  local TEST_CMD=""
   SWARM_POLICY_FILE_PRESENT=false
   if [ -f "$file" ]; then
     SWARM_POLICY_FILE_PRESENT=true
@@ -90,10 +108,13 @@ policy_load() {
   SWARM_POLICY_SESSION_RUNNER="$SESSION_RUNNER"
   SWARM_POLICY_HUMAN_LABELS="$HUMAN_LABELS"
   SWARM_POLICY_PROTECTED_PATHS="$PROTECTED_PATHS"
+  SWARM_POLICY_PROTECTED_PATH_ENFORCE="$PROTECTED_PATH_ENFORCE"
   SWARM_POLICY_TWO_WAY_DOOR_DOC="$TWO_WAY_DOOR_DOC"
+  SWARM_POLICY_TEST_CMD="$TEST_CMD"
   export SWARM_POLICY_LANDING SWARM_POLICY_MERGE_AUTHORITY SWARM_POLICY_SESSION_RUNNER \
          SWARM_POLICY_HUMAN_LABELS SWARM_POLICY_PROTECTED_PATHS \
-         SWARM_POLICY_TWO_WAY_DOOR_DOC SWARM_POLICY_FILE_PRESENT
+         SWARM_POLICY_PROTECTED_PATH_ENFORCE \
+         SWARM_POLICY_TWO_WAY_DOOR_DOC SWARM_POLICY_TEST_CMD SWARM_POLICY_FILE_PRESENT
 }
 
 # _policy_check_structure [file] — the network-free half of validation: an
@@ -109,8 +130,8 @@ _policy_check_structure() {
       case "$line" in *=*) key="${line%%=*}" ;; *) continue ;; esac
       key="${key%%[[:space:]]*}"
       case "$key" in
-        LANDING|MERGE_AUTHORITY|SESSION_RUNNER|HUMAN_LABELS|PROTECTED_PATHS|TWO_WAY_DOOR_DOC) : ;;
-        *) echo "policy: unknown key $key (allowed: LANDING MERGE_AUTHORITY SESSION_RUNNER HUMAN_LABELS PROTECTED_PATHS TWO_WAY_DOOR_DOC)" >&2; return 2 ;;
+        LANDING|MERGE_AUTHORITY|SESSION_RUNNER|HUMAN_LABELS|PROTECTED_PATHS|PROTECTED_PATH_ENFORCE|TWO_WAY_DOOR_DOC|TEST_CMD) : ;;
+        *) echo "policy: unknown key $key (allowed: LANDING MERGE_AUTHORITY SESSION_RUNNER HUMAN_LABELS PROTECTED_PATHS PROTECTED_PATH_ENFORCE TWO_WAY_DOOR_DOC TEST_CMD)" >&2; return 2 ;;
       esac
     done < "$file"
   fi
@@ -125,6 +146,10 @@ _policy_check_structure() {
   case "$SWARM_POLICY_SESSION_RUNNER" in
     on|off) : ;;
     *) echo "policy: SESSION_RUNNER must be on|off (got $SWARM_POLICY_SESSION_RUNNER)" >&2; return 2 ;;
+  esac
+  case "$SWARM_POLICY_PROTECTED_PATH_ENFORCE" in
+    on|off) : ;;
+    *) echo "policy: PROTECTED_PATH_ENFORCE must be on|off (got $SWARM_POLICY_PROTECTED_PATH_ENFORCE)" >&2; return 2 ;;
   esac
   # TWO_WAY_DOOR_DOC is read by an agent working IN the repo checkout, so it is
   # one repo-relative path or nothing: an absolute path is a host fact (#37/#43's
@@ -150,19 +175,40 @@ _policy_check_structure() {
   done
 }
 
-# policy_validate [file] — fail LOUD (exit 2, offending token named) before any
-# worker spawns, like swarm_resolve_model: structure first, then the live check
-# that every HUMAN_LABELS name is actually MINTED in the repo's label set. The
-# label check needs the tracker and can only ever fail on a CUSTOM policy file
-# (the defaults name core labels onboarding always mints), so the absent-file
-# path stays network-free and byte-identical.
+# policy_validate [file] — fail LOUD (offending token named) before any worker
+# spawns, like swarm_resolve_model: structure first, then the live check that
+# every HUMAN_LABELS name is actually MINTED in the repo's label set. The label
+# check needs the tracker and can only ever fail on a CUSTOM policy file (the
+# defaults name core labels onboarding always mints), so the absent-file path
+# stays network-free and byte-identical.
+#
+# Return code, so a caller can tell a misconfigured POLICY from a dead TRACKER:
+#   0  valid (or an absent file -> the defaults).
+#   2  the file is structurally invalid, OR a HUMAN_LABELS label is genuinely
+#      not minted — a policy the owner must FIX.
+#   3  TRANSPORT — the one live call (the labels GET) never returned, so the
+#      label set was NOT read and HUMAN_LABELS was NOT validated. The policy is
+#      not implicated: a Forgejo 5xx blip must never be reported as an invalid
+#      file (idss #2052, the #1359 defect in this gate's preflight sibling —
+#      a verdict reported about a thing that was never actually read).
 policy_validate() {
   local file="${1:-$__policy_lib_here/swarm-policy.sh}"
   _policy_check_structure "$file" || return 2
   [ -f "$file" ] || return 0
   local labelset pair name
-  labelset="$(forgejo_get '/labels?limit=100')" \
-    || { echo "policy: could not list the repo's labels to validate HUMAN_LABELS" >&2; return 2; }
+  # The HUMAN_LABELS minted check ends in ONE idempotent GET. forgejo_get's
+  # shared retry budget (#2048) is ~6s — shorter than a real instance-wide
+  # Forgejo 5xx, which runs tens of seconds (#2052 rode out ~24s). Give this one
+  # GET a longer budget (retries=5, backoff=2 -> 2+4+8+16 = ~30s of riding out)
+  # since a GET is safe to repeat; a SUSTAINED outage still exhausts it and is
+  # reported as TRANSPORT, never as "not minted". A healthy tracker answers on
+  # the first attempt, so the budget costs nothing when there is no outage.
+  if ! labelset="$(FORGEJO_GET_RETRIES="${POLICY_LABELS_GET_RETRIES:-5}" \
+                   FORGEJO_GET_BACKOFF="${POLICY_LABELS_GET_BACKOFF:-2}" \
+                   forgejo_get '/labels?limit=100')"; then
+    echo "policy: TRANSPORT — the repo's label set was never read; HUMAN_LABELS was not validated" >&2
+    return 3
+  fi
   for pair in $SWARM_POLICY_HUMAN_LABELS; do
     name="${pair%%:*}"
     if ! jq -e --arg n "$name" 'any(.[]?; .name == $n)' >/dev/null 2>&1 <<<"$labelset"; then
@@ -268,47 +314,99 @@ policy_ticket_merge_authority() {
   if [ -n "${1:-}" ]; then printf 'human\n'; else printf '%s\n' "${2:-human}"; fi
 }
 
-# policy_landing_guidance — the prose a worker follows for a ticket whose
-# `landing` reads `pr` in a repo whose default is push. Declared ONCE, here,
-# beside the allowlist it explains (the policy_trigger_guidance discipline):
-# prompt-render-lib.sh renders it as {{LANDING_RULES}}; land-pr.sh is the command
-# it names. Free of any product's names or paths (CLAUDE.md's blast-radius rule)
-# — HOW to take screenshots is a consumer's own `workflow-verify` enrichment.
+# policy_landing_guidance — the FULL "how your commit reaches main" prose a
+# worker follows, for BOTH landing modes, declared ONCE here beside the
+# allowlist it explains (the policy_trigger_guidance discipline):
+# prompt-render-lib.sh renders it as {{LANDING_RULES}} for every repo, push or
+# pr (the slot is the single source of truth — the `workflow-verify` enrichment
+# carries NO landing step of its own, #220). land-pr.sh is the command the pr
+# branch names. Free of any product's names or paths (CLAUDE.md's blast-radius
+# rule): the push branch derives its remote from `$FORGEJO_API` at run time and
+# names no host or repo, and HOW to take screenshots stays a consumer's own
+# `workflow-verify` enrichment.
+#
+# The section is MODE-INDEPENDENT on purpose: it renders byte-identically in a
+# push-default and a pr-default repo and tells the worker to read the claimed
+# ticket's `landing` field and act on THAT. The mode decides which branch the
+# worker follows (landing_mode_for), never which branch the prompt carries.
+#
+# NOTE (#193): the push branch no longer lands on `main` from the sandbox. The
+# worker pushes its per-run worker branch; the HOST promotes it to `main` only
+# after the post-run verify gates (worker-birth + the protected-path boundary),
+# so the gates that were cosmetic while the worker pushed `main` itself now
+# genuinely gate. The in-sandbox rebase-against-main + conflict re-test (#217)
+# is gone — a worker branch has no `main` conflict to resolve, and the host owns
+# the rebase-rescue ladder (#207). close-report gate 1 checks reachability from
+# the worker-branch head pre-land, and from `main` after the host lands.
 policy_landing_guidance() {
   cat <<'EOF'
 ## Landing — read your ticket's `landing` field
 
 The claimed ticket's JSON (the ready-tasks block at the top) carries a
-`landing` field.
+`landing` field. Land your commit the way it names, THEN run the Close step
+(the workflow's close-report gate). A closed issue never retries, so an
+unlanded commit is lost work: land FIRST, then close.
 
-- `"landing": "push"` — land exactly as the workflow above says.
-- `"landing": "pr"` — the ticket carries the `landing-pr` label. Its work
-  reaches main ONLY through a pull request that a HUMAN merges. For this
-  ticket the workflow's push step does NOT apply:
+### `"landing": "push"` — the HOST lands on `main` after verify
 
-  1. NEVER push to main — not once, not "just the docs part", not after a
-     rebase. Do not merge the pull request. Do not close the issue by hand.
-  2. Commit as usual, then land with ONE command:
+You do **NOT** push to `main` from the sandbox, and you NEVER run `git push
+origin HEAD:refs/heads/main`. Your commit reaches `main` only after the run
+exits, when the HOST promotes it — and ONLY once the host's post-run gates
+pass: the worker-birth check and the protected-path boundary (a machinery
+edit is rolled back, parked on a rescue branch, and reds the run — it never
+reaches `main`). This is the human-or-host gate AFTER the agent, never
+before: nothing you do in the sandbox puts unverified work on `main`.
 
-         bash .sandcastle/land-pr.sh <NUMBER> "<concise title> (#<NUMBER>)" <body-file> [screenshot.png ...]
+Push your commit to THIS run's worker branch, so it is durable and the host
+can land it — never to `main`:
 
-     It pushes `agent/issue-<NUMBER>` (never force), opens the pull request
-     with `closes #<NUMBER>` as its first line followed by your body file,
-     attaches each screenshot, and checks the evidence rule below. If the
-     branch already exists with commits that are not yours, STOP and follow
-     the blocked path — never force-push over unmerged work.
-  3. Evidence is mandatory. Either pass at least one screenshot taken AFTER
-     your fix (add a before-shot when you could reproduce the fault), or —
-     only when the fix has no visible surface — put this line in the body
-     file, on a line of its own, with a real reason:
+    git push origin "HEAD:refs/heads/$(git rev-parse --abbrev-ref HEAD)"
 
-         **Screenshots:** none — <reason>
+(`origin` in your sandbox is credential-free: it carries no token, and the
+harness wires a token-free credential helper, so `git push origin`
+authenticates with no token in the remote URL or on the command line. You
+never embed a token in the remote URL; if a push is ever rejected
+unauthenticated, that is a harness fault to report, not a token to paste.)
 
-     Your repo's workflow section says how to produce the screenshots.
-  4. Then run the close-report gate as usual. It verifies your commits
-     against the pull request's head, refuses if the evidence is missing,
-     and leaves the issue OPEN: the human's merge closes it.
-  5. Never remove the `landing-pr` label. Only a human lifts it.
+You do NOT rebase `main` and you do NOT resolve a `main` conflict in the
+sandbox — the HOST owns the rebase-rescue ladder. When it lands your worker
+branch it rebases onto the current `main`, and a conflict it resolves is
+re-tested and routed to a rescue PR or a park, never pushed to `main`
+unverified. So there is no in-sandbox rebase, no in-sandbox re-test, and no
+way for a conflict you touched to reach `main` from here.
+
+If your worker-branch push cannot land after honest attempts, do NOT close
+the issue — follow the blocked path below instead.
+
+### `"landing": "pr"` — a human merges your pull request
+
+The ticket carries the `landing-pr` label. Its work reaches main ONLY
+through a pull request that a HUMAN merges. The push step above does NOT
+apply:
+
+1. NEVER push to main — not once, not "just the docs part", not after a
+   rebase. Do not merge the pull request. Do not close the issue by hand.
+2. Commit as usual, then land with ONE command:
+
+       bash .sandcastle/land-pr.sh <NUMBER> "<concise title> (#<NUMBER>)" <body-file> [screenshot.png ...]
+
+   It pushes `agent/issue-<NUMBER>` (never force), opens the pull request
+   with `closes #<NUMBER>` as its first line followed by your body file,
+   attaches each screenshot, and checks the evidence rule below. If the
+   branch already exists with commits that are not yours, STOP and follow
+   the blocked path — never force-push over unmerged work.
+3. Evidence is mandatory. Either pass at least one screenshot taken AFTER
+   your fix (add a before-shot when you could reproduce the fault), or —
+   only when the fix has no visible surface — put this line in the body
+   file, on a line of its own, with a real reason:
+
+       **Screenshots:** none — <reason>
+
+   Your repo's workflow section says how to produce the screenshots.
+4. Then run the close-report gate as usual. It verifies your commits
+   against the pull request's head, refuses if the evidence is missing,
+   and leaves the issue OPEN: the human's merge closes it.
+5. Never remove the `landing-pr` label. Only a human lifts it.
 EOF
 }
 

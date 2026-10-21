@@ -10,8 +10,10 @@
 #   consumer's own committed file, never itself re-templated.
 #   {{LANDING_RULES}} must sit ALONE on its own line and is GENERATED too
 #   (idss ADR 0267): prompt_render_landing_rules prints policy-lib's one
-#   declaration of how a `landing-pr` ticket lands — or nothing, in a repo
-#   whose default is already LANDING=pr.
+#   declaration of how a commit reaches main in BOTH modes (push and pr). It
+#   is the single source of truth for landing (#220) and renders for every
+#   repo — push- and pr-default alike — the `workflow-verify` enrichment no
+#   longer carries a landing step of its own.
 #   {{HANDOFF_RULES}} must sit ALONE on its own line too, but is GENERATED,
 #   not spliced (#14): prompt_render_handoff_rules turns the per-repo
 #   policy's HUMAN_LABELS into the prompt's "when to hand off" section, one
@@ -100,19 +102,21 @@ TAIL
   )
 }
 
-prompt_render_landing_rules() { # prompt_render_landing_rules <policy-file> -> the {{LANDING_RULES}} block on stdout (EMPTY for a LANDING=pr repo)
+prompt_render_landing_rules() { # prompt_render_landing_rules <policy-file> -> the {{LANDING_RULES}} block on stdout
   # The prompt is rendered once per REPO; how a TICKET lands is per ticket (a
   # `landing-pr` label — idss ADR 0267). So the block does not decide anything:
   # it tells the worker to read the claimed ticket's `landing` field and what
-  # `pr` obliges. The words are policy-lib's (policy_landing_guidance), declared
-  # once beside the allowlist. A LANDING=pr repo already lands every ticket by
-  # PR and its own `workflow-verify` enrichment says how — render nothing there.
+  # each mode obliges. The words are policy-lib's (policy_landing_guidance),
+  # declared once beside the allowlist. It is the SINGLE source of truth for
+  # landing (#220): the `workflow-verify` enrichment carries no landing step of
+  # its own, so this renders for EVERY repo — push- AND pr-default alike — and
+  # the block is mode-independent (policy_landing_guidance takes no mode). A
+  # malformed policy still refuses rather than rendering a guess.
   # Subshell: policy_load sources the consumer's file and exports SWARM_POLICY_*.
   local policy_file="$1"
   (
     policy_load "$policy_file" || exit 1
     _policy_check_structure "$policy_file" || exit 1
-    [ "$SWARM_POLICY_LANDING" = pr ] && exit 0
     policy_landing_guidance
   )
 }

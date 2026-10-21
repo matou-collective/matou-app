@@ -124,6 +124,33 @@ SWARM_DEBOUNCE_STAMP="$tmp/injected" schedule_stamp_path any | grep -qx "$tmp/in
   || fail "SWARM_DEBOUNCE_STAMP must override the derived path"
 pass=$((pass+1))
 
+# ── 3b. #213: the head SHA re-arms the debounce on a landed fix ─────────────
+# A fix lands on main while the ready-set is byte-identical (the fixed ticket is
+# still open, still ready): the ready-set alone cannot tell "nothing landed"
+# (coalesce) from "a fix just landed" (run now). Folding origin/main's head SHA
+# into the digest makes the second case a genuine trigger.
+hstamp="$tmp/headstamp"; rm -f "$hstamp"
+SET_H='[{"number":213}]'
+SHA1=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SHA2=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[ "$(schedule_debounce_decide "$SET_H" "$hstamp" 600 "$SHA1")" = "run" ] \
+  || fail "a cold stamp must run (with a head SHA)"
+d="$(schedule_debounce_decide "$SET_H" "$hstamp" 600 "$SHA1")"
+[ "${d%% *}" = coalesce ] || fail "unchanged head + unchanged ready-set must still coalesce, got: $d"
+[ "$(schedule_debounce_decide "$SET_H" "$hstamp" 600 "$SHA2")" = "run" ] \
+  || fail "a changed head SHA on a byte-identical ready-set must RE-ARM (run), not coalesce"
+d="$(schedule_debounce_decide "$SET_H" "$hstamp" 600 "$SHA2")"
+[ "${d%% *}" = coalesce ] || fail "the new head should debounce in turn, got: $d"
+pass=$((pass+1))
+
+# the digest itself changes with the head SHA even on a byte-identical set, and
+# an absent head keeps the historical ready-only shape (back-compatible).
+[ "$(schedule_ready_hash "$SET_H" "$SHA1")" != "$(schedule_ready_hash "$SET_H" "$SHA2")" ] \
+  || fail "the digest must change when the head SHA changes on a byte-identical set"
+[ "$(schedule_ready_hash "$SET_H")" = "$(schedule_ready_hash "$SET_H" "")" ] \
+  || fail "an omitted head must equal an empty head (the historical ready-only digest)"
+pass=$((pass+1))
+
 # ── 4. the per-run model (#448) ────────────────────────────────────────────
 # The swarm works the FIRST ready ticket, so the run's model follows THAT
 # ticket's model-<name> label; an unknown one fails LOUD here, never a silent

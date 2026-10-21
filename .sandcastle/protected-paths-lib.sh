@@ -52,11 +52,36 @@ PP_PROTECTED_DIRS_DEFAULT=".sandcastle .forgejo"
 # Paths exempted from the protected set — runtime, not machinery. The healer's
 # evidence directories (/tmp/matou-heal-*) are runtime artifacts the healer
 # writes during an investigation; they must never be treated as machinery a
-# worker edited. Overridable/extendable via PP_EXEMPT_GLOBS (newline/space
-# separated shell globs, matched against the path). The healer's own "never
-# edits itself" rule is unchanged and lives in the rehearsal healer's rails —
-# this exemption only keeps its evidence dirs out of the worker boundary.
-PP_EXEMPT_GLOBS_DEFAULT="*matou-heal-* */matou-heal-*"
+# worker edited. `.sandcastle/logs/*`, `.sandcastle/.state/*` and
+# `.sandcastle/worktrees/*` are the gitignored runtime-artifact trees (see
+# `.sandcastle/.gitignore`) that live UNDER the protected `.sandcastle/` dir but
+# are NOT machinery. The harness itself writes a uniquely-named worker log
+# (`.sandcastle/logs/sandcastle-worker-<ts>-<id>-worker.log`) and checks out the
+# worker's own git worktree (`.sandcastle/worktrees/sandcastle-worker-<ts>-<id>/`,
+# a full copy of the repo) into the snapshotted workspace AFTER the
+# before-snapshot is taken (#273) — fingerprinting them wholesale made every
+# worker-bearing run a #445 false positive that rolled back (DELETED) the
+# healer's own diagnostic log and the live worker's entire checkout. Machinery
+# under `.sandcastle/` (`*.sh`, `*.mts`, prompts, workflows) stays protected; only
+# these three runtime trees are exempt. Overridable/extendable via
+# PP_EXEMPT_GLOBS (newline/space separated shell globs, matched against the
+# path). The healer's own "never edits itself" rule is unchanged and lives in the
+# rehearsal healer's rails — this exemption only keeps its evidence dirs out of
+# the worker boundary.
+#
+# The benign host-side CACHE trees under `.sandcastle/` are exempt too (#284(a),
+# the deferred half of #272): `.sandcastle/pnpm-store/*`, `.sandcastle/nix-store/*`
+# and the regenerated Python bytecode `.sandcastle/__pycache__/*` plus the
+# per-subpackage `.sandcastle/*/__pycache__/*` (swarm-db.py and the TUI). All are
+# gitignored by `.sandcastle/.gitignore`, mounted or regenerated under the
+# protected tree exactly like logs/.state/worktrees — the same low-risk runtime
+# class, not machinery. They stay ANCHORED under `.sandcastle/` (never a bare
+# `*__pycache__/*`) so a worker cannot hide a machinery edit under an invented
+# cache-looking directory. `.sandcastle/.env` and `.sandcastle/secrets/*_token`
+# are #272's OTHER deferred half — they were NOT folded in here: exempting them
+# is a protected-boundary POSTURE change (it removes host secrets from what the
+# boundary rolls back), a one-way door ADR 0174 reserves for a human (#284(b)).
+PP_EXEMPT_GLOBS_DEFAULT="*matou-heal-* */matou-heal-* .sandcastle/logs/* .sandcastle/.state/* .sandcastle/worktrees/* .sandcastle/pnpm-store/* .sandcastle/nix-store/* .sandcastle/__pycache__/* .sandcastle/*/__pycache__/*"
 
 # The escape path, spelled out verbatim so every enforcement failure routes a
 # worker that was RIGHT the machinery needs changing instead of letting it
@@ -73,10 +98,36 @@ If you believe a protected path genuinely needs changing, do NOT edit it. Instea
   3. Continue your original ticket without the machinery change if possible, or
      report blocked in your close report naming the filed issue.'
 
+# _pp_words <raw> — split a newline/space separated list into the global array
+# `_PP_WORDS`, WITHOUT pathname expansion.
+#
+# Why this exists: unquoted `for g in $list` word-splitting ALSO performs
+# pathname expansion, so any entry that happens to match something under the
+# caller's cwd is silently REWRITTEN into the concrete names that exist right
+# now. run-swarm.sh calls the boundary with cwd = the repo root, where
+# `.sandcastle/.state/` and `.sandcastle/logs/` do exist — so the exemption
+# `.sandcastle/.state/*` expanded to the single literal `.sandcastle/.state/healer`
+# and stopped exempting anything BENEATH it, making every file under a runtime
+# tree protected again and re-opening the #273/#278 false positive (run 22813
+# attributed and rolled back `.sandcastle/.state/healer/<signature>` — the
+# healer's own ledger — to the worker). The patterns must survive splitting as
+# patterns; only `case` may expand them.
+_PP_WORDS=()
+_pp_words() {
+  local raw="$1" w restore_noglob=1
+  case "$-" in *f*) restore_noglob=0 ;; esac
+  set -f
+  _PP_WORDS=()
+  for w in $raw; do [ -n "$w" ] && _PP_WORDS+=("$w"); done
+  [ "$restore_noglob" = 0 ] || set +f
+}
+
 # pp_protected_dirs — echo the fingerprinted protected directories, one per line.
 pp_protected_dirs() {
-  local raw="${PP_PROTECTED_DIRS:-$PP_PROTECTED_DIRS_DEFAULT}" d
-  for d in $raw; do [ -n "$d" ] && printf '%s\n' "$d"; done
+  _pp_words "${PP_PROTECTED_DIRS:-$PP_PROTECTED_DIRS_DEFAULT}"
+  local d
+  # `${a[@]+...}` so an EMPTY list is not an unbound-variable abort under set -u.
+  for d in ${_PP_WORDS[@]+"${_PP_WORDS[@]}"}; do [ -n "$d" ] && printf '%s\n' "$d"; done
 }
 
 # pp_is_protected <relpath> — return 0 if the path is inside the declared
@@ -88,8 +139,9 @@ pp_is_protected() {
   rel="${rel#./}"; rel="${rel%/}"
   [ -n "$rel" ] || return 1
 
-  local globs="${PP_EXEMPT_GLOBS:-$PP_EXEMPT_GLOBS_DEFAULT}"
-  for g in $globs; do
+  _pp_words "${PP_EXEMPT_GLOBS:-$PP_EXEMPT_GLOBS_DEFAULT}"
+  local -a exempt=(${_PP_WORDS[@]+"${_PP_WORDS[@]}"})
+  for g in ${exempt[@]+"${exempt[@]}"}; do
     # shellcheck disable=SC2254
     case "$rel" in $g) return 1 ;; esac
   done

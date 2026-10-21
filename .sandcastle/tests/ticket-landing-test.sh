@@ -7,8 +7,8 @@ set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 sc="$here/.."
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-pass=0 fail=0
-check() { if eval "$2"; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: $1"; fi; }
+# shellcheck source=lib.sh
+. "$here/lib.sh"
 
 cat > "$tmp/notify.sh" <<'SH'
 #!/usr/bin/env bash
@@ -41,7 +41,7 @@ check "an unknown landing-* label is named with its ticket — even when it is N
 SWARM_POLICY_LANDING=push
 check "head ticket lands by PR -> the run is that ticket alone" '[ "$(schedule_run_landing "$mixed")" = "pr 802" ]'
 check "head ticket lands by push -> a push run (the PR ticket waits for its own run)" '[ "$(schedule_run_landing "$plain")" = "push" ]'
-SWARM_POLICY_LANDING=pr
+SWARM_POLICY_LANDING="pr"
 check "a LANDING=pr repo needs no parity" '[ "$(schedule_run_landing "$mixed")" = "repo-pr" ]'
 SWARM_POLICY_LANDING=push
 
@@ -135,7 +135,7 @@ landing_mode_for 9 >/dev/null 2>&1; rc=$?
 check "an unknown landing-* label is a refusal, never a silent default" '[ "$rc" -ne 0 ]'
 API_DOWN=1 landing_mode_for 7 >/dev/null 2>&1; rc=$?
 check "an unreadable ticket is a refusal — never a guess" '[ "$rc" -ne 0 ]'
-reset8; SWARM_POLICY_LANDING=pr
+reset8; SWARM_POLICY_LANDING="pr"
 check "a LANDING=pr repo answers pr" '[ "$(landing_mode_for 8)" = pr ]'
 check "…without touching the tracker" '[ ! -s "$CALLS_LOG" ]'
 SWARM_POLICY_LANDING=push

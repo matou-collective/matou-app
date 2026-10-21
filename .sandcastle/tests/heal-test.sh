@@ -232,6 +232,7 @@ grep -q "repaired=1" "$work/state/$pushsig" \
 # readable verdict → degrade, but say so (AC3).
 rm -f "$work/state/"*
 verdict="$work/seam-verdict.txt"
+# shellcheck disable=SC2120 # optional env-override args are passed through via "$@"; callers may pass none.
 run_heal_ci() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     HEAL_MODE=hook WORKFLOW=ci RUN_URL=http://x/runs/9 \
@@ -355,6 +356,7 @@ rm -f "$bcrumb"
 # prose), exactly like swarm.
 rm -f "$work/state/"*
 smoke_verdict="$work/smoke-drive-verdict.txt"
+# shellcheck disable=SC2120 # optional env-override args are passed through via "$@"; callers may pass none.
 run_heal_smoke() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     HEAL_MODE=hook WORKFLOW=smoke-drive RUN_URL=http://x/runs/8 \
@@ -394,6 +396,7 @@ echo "$out" | grep -qi "signature degraded to workflow name" || fail "a degraded
 # one; and its absence degrades (never prose), exactly like swarm/smoke-drive.
 rm -f "$work/state/"*
 pre2e_verdict="$work/pr-e2e-verdict.txt"
+# shellcheck disable=SC2120 # optional env-override args are passed through via "$@"; callers may pass none.
 run_heal_pre2e() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     HEAL_MODE=hook WORKFLOW=pr-e2e RUN_URL=http://x/runs/9 \
@@ -449,6 +452,7 @@ echo "$out" | grep -qi "signature degraded to workflow name" || fail "a degraded
 # absence degrades (never prose), exactly like swarm/smoke-drive/pr-e2e.
 rm -f "$work/state/"*
 verify_verdict="$work/verify-verdict.txt"
+# shellcheck disable=SC2120 # optional env-override args are passed through via "$@"; callers may pass none.
 run_heal_verify() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     HEAL_MODE=hook WORKFLOW=verify RUN_URL=http://x/runs/12 \
@@ -704,6 +708,79 @@ PY
   rm -f "$swarm_verdict.breadcrumb" "$swarm_verdict"
 fi
 
+# --- #202: the healer records the diagnosis call's token spend ----------------
+# heal.sh now runs claude with `--output-format json`; a reached, non-limit
+# diagnosis turns the result's `.usage` block into ONE aggregate spend row via
+# the shared swarm-db-lib helper, so the healer's token burn is visible to the
+# fleet Spend tab and the executing host is on the run row (spend-by --group host).
+if command -v python3 >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  db202="$work/heal-spend.db"
+  s202() { python3 - "$db202" "$1" <<'PY'
+import sqlite3, sys
+try:
+    row = sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()
+    print("" if row is None or row[0] is None else row[0])
+except sqlite3.OperationalError:
+    print("")
+PY
+  }
+  # A stub that mimics `claude --output-format json`: it writes the diagnosis
+  # file (so the run earns verdict 'diagnosed') and prints ONE JSON result object
+  # with a usage block to stdout — which heal.sh captures to agent-out.log.
+  jstub="$work/json-agent.sh"
+  cat > "$jstub" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+ev="$(printf '%s' "$prompt" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
+cat > "$ev/diagnosis.md" <<EOF
+CLASS: harness-infra
+CONFIDENCE: high
+ACTION-TAKEN: none
+ESCALATE: no
+
+**Root cause** — json-stub diagnosis.
+EOF
+printf '%s\n' '{"type":"result","is_error":false,"result":"done","model":"claude-opus-5","usage":{"input_tokens":4321,"output_tokens":99,"cache_creation_input_tokens":12,"cache_read_input_tokens":34}}'
+SH
+  chmod +x "$jstub"
+  rm -f "$db202"; rm -rf "$work/state"; mkdir -p "$work/state"
+  echo "boom: unmistakable error line 20226" > "$work/wd/.sandcastle/logs/x-worker.log"
+  run_heal SWARM_DB="$db202" SWARM_HOST=box9 HEAL_AGENT_CMD="bash $jstub" >/dev/null
+  [ "$(s202 "SELECT count(*) FROM spend")" = 1 ] \
+    || fail "202: a reached heal diagnosis must record exactly one spend row (got: $(s202 "SELECT count(*) FROM spend"))"
+  [ "$(s202 "SELECT input_tokens FROM spend")" = 4321 ] \
+    || fail "202: the heal spend row must carry the usage block's input_tokens"
+  [ "$(s202 "SELECT output_tokens FROM spend")" = 99 ] \
+    || fail "202: the heal spend row must carry the usage block's output_tokens"
+  [ "$(s202 "SELECT cache_read_tokens FROM spend")" = 34 ] \
+    || fail "202: the heal spend row must carry the usage block's cache_read tokens"
+  [ "$(s202 "SELECT model FROM spend")" = claude-opus-5 ] \
+    || fail "202: the heal spend row must carry the billing model from the result"
+  [ "$(s202 "SELECT s.run_id = r.run_id FROM spend s JOIN runs r ON s.run_id=r.run_id WHERE r.trigger='heal'")" = 1 ] \
+    || fail "202: the heal spend row must tie to the heal run row via run_id"
+  [ "$(s202 "SELECT host FROM runs WHERE trigger='heal'")" = box9 ] \
+    || fail "202: the heal run row must carry the executing host (spend-by --group host)"
+
+  # a limit refusal is NOT a spent diagnosis: it exits before the spend record,
+  # so no spend row lands (the host is parked instead).
+  rm -f "$db202" "$work/limit-marker"; rm -rf "$work/state"; mkdir -p "$work/state"
+  limstub="$work/limit-agent.sh"
+  cat > "$limstub" <<'SH'
+#!/usr/bin/env bash
+# A usage block is present on purpose: if the limit short-circuit FAILED to fire
+# before the spend record, a spend row WOULD land — so count=0 proves the park
+# path ran first, not merely that the result lacked usage.
+printf '%s\n' '{"type":"result","result":"You'"'"'ve hit your weekly limit · resets Aug 1","usage":{"input_tokens":500,"output_tokens":5}}'
+exit 1
+SH
+  chmod +x "$limstub"
+  echo "boom: unmistakable error line 20227" > "$work/wd/.sandcastle/logs/x-worker.log"
+  run_heal SWARM_DB="$db202" CLAUDE_LIMIT_MARKER="$work/limit-marker" HEAL_AGENT_CMD="bash $limstub" >/dev/null 2>&1 || true
+  [ "$(s202 "SELECT count(*) FROM spend")" = 0 ] || [ -z "$(s202 "SELECT count(*) FROM spend")" ] \
+    || fail "202: a limit-refused heal must record NO spend row (not a spent diagnosis)"
+fi
+
 # --- #102: the healer lock path is env-overridable, so concurrent suite runs on
 # one host stop contending for a single /tmp file. While one lock is HELD, a
 # healer pointed at the SAME path bails with no diagnosis, but one pointed at a
@@ -833,4 +910,329 @@ grep -q "ran on another swarm pool host" "$capdir/worker-logs.txt" 2>/dev/null \
 grep -q "run watchdog" "$capdir/worker-logs.txt" 2>/dev/null \
   || fail "#147: with RUN_URL and SWARM_RUN_ID unset the runid must fall back to 'watchdog' (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
 
-echo "heal.sh: 20 scenarios passed"
+# --- #188: the failing run's OWN job log lands in the bundle as job-log.txt ----
+# A host/DNS fault leaves a single decisive line in the job log, readable with
+# the ordinary repo token at `<run-url>/jobs/<leg>/attempt/1/logs` (the
+# `/attempt/1/` segment is mandatory). On a cross-host failure (#135) this is the
+# ONLY fault text the bundle can carry. A stub curl on PATH serves the log on the
+# job-log route and exec's the real curl for every other call (probe_api/tasks),
+# so the rest of the run is unchanged.
+jl_dir="$(mktemp -d)"; realcurl="$(command -v curl)"
+jl_log="$work/jl-log.txt"
+printf 'Could not resolve host: git.matou.nz\n' > "$jl_log"
+cat > "$jl_dir/curl" <<STUB
+#!/usr/bin/env bash
+url=""
+for a in "\$@"; do url="\$a"; done
+case "\$url" in
+  *"/jobs/"*"/attempt/1/logs")
+     leg="\${url%/attempt/1/logs}"; leg="\${leg##*/jobs/}"
+     if [ "\$leg" -le "\${JOBLOG_MAX_OK:-0}" ] 2>/dev/null; then
+       cat "\$JOBLOG_FILE"; printf '\n200'
+     else
+       printf '\n404'
+     fi
+     exit 0 ;;
+  *) exec "$realcurl" "\$@" ;;
+esac
+STUB
+chmod +x "$jl_dir/curl"
+
+# hook mode: RUN_URL set, leg 0 serves the log → job-log.txt carries the fault
+# text, built from the job-log route under RUN_URL, and the heal still exits 0.
+rm -rf "$work/state"; mkdir -p "$work/state"
+echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+jlcap="$work/jl-capture"; rm -rf "$jlcap"
+cat > "$work/jl-agent.sh" <<'EOF'
+#!/usr/bin/env bash
+ev="$(printf '%s' "$1" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
+mkdir -p "${JLCAP:?}"; cp "$ev/job-log.txt" "$JLCAP/" 2>/dev/null || true
+cat > "$ev/diagnosis.md" <<'D'
+CLASS: harness-infra
+CONFIDENCE: high
+ACTION-TAKEN: none
+ESCALATE: no
+
+**Root cause** — stub.
+D
+EOF
+chmod +x "$work/jl-agent.sh"
+if out="$(run_heal PATH="$jl_dir:$PATH" JOBLOG_FILE="$jl_log" JOBLOG_MAX_OK=0 \
+    HEAL_AGENT_CMD="bash $work/jl-agent.sh" JLCAP="$jlcap")"; then ec=0; else ec=$?; fi
+[ "$ec" -eq 0 ] || fail "#188: a heal that fetched the job log must exit 0, got $ec"
+grep -q "Could not resolve host: git.matou.nz" "$jlcap/job-log.txt" 2>/dev/null \
+  || fail "#188: job-log.txt must carry the failing leg's own log line (got: $(cat "$jlcap/job-log.txt" 2>/dev/null))"
+grep -q "jobs/0/attempt/1/logs" "$jlcap/job-log.txt" 2>/dev/null \
+  || fail "#188: job-log.txt must name the leg it fetched (route includes /attempt/1/)"
+
+# a matrix run: legs 0 AND 1 both served → both legs land, attributable per leg.
+rm -rf "$work/state" "$jlcap"; mkdir -p "$work/state"
+run_heal PATH="$jl_dir:$PATH" JOBLOG_FILE="$jl_log" JOBLOG_MAX_OK=1 \
+  HEAL_AGENT_CMD="bash $work/jl-agent.sh" JLCAP="$jlcap" >/dev/null 2>&1 || true
+grep -q "job 0 (attempt 1)" "$jlcap/job-log.txt" 2>/dev/null \
+  || fail "#188: a matrix bundle must carry leg 0's log"
+grep -q "job 1 (attempt 1)" "$jlcap/job-log.txt" 2>/dev/null \
+  || fail "#188: a matrix bundle must carry every leg's log (leg 1 missing)"
+
+# fail-soft (AC3): leg 0 returns 404 → a one-line note, NOT a silent empty file,
+# and the heal run still exits 0 (a missing log never reds the healer).
+rm -rf "$work/state" "$jlcap"; mkdir -p "$work/state"
+if out="$(run_heal PATH="$jl_dir:$PATH" JOBLOG_FILE="$jl_log" JOBLOG_MAX_OK=-1 \
+    HEAL_AGENT_CMD="bash $work/jl-agent.sh" JLCAP="$jlcap")"; then ec=0; else ec=$?; fi
+[ "$ec" -eq 0 ] || fail "#188: a 404 on the job log must leave the heal run green (exit 0), got $ec"
+grep -qi "job log unavailable (HTTP 404)" "$jlcap/job-log.txt" 2>/dev/null \
+  || fail "#188 AC3: a 404 must leave the explicit 'job log unavailable' note (got: $(cat "$jlcap/job-log.txt" 2>/dev/null))"
+
+# honesty (AC4): watchdog mode with no run url for the suspect run must SAY the
+# log was not fetched, never leave a silent empty job-log.txt. The offline
+# harness's unreachable API trips the forgejo-api incident, which has no run.
+rm -rf "$work/state" "$jlcap"; mkdir -p "$work/state"
+run_heal HEAL_MODE=watchdog PATH="$jl_dir:$PATH" JOBLOG_FILE="$jl_log" \
+  HEAL_AGENT_CMD="bash $work/jl-agent.sh" JLCAP="$jlcap" >/dev/null 2>&1 || true
+grep -qi "job log not fetched" "$jlcap/job-log.txt" 2>/dev/null \
+  || fail "#188 AC4: an incident with no run url must say the job log was not fetched (got: $(cat "$jlcap/job-log.txt" 2>/dev/null))"
+
+# ratchet (AC1): heal.sh builds the job-log URL from the run url + the job-log
+# route, and never writes a literal actions/runs string (which would trip the
+# actions-endpoint ratchet). The dedicated ratchet test proves the whole file;
+# this pins the job-log route shape in particular.
+grep -q 'jobs/\$leg/attempt/1/logs' "$here/../heal.sh" \
+  || fail "#188 AC1: heal.sh must build the job-log route from the run url"
+rm -rf "$jl_dir"
+
+# --- #203: the off-file is honoured at runtime, without a workflow re-render ---
+# HEAL=0 or the off-file ($HOME/swarm/state/heal.off by default, overridable)
+# makes the healer exit 0 BEFORE gathering evidence, invoking the agent, or
+# touching the ledger — exactly the before-any-network posture session-runner.off
+# takes, and the gap HEAL_DRY_RUN could not close (it needs the workflow
+# re-rendered). test_env_hermetic points HEAL_OFF_FILE under $work so the host's
+# real off-file (if any) never leaks into the suite.
+rm -rf "$work/state"; mkdir -p "$work/state"
+echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+offf="$work/heal.off"; : > "$offf"
+out="$(run_heal HEAL_OFF_FILE="$offf")"
+echo "$out" | grep -qi "kill switch is on" || fail "#203: the off-file must make the healer announce a quiet tick (got: $out)"
+echo "$out" | grep -q "stub agent ran" && fail "#203: the off-file must yield BEFORE the agent runs (got: $out)"
+echo "$out" | grep -q "CLASS:" && fail "#203: an off healer must post NO diagnosis"
+[ "$(ls "$work/state" | wc -l)" -eq 0 ] || fail "#203: an off healer must not touch the ledger"
+rm -f "$offf"
+# HEAL=0 in env yields identically, off-file absent
+out="$(run_heal HEAL=0 HEAL_OFF_FILE="$offf")"
+echo "$out" | grep -qi "kill switch is on" || fail "#203: HEAL=0 must yield the same quiet tick (got: $out)"
+[ "$(ls "$work/state" | wc -l)" -eq 0 ] || fail "#203: HEAL=0 must not touch the ledger"
+# and with the off-file absent and HEAL unset the healer runs as normal
+out="$(run_heal HEAL_OFF_FILE="$offf")"
+echo "$out" | grep -q "CLASS: harness-infra" || fail "#203: with no off-file the healer must run normally (got: $out)"
+
+# --- #203: swarm-lock.txt probes EVERY capacity slot, not just slot 1 ---------
+# The heal charter gates a `reset --hard origin/main` of the shared workdir on
+# swarm-lock.txt saying `free`. A worker holding slot 2 is just as much a live
+# user of that checkout as a slot-1 worker, so probing only slot 1 let the healer
+# reset the workdir out from under a slot-2 worker. With slot 2 held the probe
+# must report `held` (the reset permission is withheld); with every slot free it
+# reports `free`.
+rm -rf "$work/state"; mkdir -p "$work/state"
+echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+lockcap="$work/lock-capture"
+cat > "$work/lock-agent.sh" <<'EOF'
+#!/usr/bin/env bash
+ev="$(printf '%s' "$1" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
+cp "$ev/swarm-lock.txt" "${LOCKCAP:?}" 2>/dev/null || true
+cat > "$ev/diagnosis.md" <<'D'
+CLASS: harness-infra
+CONFIDENCE: high
+ACTION-TAKEN: none
+ESCALATE: no
+
+**Root cause** — stub.
+D
+EOF
+chmod +x "$work/lock-agent.sh"
+slot1="$work/slot1.lock"; slot2="$work/slot2.lock"
+# slot 2 held (slot 1 free) → the probe must report held
+exec 6>"$slot2"; flock -n 6 || fail "#203 test setup could not take slot 2"
+rm -f "$lockcap"
+run_heal HOST_CAPACITY_SLOTS="$slot1 $slot2" \
+  HEAL_AGENT_CMD="bash $work/lock-agent.sh" LOCKCAP="$lockcap" >/dev/null 2>&1 || true
+[ "$(cat "$lockcap" 2>/dev/null)" = held ] \
+  || fail "#203: a slot-2-held state must make swarm-lock.txt report held (got: $(cat "$lockcap" 2>/dev/null))"
+exec 6>&-
+# every slot free → free
+rm -f "$lockcap" "$work/state/"*
+run_heal HOST_CAPACITY_SLOTS="$slot1 $slot2" \
+  HEAL_AGENT_CMD="bash $work/lock-agent.sh" LOCKCAP="$lockcap" >/dev/null 2>&1 || true
+[ "$(cat "$lockcap" 2>/dev/null)" = free ] \
+  || fail "#203: all slots free must make swarm-lock.txt report free (got: $(cat "$lockcap" 2>/dev/null))"
+
+# --- #203: an escalation is NOT latched when the post is not delivered --------
+# escalated=1 used to be set whether or not the @ben ping reached Mattermost, so
+# a 5xx brownout during the one ping silenced the signature for the whole
+# cooldown. Now the latch keys on a DELIVERED post (notify-mattermost.sh exit 0);
+# a send that ERRORS (HEAL_NOTIFY_CMD stub exits non-zero, exactly as curl -f on
+# a 5xx makes notify-mattermost.sh exit) leaves escalated unset and the escalate
+# branch retries next tick.
+rm -rf "$work/state"; mkdir -p "$work/state"
+echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+notify5xx="$work/notify-5xx.sh"
+cat > "$notify5xx" <<'EOF'
+#!/usr/bin/env bash
+# Simulate a Mattermost 5xx: echo the message to stderr (so the test can see
+# WHICH branch posted) but exit non-zero — exactly how curl -f on a 5xx makes
+# notify-mattermost.sh exit non-zero under set -e, which post() swallows.
+printf '%s\n' "$1" >&2
+exit 22
+EOF
+chmod +x "$notify5xx"
+# run 1 investigates + repairs (repaired=1 from the default stub prose)
+run_heal HEAL_NOTIFY_CMD="bash $notify5xx" >/dev/null 2>&1 || true
+sig5="$(ls "$work/state")"
+grep -q "repaired=1" "$work/state/$sig5" || fail "#203 test setup: first run should mark repaired=1"
+# run 2 recurs → escalate-repaired, but the ping 5xx's → NOT latched
+out="$(run_heal HEAL_NOTIFY_CMD="bash $notify5xx" SWARM_HOST=box1)"
+echo "$out" | grep -qi "recurred after a repair" || fail "#203: a repaired recurrence must still take the escalate-repaired branch"
+echo "$out" | grep -qi "not delivered" || fail "#203: an undelivered escalation must say so (got: $out)"
+grep -q "escalated=1" "$work/state/$sig5" \
+  && fail "#203: a 5xx escalation post must NOT latch escalated=1 (got: $(cat "$work/state/$sig5"))"
+# run 3: still escalate-repaired (retried), NOT silent — the brownout did not
+# silence the signature. This time the post DELIVERS (default no-chat notify,
+# exit 0), so it latches.
+out="$(run_heal SWARM_HOST=box1)"
+echo "$out" | grep -qi "recurred after a repair" || fail "#203: an un-latched signature must retry the escalation, not go silent (got: $out)"
+echo "$out" | grep -qi "already escalated and silenced" && fail "#203: the signature must not be silenced while the ping never delivered"
+grep -q "escalated=1" "$work/state/$sig5" || fail "#203: a DELIVERED escalation must latch escalated=1"
+# run 4: now silent (delivered latch holds)
+out="$(run_heal SWARM_HOST=box1)"
+echo "$out" | grep -qi "already escalated and silenced" || fail "#203: once delivered, the escalation latch must hold (got: $out)"
+
+# --- #203: the heal agent operates in a throwaway clone, not the shared workdir
+# run_agent clones $WORKDIR into a disposable checkout and runs the agent THERE,
+# so a wedged/aborted repair can never corrupt a running worker's checkout. The
+# agent's cwd must be the clone, never $WORKDIR; the incident prompt must name
+# the repair checkout and tell the agent to commit there and not push itself; and
+# the clone must be cleaned up on exit (no leak under /tmp).
+rm -rf "$work/state"; mkdir -p "$work/state"
+echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+cwdcap="$work/cwd-capture"; pcap203="$work/prompt-203"
+cat > "$work/cwd-agent.sh" <<'EOF'
+#!/usr/bin/env bash
+pwd > "${CWDCAP:?}"
+printf '%s' "$1" > "${PCAP:?}"
+ev="$(printf '%s' "$1" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
+cat > "$ev/diagnosis.md" <<'D'
+CLASS: harness-infra
+CONFIDENCE: high
+ACTION-TAKEN: none
+ESCALATE: no
+
+**Root cause** — stub.
+D
+EOF
+chmod +x "$work/cwd-agent.sh"
+clone_glob="/tmp/matou-heal-clone-x-y."
+run_heal HEAL_AGENT_CMD="bash $work/cwd-agent.sh" CWDCAP="$cwdcap" PCAP="$pcap203" >/dev/null 2>&1 || true
+agent_cwd="$(cat "$cwdcap" 2>/dev/null)"
+[ -n "$agent_cwd" ] || fail "#203: the agent cwd was not captured"
+[ "$agent_cwd" != "$work/wd" ] || fail "#203: the agent must NOT run in the shared workdir (ran in: $agent_cwd)"
+case "$agent_cwd" in ${clone_glob}*) ;; *) fail "#203: the agent must run in a throwaway clone (ran in: $agent_cwd)";; esac
+grep -q "Repair checkout:" "$pcap203" || fail "#203: the incident prompt must name the repair checkout"
+grep -q "Do NOT \`git push\` yourself" "$pcap203" || fail "#203: the incident prompt must tell the agent not to push itself"
+# the specific throwaway clone the agent ran in must be gone (cleaned on exit)
+[ ! -d "$agent_cwd" ] || fail "#203: the throwaway clone must be cleaned up on exit (still present: $agent_cwd)"
+
+# --- #203: a committed repair lands ONLY through the rails; an over-cap diff is
+# refused (not pushed), and the signature is NOT marked repaired. The repair
+# clone's origin is a real bare remote so the happy path exercises heal_push.
+rm -rf "$work/state"; mkdir -p "$work/state"
+remote="$work/remote.git"; git init -q --bare "$remote"
+wd2="$work/wd2"; git clone -q "$remote" "$wd2" 2>/dev/null
+git -C "$wd2" config user.email t@t; git -C "$wd2" config user.name t
+mkdir -p "$wd2/.sandcastle/logs"
+printf 'base\n' > "$wd2/infra.txt"
+git -C "$wd2" add -A; git -C "$wd2" commit -qm base; git -C "$wd2" push -q origin HEAD:main 2>/dev/null
+git -C "$wd2" branch -q -M main 2>/dev/null || true
+echo "boom: unmistakable error line 12345" > "$wd2/.sandcastle/logs/x-worker.log"
+# a committing agent: writes diagnosis AND commits $COMMIT_LINES lines of infra.txt
+cat > "$work/commit-agent.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+ev="$(printf '%s' "$1" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
+cat > "$ev/diagnosis.md" <<'D'
+CLASS: harness-infra
+CONFIDENCE: high
+ACTION-TAKEN: committed an infra fix in the repair clone
+ESCALATE: no
+
+**Root cause** — stub repair.
+D
+# commit in the current directory (the throwaway clone heal.sh cd'd us into)
+git config user.email healer@test; git config user.name healer
+n="${COMMIT_LINES:?}"; i=0
+while [ "$i" -lt "$n" ]; do echo "line $i" >> infra.txt; i=$((i+1)); done
+git add -A; git commit -qm "repair"
+echo "commit agent ran"
+EOF
+chmod +x "$work/commit-agent.sh"
+run_heal_wd2() {
+  env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
+    -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN_B \
+    CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
+    CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
+    HEAL_MODE=hook WORKFLOW=swarm RUN_URL=http://x/runs/1 \
+    HEAL_WORKDIR="$wd2" HEALER_STATE="$work/state" SWARM_DB="$work/swarm.db" \
+    SWARM_VERDICT_PATH="$work/absent-swarm-verdict" \
+    HEAL_PROMPT_FILE="$heal_prompt_file" \
+    FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
+    HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
+    HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
+    HEALER_LOCK="$work/healer.lock" \
+    "$@" bash "$here/../heal.sh" 2>&1
+}
+# happy path: a small in-cap diff lands on the bare remote
+rm -rf "$work/state"; mkdir -p "$work/state"
+out="$(run_heal_wd2 HEAL_AGENT_CMD="bash $work/commit-agent.sh" COMMIT_LINES=2 HEAL_LINE_CAP=400)"
+echo "$out" | grep -qi "repair landed on main through the rails" || fail "#203: an in-cap repair must land through heal_push (got: $out)"
+hsig="$(ls "$work/state")"
+grep -q "repaired=1" "$work/state/$hsig" || fail "#203: a landed repair must mark repaired=1"
+git -C "$remote" log --oneline main 2>/dev/null | grep -q "repair" || fail "#203: the repair commit must be present on the bare remote"
+# over-cap path: the rails refuse, nothing lands, repaired stays 0, @ben pinged
+rm -rf "$work/state"; mkdir -p "$work/state"
+remote_before="$(git -C "$remote" rev-parse main 2>/dev/null)"
+out="$(run_heal_wd2 HEAL_AGENT_CMD="bash $work/commit-agent.sh" COMMIT_LINES=50 HEAL_LINE_CAP=5)"
+echo "$out" | grep -qi "refused by the rails" || fail "#203 AC: an over-cap repair must be refused by the rails (got: $out)"
+echo "$out" | grep -qi "exceeded the diff rails" || fail "#203: an over-cap repair must escalate for a human-landed PR"
+osig="$(ls "$work/state")"
+grep -q "repaired=1" "$work/state/$osig" && fail "#203: an over-cap (refused) repair must NOT mark repaired=1"
+[ "$(git -C "$remote" rev-parse main 2>/dev/null)" = "$remote_before" ] \
+  || fail "#203: an over-cap repair must leave the remote main unchanged (nothing landed)"
+
+# --- #203: dedup decisions are observable across hosts via swarm.db events ----
+# The per-host file ledger decides dedup, but a sibling host cannot see it. Every
+# incident decision now mirrors a `heal-dedup` event into swarm.db carrying the
+# signature, workflow, decision and the HEALER'S HOST — so the fleet monitor,
+# reading every host's events, observes pool-wide dedup. swarm.db needs python3;
+# skip cleanly when absent (the mirror is best-effort).
+if command -v python3 >/dev/null 2>&1; then
+  dbd="$work/dedup.db"
+  ddval() { python3 - "$dbd" "$1" <<'PY'
+import sqlite3, sys
+try:
+    row = sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()
+    print("" if row is None or row[0] is None else row[0])
+except sqlite3.OperationalError:
+    print("")
+PY
+  }
+  rm -f "$dbd"; rm -rf "$work/state"; mkdir -p "$work/state"
+  echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+  # run 1 (investigate) then run 2 (escalate-repaired) on a named host
+  run_heal SWARM_DB="$dbd" SWARM_HOST=box7 >/dev/null 2>&1 || true
+  run_heal SWARM_DB="$dbd" SWARM_HOST=box7 >/dev/null 2>&1 || true
+  [ "$(ddval "SELECT count(*) FROM events WHERE kind='heal-dedup'")" -ge 2 ] \
+    || fail "#203: each incident decision must mirror a heal-dedup event (#203)"
+  det="$(ddval "SELECT detail FROM events WHERE kind='heal-dedup' ORDER BY id DESC LIMIT 1")"
+  case "$det" in *"host=box7"*) ;; *) fail "#203: the heal-dedup event must record the healer host for cross-host observability (got: $det)";; esac
+  case "$det" in *"decision="*) ;; *) fail "#203: the heal-dedup event must record the dedup decision (got: $det)";; esac
+  rm -f "$dbd"
+fi
+
+echo "heal.sh: 30 scenarios passed"

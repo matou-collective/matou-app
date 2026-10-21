@@ -62,6 +62,8 @@ eq "$SWARM_POLICY_HUMAN_LABELS" \
    "ready-for-human:one-way-door agent-blocked:cannot-proceed needs-info:missing-context" \
    "absent file -> core loop-in label set with today's triggers"
 eq "$SWARM_POLICY_PROTECTED_PATHS" ".sandcastle .forgejo" "absent file -> today's protected dirs"
+eq "$SWARM_POLICY_PROTECTED_PATH_ENFORCE" "on" "absent file -> PROTECTED_PATH_ENFORCE=on (the boundary is on by default, #208)"
+eq "$SWARM_POLICY_TEST_CMD" "" "absent file -> TEST_CMD empty (gate 4b inert until a consumer opts in, #206)"
 # the absent-file path is network-free (no custom label to check) — validate accepts
 accept "$tmp/does-not-exist.sh" "absent file validates (defaults, no network)"
 
@@ -71,12 +73,14 @@ LANDING=pr
 MERGE_AUTHORITY=agent-after-green
 HUMAN_LABELS="ready-for-human:one-way-door escalate:cannot-proceed"
 PROTECTED_PATHS=".sandcastle .forgejo docs"
+TEST_CMD="bash run-offline-tests.sh"
 CFG
 policy_load "$tmp/ok.sh"
 eq "$SWARM_POLICY_FILE_PRESENT" "true" "present file -> FILE_PRESENT=true"
 eq "$SWARM_POLICY_LANDING" "pr" "custom LANDING loads over default"
 eq "$SWARM_POLICY_MERGE_AUTHORITY" "agent-after-green" "custom MERGE_AUTHORITY loads over default"
 eq "$SWARM_POLICY_PROTECTED_PATHS" ".sandcastle .forgejo docs" "custom PROTECTED_PATHS loads over default"
+eq "$SWARM_POLICY_TEST_CMD" "bash run-offline-tests.sh" "custom TEST_CMD loads over default (#206)"
 accept "$tmp/ok.sh" "a valid custom policy validates (labels minted)"
 
 # --- each enum: accepted values ---
@@ -86,6 +90,19 @@ printf 'MERGE_AUTHORITY=human\n'            > "$tmp/m-h.sh";   accept "$tmp/m-h.
 printf 'MERGE_AUTHORITY=agent-after-green\n'> "$tmp/m-a.sh";   accept "$tmp/m-a.sh"   "MERGE_AUTHORITY=agent-after-green accepted"
 printf 'SESSION_RUNNER=on\n'                > "$tmp/s-on.sh";  accept "$tmp/s-on.sh"  "SESSION_RUNNER=on accepted"
 printf 'SESSION_RUNNER=off\n'               > "$tmp/s-off.sh"; accept "$tmp/s-off.sh" "SESSION_RUNNER=off accepted"
+printf 'PROTECTED_PATH_ENFORCE=on\n'        > "$tmp/pp-on.sh"; accept "$tmp/pp-on.sh" "PROTECTED_PATH_ENFORCE=on accepted"
+printf 'PROTECTED_PATH_ENFORCE=off\n'       > "$tmp/pp-off.sh";accept "$tmp/pp-off.sh" "PROTECTED_PATH_ENFORCE=off accepted"
+
+# --- PROTECTED_PATH_ENFORCE: the per-repo opt-out from the default-on boundary (#208) ---
+# Enforcement is ON by default (#193); a consumer that still carries tickets
+# landing directly on `.sandcastle/` opts out per repo (GOTCHAS 17: declare only
+# after the pin that knows the key).
+policy_load "$tmp/does-not-exist.sh"
+eq "$SWARM_POLICY_PROTECTED_PATH_ENFORCE" "on" "absent file -> PROTECTED_PATH_ENFORCE=on (the boundary is on by default)"
+policy_load "$tmp/pp-off.sh"
+eq "$SWARM_POLICY_PROTECTED_PATH_ENFORCE" "off" "custom PROTECTED_PATH_ENFORCE=off loads over the default"
+printf 'PROTECTED_PATH_ENFORCE=maybe\n' > "$tmp/pp-bad.sh"
+reject "$tmp/pp-bad.sh" "policy: PROTECTED_PATH_ENFORCE must be on|off (got maybe)" "PROTECTED_PATH_ENFORCE=maybe rejected"
 
 # --- SESSION_RUNNER: on by default for EVERY factory repo (Ben, 2026-08-22) ---
 # The ready-for-session drainer is a standing deliverable of enrolment, with a
@@ -144,6 +161,36 @@ reject "$tmp/hl-trig.sh" "trigger someday unknown" "HUMAN_LABELS unknown trigger
 # --- label-not-minted rejected (the shimmed curl label list has no such name) ---
 printf 'HUMAN_LABELS="not-a-real-label:one-way-door"\n' > "$tmp/hl-missing.sh"
 reject "$tmp/hl-missing.sh" "label not-a-real-label is not minted" "HUMAN_LABELS naming an unminted label rejected"
+# ...and that reject is rc 2 (a policy the owner must fix), DISTINCT from a dead
+# tracker — the whole point of the #2052 split below.
+policy_load "$tmp/hl-missing.sh"
+policy_validate "$tmp/hl-missing.sh" 2>/dev/null; rc=$?
+eq "$rc" "2" "a genuinely unminted label reds as a policy fault (rc 2)"
+
+# --- a 5xx on the labels GET is TRANSPORT (rc 3), never "not minted" (#2052) ---
+# The gate's one live call is the HUMAN_LABELS minted check. When Forgejo 5xx's
+# through it the label set was never read, so the policy is NOT implicated: a
+# DISTINCT rc (3) and a TRANSPORT message, never the "not minted" verdict that
+# once told a human to fix a valid file (the #1359 defect in preflight's twin).
+mkdir -p "$tmp/failbin"
+cat > "$tmp/failbin/curl" <<'SH'
+#!/usr/bin/env bash
+# a sustained 5xx: curl -sf exits 22 on an HTTP error
+echo "503 Service Unavailable" >&2
+exit 22
+SH
+chmod +x "$tmp/failbin/curl"
+printf 'HUMAN_LABELS="ready-for-human:one-way-door"\n' > "$tmp/transport.sh"
+policy_load "$tmp/transport.sh"
+# one attempt, no backoff sleep — the per-call budget override keeps the test fast
+err="$(PATH="$tmp/failbin:$PATH" POLICY_LABELS_GET_RETRIES=1 POLICY_LABELS_GET_BACKOFF=0 \
+       policy_validate "$tmp/transport.sh" 2>&1)"; rc=$?
+eq "$rc" "3" "a 5xx on the labels GET returns the distinct TRANSPORT rc 3"
+case "$err" in *TRANSPORT*) pass=$((pass+1)) ;; *) fail "transport stderr must name TRANSPORT: [$err]" ;; esac
+case "$err" in
+  *"not minted"*) fail "a transport fault must NEVER claim a label is not minted: [$err]" ;;
+  *) pass=$((pass+1)) ;;
+esac
 
 # --- policy_human_labels emits name<TAB>trigger for renderers ---
 policy_load "$tmp/does-not-exist.sh"
@@ -236,11 +283,31 @@ pass=$((pass+1))
 [ "$(policy_ticket_merge_authority "")" = human ]    || fail "merge authority defaults to human"
 pass=$((pass+1))
 # The prose is declared ONCE here; the renderer and land-pr.sh must agree with it.
+# It is the SINGLE source of truth for landing in BOTH modes (#220): the push
+# branch owns the full push-to-main instruction (relocated out of the per-consumer
+# `workflow-verify` enrichment), the pr branch owns the land-pr flow.
 g="$(policy_landing_guidance)"
-grep -q 'bash .sandcastle/land-pr.sh' <<<"$g"          || fail "the guidance must name the one landing command"
+grep -q 'bash .sandcastle/land-pr.sh' <<<"$g"          || fail "the guidance must name the one landing command (pr branch)"
 grep -qF '**Screenshots:** none — <reason>' <<<"$g"    || fail "the guidance must quote the waiver line exactly"
-grep -q 'NEVER push' <<<"$g"                           || fail "the guidance must forbid pushing main"
+grep -q 'NEVER push' <<<"$g"                           || fail "the guidance must forbid pushing main (pr branch)"
 ! grep -qi 'idss\|control panel\|matou' <<<"$g"        || fail "the guidance renders into EVERY consumer's prompt — no product names (blast-radius rule)"
+pass=$((pass+1))
+# --- the push branch (#193 + #222): the worker pushes its per-run worker branch,
+#     NEVER main — the HOST lands main after verify. It must target the current
+#     branch (never refs/heads/main), forbid the sandbox pushing main, name the
+#     host as the lander, still state the invariant that nothing reaches main
+#     unverified (now the host's guarantee), and authenticate CREDENTIAL-FREE
+#     (#195/#222 — no swarm:$token@ URL, no secret-file cat in argv, no
+#     hardcoded forge host/repo). ---
+g_flat="$(tr '\n' ' ' <<<"$g")"   # phrases wrap across lines
+grep -qF 'HEAD:refs/heads/$(git rev-parse --abbrev-ref HEAD)' <<<"$g" || fail "the push branch must push HEAD to the per-run worker branch (#193)"
+! grep -q 'git push origin HEAD:refs/heads/main' <<<"$g" || fail "the push branch must NOT carry a direct push to main (#193)"
+grep -qiE 'do \*{0,2}NOT\*{0,2} push to .?main' <<<"$g_flat" || fail "the push branch must forbid the worker pushing main from the sandbox (#193)"
+! grep -qE 'swarm:|/run/secrets/forgejo_token' <<<"$g" || fail "the push branch must NOT paste a token URL or cat a secret file (#195 — auth is the credential helper)"
+grep -qiE 'credential-free|credential helper' <<<"$g"  || fail "the push branch must name the credential-free / credential-helper auth (#195)"
+! grep -q 'git.matou.nz\|/Matou/' <<<"$g"              || fail "the push branch must not hardcode a forge host or repo (blast-radius rule)"
+grep -qiE 'HOST' <<<"$g_flat"                          || fail "the push branch must name the HOST as what lands main after verify (#193)"
+grep -qi 'unverified' <<<"$g_flat"                     || fail "the push branch must still state the invariant: nothing reaches main unverified (now the host's guarantee, #193/#207)"
 pass=$((pass+1))
 
 echo "policy-lib: $pass checks passed"

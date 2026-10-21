@@ -62,17 +62,28 @@ jobs:
           }
           # Host capacity semaphore (idss #577, idss ADR 0184): TWO pooled
           # heavy slots shared by swarm AND triage across every repo on this
-          # host — /tmp/matou-swarm.lock (slot 1, kept under its original
-          # name so an unmodified sibling repo's workflow still excludes
-          # correctly against it) and /tmp/matou-host-slot-2.lock (slot 2,
-          # new capacity). First-fit, non-blocking: try slot 1, then slot 2.
-          # Still never CAMP (idss #238) — both busy means yield (exit 0)
-          # and let the :05/:35 cron (or the next issue event) re-fire —
-          # triage is idempotent, so a deferred pass costs nothing.
+          # host. The slot + reservation paths come from the host's generated
+          # host-capacity.env (factory-owned, ADR 0004 / #6) so they follow the
+          # host-state cutover off /tmp into the host state dir (<home>/state,
+          # #205/#218) in LOCKSTEP with the harness libs that flock the same
+          # inodes — a guard left on /tmp while the libs moved would diverge
+          # slot 2 and the drive reservation (double capacity / drive
+          # starvation, GOTCHAS 67). Slot 1 keeps its historical base name under
+          # the state dir; #205's /tmp compat symlink still bridges an unmodified
+          # older pin for one cycle. Fall back to the harness-default state dir
+          # if a host predates the generated file. First-fit, non-blocking: try
+          # slot 1, then slot 2. Still never CAMP (idss #238) — both busy means
+          # yield (exit 0) and let the :05/:35 cron (or the next issue event)
+          # re-fire — triage is idempotent, so a deferred pass costs nothing.
+          cap_env="$HOME/factory-cron/host-capacity.env"
+          [ -f "$cap_env" ] && . "$cap_env"
+          state_dir="${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}"
+          set -- ${HOST_CAPACITY_SLOTS:-$state_dir/matou-swarm.lock $state_dir/matou-host-slot-2.lock}
+          slot1="$1"; slot2="${2:-$1}"
           # Drive reservation (Matou/idss #663/#664). The rehearsal drive needs
           # EVERY host lock at once and yields the instant one is busy, so it
           # loses to any worker that claims a ticket in the gap — unboundedly,
-          # not just slowly. /tmp/matou-swarm.lock is HOST-global and shared by
+          # not just slowly. The reservation file is HOST-global and shared by
           # every repo on this box, so a repo without this guard starves the
           # drive no matter how well-guarded the others are: idss was guarded and
           # a dev-factory run still held the slot for 20 consecutive ticks
@@ -82,16 +93,17 @@ jobs:
           # so this costs at most one deferred claim. Inline because this runs
           # before the checkout exists. The mtime TTL is the anti-deadlock: a
           # declarer killed by OOM/SIGKILL/reboot (no trap runs) would otherwise
-          # wedge every heavy job on this host until a human cleared /tmp. Keep
-          # 900 in step with HOST_CAPACITY_DRIVE_WANTED_TTL in host-capacity-lib.sh.
+          # wedge every heavy job on this host until a human cleared the state.
+          # Keep 900 in step with HOST_CAPACITY_DRIVE_WANTED_TTL in
+          # host-capacity-lib.sh.
           #
           # The consecutive-defer count (idss #664) is THIS consumer's own,
           # distinct from the drive's own skip counter and from swarm's/
           # session-runner's — three consumers on three cadences need three
           # independent streaks so "skipped 3" always means 3 ticks of THIS
           # worker, not a blend across consumers.
-          drive_res=/tmp/matou-drive-wanted
-          defer_count=/tmp/matou-triage-drive-defer-count
+          drive_res="${HOST_CAPACITY_DRIVE_WANTED:-$state_dir/matou-drive-wanted}"
+          defer_count="$state_dir/matou-triage-drive-defer-count"
           if [ -f "$drive_res" ] \
             && [ "$(( $(date +%s) - $(stat -c %Y "$drive_res" 2>/dev/null || echo 0) ))" -lt 900 ]; then
             n="$(cat "$defer_count" 2>/dev/null || echo 0)"; case "$n" in ''|*[!0-9]*) n=0;; esac; n=$((n+1))
@@ -101,12 +113,12 @@ jobs:
             exit 0
           fi
           rm -f "$defer_count"
-          exec 9>/tmp/matou-swarm.lock
-          held_slot=/tmp/matou-swarm.lock
+          exec 9>"$slot1"
+          held_slot="$slot1"
           if ! flock -n 9; then
             exec 9>&-
-            exec 9>/tmp/matou-host-slot-2.lock
-            held_slot=/tmp/matou-host-slot-2.lock
+            exec 9>"$slot2"
+            held_slot="$slot2"
             if ! flock -n 9; then
               echo "triage: both host capacity slots busy — yielding; the cron re-fires"
               yield_signal slots-busy
@@ -158,7 +170,13 @@ jobs:
           # than copying git-setup.sh's own hardcoded default.
           if [ ! -f .sandcastle/git-setup.sh ]; then
             host="${SERVER_URL#https://}"
-            url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+            # Credential-free origin (#195): the token never rides in the URL or on
+            # argv. git-cred-lib.sh is not on disk in a cold clone, so inline its
+            # token-free credential helper — a `get` handler that reads FORGEJO_TOKEN
+            # from the job env at git-invocation time. git-setup.sh persists the same
+            # helper into the workdir once present, so established ticks need no inline.
+            url="https://${host}/${REPO_SLUG}.git"
+            cred='credential.helper=!f(){ [ "$1" = get ] || exit 0; printf "username=swarm\npassword=%s\n" "${FORGEJO_TOKEN:-}"; }; f'
             # A real subshell with its OWN `set -e`, so a failing fetch aborts the
             # sequence instead of letting checkout/reset run against stale refs and
             # mask it (the pin git-setup.sh carries too).
@@ -166,11 +184,11 @@ jobs:
               set -e
               if [ -d .git ]; then
                 git remote set-url origin "$url"
-                git fetch origin main
+                git -c "$cred" fetch origin main
                 git checkout -f main
                 git reset --hard origin/main
               else
-                git clone "$url" .
+                git -c "$cred" clone "$url" .
               fi
             )
             attempt=1; delay=2

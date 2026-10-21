@@ -573,7 +573,11 @@ claude_select_token
 # #81 gap where a session's real account budget was invisible to the Usage tab.
 sr_run_db_id="session-$sr_slug-$(date +%s)-$$"
 sr_started="$(date +%s)"
-swarmdb_run_start "$sr_run_db_id" "$REPO_SLUG" session "$sr_started"
+# The executing host (#202), stamped on the run row so spend groups per-device
+# (`spend-by --group …,host`). SWARM_HOST is the pool-claim name; `hostname` the
+# bare-host fallback — the same formula run-swarm.sh uses.
+sr_host="${SWARM_HOST:-$(hostname 2>/dev/null || echo unknown)}"
+swarmdb_run_start "$sr_run_db_id" "$REPO_SLUG" session "$sr_started" "$sr_host"
 swarmdb proc-open --run "$sr_run_db_id" --kind session --ref "$$" \
   --command "session-runner #$pick — $title" --started "$sr_started"
 swarmdb attempt --run "$sr_run_db_id" --issue "$pick" --started "$sr_started"

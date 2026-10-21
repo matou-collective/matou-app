@@ -150,6 +150,7 @@ No commits produced (agent blocked or task left open — see issue comments)."
   fi
   summary="$summary$(report_pr_section "$opened" "$repo_web")"
   summary="$summary$(report_merge_section "$merged")"
+  # shellcheck disable=SC2046 # commit numbers are deliberately word-split into separate args.
   summary="$summary$(report_issue_section "$ready" $(report_commit_nums "$start_sha"))"
   if [ -n "${RUN_URL:-}" ]; then
     summary="$summary

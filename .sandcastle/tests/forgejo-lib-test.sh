@@ -59,6 +59,11 @@ case "$url" in
     $want_code && { echo "${FAKE_CODE:-204}"; exit 0; }
     echo '{}'
     ;;
+  */issues/333)
+    # #283 forgejo_reopen_issue — PATCH state:open (-w → code); GET → a closed issue
+    $want_code && { echo "${REOPEN_CODE:-200}"; exit 0; }
+    echo '{"number":333,"state":"closed"}'
+    ;;
   */issues)
     echo '{"number": 555}'
     ;;
@@ -236,6 +241,15 @@ check "forgejo_pr_mergeable passes a false through (not swallowed by //)" \
 code="$(CLOSE_CODE=200 forgejo_close_pr 7)"
 check "forgejo_close_pr returns the HTTP code" '[ "$code" = 200 ]'
 check "forgejo_close_pr PATCHes the PR endpoint" 'grep -q "PATCH .*/pulls/7$" "$CALLS_LOG"'
+
+# forgejo_reopen_issue (#283) — PATCH the issue state back to open, HTTP code
+# passthrough. The inverse of forgejo_close_pr: the false-green reconcile reopens
+# an issue a push-mode close closed when the host's later land rolled back.
+: > "$CALLS_LOG"; : > "$BODIES_LOG"
+code="$(REOPEN_CODE=200 forgejo_reopen_issue 333)"
+check "forgejo_reopen_issue returns the HTTP code" '[ "$code" = 200 ]'
+check "forgejo_reopen_issue PATCHes the issue endpoint" 'grep -q "PATCH .*/issues/333$" "$CALLS_LOG"'
+check "forgejo_reopen_issue body carries {state:open}" '[ "$(jq -r .state < "$BODIES_LOG")" = open ]'
 
 # forgejo_pr_combined_status (#15) — resolves the PR head sha, then GETs the
 # commit's combined status; the caller reads .state / .statuses[].context

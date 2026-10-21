@@ -14,6 +14,15 @@
 # returns 1; the caller (try_heal) files the blocker itself with that reason as
 # its "healer refused: <rule>" diagnosis (ticket-on-refusal).
 
+# The healer's dedicated checkout clones and pushes credential-free (#195):
+# git_cred_strip_url normalises any token-bearing origin URL, git_cred_export /
+# git_cred_persist inject the token-free helper so `git push origin` authenticates
+# with no token on disk or argv. (Supersedes the old rehearsal_heal_authed_url,
+# which embedded `swarm:$FORGEJO_TOKEN@` in the URL.)
+__rehearsal_heal_lib_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=git-cred-lib.sh
+. "$__rehearsal_heal_lib_here/git-cred-lib.sh"
+
 # HEAL_RAIL_REASON / HEAL_RAIL_SWARMABLE — set by heal_rails on every refusal so
 # the caller's ticket-on-refusal can name the rule that fired and route the
 # label. SWARMABLE=true means a swarm worker can act without a human ruling (a
@@ -224,23 +233,6 @@ heal_rails() {
 # check needs a ruling).
 fast_lane_rails() { HEAL_ALLOW_PRODUCT_SURFACE=1 heal_rails "$@"; }
 
-# rehearsal_heal_authed_url <url> — inject the same non-interactive
-# `swarm:$FORGEJO_TOKEN` credential git-setup.sh's worker checkouts already
-# use for git.matou.nz (#676: the healer's dedicated checkout clones/pushes
-# with a bare `https://git.matou.nz/...` origin — no username, no credential
-# helper, no GIT_ASKPASS — so a headless `git push` blocks on a username
-# prompt and dies; that stranded the already-computed, already-validated fix
-# e920f9e7 until it was landed by hand in #675). Only rewrites a plain
-# git.matou.nz https URL with no userinfo yet; a local path (the test
-# fixtures' bare origins) or an already-credentialed URL pass through
-# unchanged, so this is safe to call unconditionally on every heal.
-rehearsal_heal_authed_url() {
-  case "$1" in
-    https://git.matou.nz/*) printf 'https://swarm:%s@%s' "${FORGEJO_TOKEN:-}" "${1#https://}" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
-
 # heal_push <co> <pre_head> <run_dir> — land the healer's single commit on
 # origin/main even when main advanced under us (a concurrent operator or swarm
 # push): fetch + rebase onto origin/main, re-run the rails against the replayed
@@ -290,8 +282,16 @@ heal_push() {
 # scrub_commit_message <co> — amend HEAD's message: Forgejo auto-close keywords
 # become "advances #N" (the hazard has fired twice: even DESCRIBING a close
 # closes), and the "rehearsal healer: " prefix is enforced.
+#
+# The healer works in a throwaway clone (heal.sh's HEAL_CLONE) that does NOT wire
+# core.hooksPath, so the prepare-commit-msg hook never fires on this amend —
+# stamp the Factory-Account trailer (#223) here instead, by the same
+# interpret-trailers incantation the hook uses, so the healer's commit carries
+# the account attribution every other swarm_git_identity caller's does.
+# Conditional on a non-empty fingerprint (claude_select_token exported it before
+# the heal ran): a token-less run leaves the message byte-identical to pre-#223.
 scrub_commit_message() {
-  local co="$1" msg
+  local co="$1" msg fp
   msg="$(git -C "$co" log -1 --pretty=%B)"
   if grep -qiE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*#[0-9]+' <<<"$msg"; then
     msg="$(sed -E 's/\b([Cc]lose[sd]?|[Ff]ix(e[sd])?|[Rr]esolve[sd]?)[[:space:]]*#/advances #/g' <<<"$msg")"
@@ -299,6 +299,19 @@ scrub_commit_message() {
   case "$msg" in
     "rehearsal healer: "*) ;;
     *) msg="rehearsal healer: $msg" ;;
+  esac
+  # The hook stamps the trailer with `git interpret-trailers`, but scrub's
+  # message ALWAYS carries the "rehearsal healer: " prefix — and a `word: value`
+  # subject line is parsed by interpret-trailers AS a trailer, so it would append
+  # the fingerprint into that same paragraph with no separating blank line and
+  # then fail to recognise it on the next amend, duplicating it. So stamp it by
+  # hand here: a grep guard for idempotency and an explicit blank line so the
+  # trailer is its own final paragraph. Same end result, robust to the prefix.
+  fp="${CLAUDE_ACCOUNT_FP:-}"
+  case "$fp" in ''|*[!0-9a-f]*) ;; *)
+    grep -qi '^Factory-Account:' <<<"$msg" || msg="$msg
+
+Factory-Account: $fp" ;;
   esac
   git -C "$co" commit --amend -qm "$msg"
 }

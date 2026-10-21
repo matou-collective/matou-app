@@ -60,6 +60,27 @@ fi
 : "${FORGEJO_TOKEN:?set in .sandcastle/.env, the environment, or /run/secrets/forgejo_token}"
 # shellcheck source=swarm-identity.sh
 . "$here/swarm-identity.sh"   # FORGEJO_API default — this repo's identity (ADR 0180 / #571)
+
+# #213: swarm fairness — a PEER repo's swarm has starved past its yield
+# threshold and declared a want-file (swarm-yield-signal.sh). main.mts mirrors
+# every live `repo-wanted-<slug>` into the host-signals dir this run sees (the
+# generalisation of the #111 drive-wanted mirror). A want-file for a DIFFERENT
+# repo than this run's means a starved peer is waiting behind this drain on a
+# shared host slot — answer [] BEFORE any API call so claim-next-task.sh claims
+# nothing more and the slot frees after the current ticket. This run's OWN
+# want-file (this repo starving) must NOT make it yield to itself, so the own
+# slug is excluded. Absent any peer want-file, everything below holds unchanged.
+repo_wanted_dir="${SWARM_REPO_WANTED_DIR:-/run/host-signals}"
+if [ -d "$repo_wanted_dir" ]; then
+  own_slug="${REPO_SLUG:-${FORGEJO_API##*/repos/}}"; own_tag="${own_slug//\//-}"
+  for w in "$repo_wanted_dir"/repo-wanted-*; do
+    [ -e "$w" ] || continue                      # no match -> literal glob, skip
+    [ "${w##*/}" = "repo-wanted-$own_tag" ] && continue   # our own want-file is not a peer's
+    echo "list-ready-tasks: a peer repo's swarm has starved past its yield threshold and wants host capacity (#213: ${w##*/repo-wanted-}) — answering [] so this run claims nothing more and frees the slot after its current task" >&2
+    echo '[]'
+    exit 0
+  done
+fi
 # A standing rehearsal DRIVE issue is executed HOST-MODE by the workstation
 # cron (scripts/rehearsal-executor.sh), never by the swarm — Ben's ruling on
 # Matou/idss#380 (DO/broker secrets stay off the swarm containers; #377 proved

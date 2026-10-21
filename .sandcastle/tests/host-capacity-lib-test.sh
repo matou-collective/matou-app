@@ -11,8 +11,16 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 pass=0
 
 slot1="$(mktemp)"; slot2="$(mktemp)"; side="$(mktemp)"
-trap 'rm -f "$slot1" "$slot2" "$side"' EXIT
+# Slot-1 /tmp compat symlink target (#205): a throwaway name so no test ever
+# creates or clobbers the REAL host-global /tmp/matou-swarm.lock. Threaded into
+# every EXIT trap below so a created symlink never leaks.
+compat="$(mktemp -u)"
+# Off the real host state root too, so statedir_ensure never mkdir's a shared dir.
+statedir="$(mktemp -d)"
+trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side"' EXIT
 export HOST_CAPACITY_SLOTS="$slot1 $slot2"
+export HOST_CAPACITY_SLOT1_COMPAT="$compat"
+export HOST_CAPACITY_STATE_DIR="$statedir"
 
 # hold <path> <ready-file> — background-hold a lock for 30s, signalling once
 # acquired; PID lands in $HOLD_PID. `exec sleep` leaves no child with an
@@ -36,7 +44,7 @@ pass=$((pass+1))
 
 # --- acquire_heavy: slot 1 held -> falls through to slot 2, fast (no camp) ---
 hold "$slot1" "$side"; h1=$HOLD_PID
-trap 'kill "$h1" 2>/dev/null || true; rm -f "$slot1" "$slot2" "$side"' EXIT
+trap 'kill "$h1" 2>/dev/null || true; rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side"' EXIT
 wait_ready "$side"
 start="$(date +%s)"
 out="$(bash -c '. "$1"; host_capacity_acquire_heavy && echo "$HOST_CAPACITY_HELD_SLOT"' _ "$lib")"
@@ -48,7 +56,7 @@ pass=$((pass+1))
 # --- acquire_heavy: BOTH held -> yields (rc=1), fast, holds nothing ---
 : > "$side"
 hold "$slot2" "$side"; h2=$HOLD_PID
-trap 'kill "$h1" "$h2" 2>/dev/null || true; rm -f "$slot1" "$slot2" "$side"' EXIT
+trap 'kill "$h1" "$h2" 2>/dev/null || true; rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side"' EXIT
 wait_ready "$side"
 start="$(date +%s)"
 rc=0
@@ -82,7 +90,7 @@ pass=$((pass+1))
 # --- acquire_exclusive: one busy -> fails AND releases what it grabbed (no residue) ---
 : > "$side"
 hold "$slot2" "$side"; h1=$HOLD_PID
-trap 'kill "$h1" 2>/dev/null || true; rm -f "$slot1" "$slot2" "$side"' EXIT
+trap 'kill "$h1" 2>/dev/null || true; rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side"' EXIT
 wait_ready "$side"
 start="$(date +%s)"
 out="$(bash -c '
@@ -225,7 +233,7 @@ unset HOST_CAPACITY_DRIVE_WANTED HOST_CAPACITY_DRIVE_SKIPS
 ttl_wanted="$(mktemp -u)"; ttl_skips="$(mktemp -u)"
 export HOST_CAPACITY_DRIVE_WANTED="$ttl_wanted" HOST_CAPACITY_DRIVE_SKIPS="$ttl_skips"
 export HOST_CAPACITY_DRIVE_WANTED_TTL=900
-trap 'rm -f "$slot1" "$slot2" "$side" "$ttl_wanted" "$ttl_skips"' EXIT
+trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side" "$ttl_wanted" "$ttl_skips"' EXIT
 bash -c '. "$1"; host_capacity_drive_reserve' _ "$lib"
 bash -c '. "$1"; host_capacity_drive_wanted' _ "$lib" \
   || fail "a just-declared reservation must be honoured"
@@ -256,7 +264,7 @@ pass=$((pass+1))
 # empty file. A malformed reservation carries no number — never mis-admits.
 res="$(mktemp -u)"
 export HOST_CAPACITY_DRIVE_WANTED="$res"
-trap 'rm -f "$slot1" "$slot2" "$side" "$res"' EXIT
+trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side" "$res"' EXIT
 bash -c '. "$1"; host_capacity_drive_reserve' _ "$lib"           # empty touch-file
 bash -c '. "$1"; host_capacity_drive_wanted' _ "$lib" \
   || fail "an empty reservation must STILL be wanted (unconditional-yield preserved)"
@@ -274,7 +282,7 @@ rm -f "$res"
 out="$(bash -c '. "$1"; host_capacity_drive_wanted_issue' _ "$lib")"       # absent
 [ -z "$out" ] || fail "an absent reservation must carry no issue number, got: $out"
 unset HOST_CAPACITY_DRIVE_WANTED
-trap 'rm -f "$slot1" "$slot2" "$side"' EXIT
+trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side"' EXIT
 pass=$((pass+1))
 
 # --- drive reservation age (#30): the yield log line reports how old the ------
@@ -284,7 +292,7 @@ pass=$((pass+1))
 # yields nothing at rc 1.
 age_wanted="$(mktemp -u)"
 export HOST_CAPACITY_DRIVE_WANTED="$age_wanted"
-trap 'rm -f "$slot1" "$slot2" "$side" "$age_wanted"' EXIT
+trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side" "$age_wanted"' EXIT
 bash -c '. "$1"; host_capacity_drive_wanted_age' _ "$lib" \
   && fail "an absent reservation must report no age (rc 1)"
 bash -c '. "$1"; host_capacity_drive_reserve' _ "$lib"
@@ -298,14 +306,14 @@ age="$(bash -c '. "$1"; host_capacity_drive_wanted_age' _ "$lib")" \
 [ "$age" -gt 900 ] || fail "a 1970-dated reservation must read a large age, got: ${age}s"
 bash -c '. "$1"; host_capacity_drive_release' _ "$lib"
 unset HOST_CAPACITY_DRIVE_WANTED
-trap 'rm -f "$slot1" "$slot2" "$side"' EXIT
+trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side"' EXIT
 pass=$((pass+1))
 
 # --- per-consumer drive-defer counter (#664): each caller's own path ------
 # Takes the counter PATH directly (like HOST_CAPACITY_DRIVE_WANTED/_SKIPS
 # above) so an offline test never touches real host-global /tmp state.
 defer_a="$(mktemp -u)"; defer_b="$(mktemp -u)"
-trap 'rm -f "$slot1" "$slot2" "$side" "$defer_a" "$defer_b"' EXIT
+trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side" "$defer_a" "$defer_b"' EXIT
 out="$(bash -c '
   . "$1"
   echo "bump=$(host_capacity_consumer_defer_bump "$2")"    # 1
@@ -345,7 +353,7 @@ pass=$((pass+1))
 win_wanted="$(mktemp -u)"; win_since="${win_wanted}-since"
 export HOST_CAPACITY_DRIVE_WANTED="$win_wanted"
 unset HOST_CAPACITY_DRIVE_WANTED_SINCE  # let it derive from WANTED (test isolation)
-trap 'rm -f "$slot1" "$slot2" "$side" "$win_wanted" "$win_since"' EXIT
+trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side" "$win_wanted" "$win_since"' EXIT
 bash -c '. "$1"; host_capacity_drive_wanted_window' _ "$lib" \
   && fail "no open reservation episode must report no window (rc 1)"
 bash -c '. "$1"; host_capacity_drive_reserve' _ "$lib"
@@ -367,7 +375,7 @@ bash -c '. "$1"; host_capacity_drive_release' _ "$lib"
 bash -c '. "$1"; host_capacity_drive_wanted_window' _ "$lib" \
   && fail "a released episode must report no window (rc 1)"
 unset HOST_CAPACITY_DRIVE_WANTED
-trap 'rm -f "$slot1" "$slot2" "$side"' EXIT
+trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side"' EXIT
 pass=$((pass+1))
 
 # --- durable drive-lifecycle log (#93): append-only start/end records ----------
@@ -379,7 +387,7 @@ if command -v jq >/dev/null 2>&1; then
   dlog="$(mktemp -u)"; dwanted="$(mktemp -u)"; dsince="${dwanted}-since"
   export HOST_CAPACITY_DRIVE_LOG="$dlog" HOST_CAPACITY_DRIVE_WANTED="$dwanted"
   unset HOST_CAPACITY_DRIVE_WANTED_SINCE
-  trap 'rm -f "$slot1" "$slot2" "$side" "$dlog" "$dwanted" "$dsince"' EXIT
+  trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side" "$dlog" "$dwanted" "$dsince"' EXIT
   bash -c '
     . "$1"
     host_capacity_drive_reserve
@@ -448,7 +456,7 @@ if command -v jq >/dev/null 2>&1; then
   # (same process → HOST_CAPACITY_DRIVE_HOLDER_SLOTS) clears ONLY slot 2.
   rm -f "$slot1.holder" "$slot2.holder"
   : > "$side"; hold "$slot1" "$side"; hheavy=$HOLD_PID
-  trap 'kill "$hheavy" 2>/dev/null || true; rm -f "$slot1" "$slot2" "$side" "$dlog" "$dwanted" "$dsince" "$slot1.holder" "$slot2.holder"' EXIT
+  trap 'kill "$hheavy" 2>/dev/null || true; rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side" "$dlog" "$dwanted" "$dsince" "$slot1.holder" "$slot2.holder"' EXIT
   wait_ready "$side"
   bash -c '
     . "$1"
@@ -481,7 +489,7 @@ if command -v jq >/dev/null 2>&1; then
     host_capacity_release_exclusive
   ' _ "$lib" "$slot1" "$slot2" || fail "acquire_exclusive single-slot drive must label exactly EXCLUSIVE_SLOTS (rc=$?)"
   rm -f "$slot1.holder" "$slot2.holder"
-  trap 'rm -f "$slot1" "$slot2" "$side" "$dlog" "$dwanted" "$dsince"' EXIT
+  trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side" "$dlog" "$dwanted" "$dsince"' EXIT
   # acquire_exclusive records the pooled slots it holds (never the sibling lock).
   out="$(bash -c '. "$1"; host_capacity_acquire_exclusive "$2" "$3" "$4" && echo "$HOST_CAPACITY_EXCLUSIVE_SLOTS"' _ "$lib" "$slot1" "$slot2" "$side")"
   [ "$out" = " $slot1 $slot2" ] || [ "$out" = "$slot1 $slot2" ] || fail "EXCLUSIVE_SLOTS must list the pooled slots only, got: '$out'"
@@ -496,7 +504,7 @@ if command -v jq >/dev/null 2>&1; then
   # holding a stale entry for the slot it briefly held and gave back).
   : > "$side"
   hold "$slot2" "$side"; hbusy=$HOLD_PID
-  trap 'kill "$hbusy" 2>/dev/null || true; rm -f "$slot1" "$slot2" "$side"' EXIT
+  trap 'kill "$hbusy" 2>/dev/null || true; rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side"' EXIT
   wait_ready "$side"
   rc=0
   bash -c '. "$1"; host_capacity_holder_write "$2" drive x; host_capacity_acquire_exclusive "$2" "$3"; rc=$?; [ -z "$HOST_CAPACITY_EXCLUSIVE_SLOTS" ] || exit 9; exit $rc' _ "$lib" "$slot1" "$slot2" || rc=$?
@@ -533,7 +541,7 @@ if command -v jq >/dev/null 2>&1; then
   bash -c '. "$1"; host_capacity_drive_log_step d9 "orphan step"' _ "$lib" || fail "step must never red the caller"
 
   unset HOST_CAPACITY_DRIVE_LOG HOST_CAPACITY_DRIVE_WANTED HOST_CAPACITY_DRIVE_MODE
-  trap 'rm -f "$slot1" "$slot2" "$side"' EXIT
+  trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side"' EXIT
   pass=$((pass+1))
 else
   echo "host-capacity-lib: jq absent — skipping drive-log group" >&2
@@ -582,13 +590,13 @@ if command -v jq >/dev/null 2>&1; then
   [ ! -e "$holder" ] || fail "release_heavy left $holder behind"
   # A LOSING acquire never touches the winner's sidecar.
   : > "$side"; hold "$slot1" "$side"; h3=$HOLD_PID
-  trap 'kill "$h3" 2>/dev/null || true; rm -f "$slot1" "$slot2" "$side" "$slot1.holder" "$slot2.holder"' EXIT
+  trap 'kill "$h3" 2>/dev/null || true; rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side" "$slot1.holder" "$slot2.holder"' EXIT
   wait_ready "$side"
   bash -c '. "$1"; host_capacity_holder_write "$2" drive d1' _ "$lib" "$slot1"   # the holder's label
   HOST_CAPACITY_SLOTS="$slot1" bash -c '. "$1"; host_capacity_acquire_heavy' _ "$lib" && fail "setup: slot1 should be held"
   [ "$(jq -r .ref "$holder")" = d1 ] || fail "a losing acquire_heavy must leave the winner's sidecar alone: $(cat "$holder")"
   kill "$h3" 2>/dev/null || true; rm -f "$holder"
-  trap 'rm -f "$slot1" "$slot2" "$side" "$slot1.holder" "$slot2.holder"' EXIT
+  trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side" "$slot1.holder" "$slot2.holder"' EXIT
   pass=$((pass+1))
 else
   echo "host-capacity-lib: jq absent — skipping holder group" >&2
@@ -626,6 +634,86 @@ for wf in swarm triage; do
     echo "host-capacity-lib: no $wf.yml render found at $render — export assertion skipped for it" >&2
   fi
 done
+pass=$((pass+1))
+
+# --- state-dir redirect (#205): every host-global default derives from
+#     HOST_CAPACITY_STATE_DIR, so a redirected root isolates ALL of them at once
+#     (the offline-test contract, and reboot/tmp-cleaner durability on a host). ---
+sd="$(mktemp -d)"
+out="$(bash -c '
+  unset HOST_CAPACITY_SLOTS HOST_CAPACITY_DRIVE_WANTED HOST_CAPACITY_DRIVE_SKIPS \
+        HOST_CAPACITY_DRIVE_LOG HOST_CAPACITY_SLOT1_COMPAT
+  export HOST_CAPACITY_STATE_DIR="$2"
+  . "$1"
+  printf "SLOTS=%s\n" "$HOST_CAPACITY_SLOTS"
+  printf "WANTED=%s\n" "$HOST_CAPACITY_DRIVE_WANTED"
+  printf "SKIPS=%s\n" "$HOST_CAPACITY_DRIVE_SKIPS"
+  printf "LOG=%s\n" "$HOST_CAPACITY_DRIVE_LOG"
+' _ "$lib" "$sd")"
+[ "$(sed -n 's/^SLOTS=//p' <<<"$out")" = "$sd/matou-swarm.lock $sd/matou-host-slot-2.lock" ] \
+  || fail "the pooled slots must derive from the state dir, got: $(sed -n 's/^SLOTS=//p' <<<"$out")"
+[ "$(sed -n 's/^WANTED=//p' <<<"$out")" = "$sd/matou-drive-wanted" ] \
+  || fail "the drive reservation must derive from the state dir, got: $out"
+[ "$(sed -n 's/^SKIPS=//p' <<<"$out")" = "$sd/matou-drive-skip-count" ] \
+  || fail "the drive skip counter must derive from the state dir, got: $out"
+[ "$(sed -n 's/^LOG=//p' <<<"$out")" = "$sd/drive-log.jsonl" ] \
+  || fail "the drive log must derive from the state dir, got: $out"
+rm -rf "$sd"
+pass=$((pass+1))
+
+# --- compat symlink (#205): slot 1's old flat /tmp name bridges to the new
+#     state-dir path, so an unmodified older caller (or a workflow guard still
+#     hardcoding /tmp/matou-swarm.lock) flocks the SAME inode and still excludes. ---
+csd="$(mktemp -d)"; ccompat="$(mktemp -u)"
+trap 'rm -rf "$compat" "$statedir" "$csd" "$ccompat"; rm -f "$slot1" "$slot2" "$side"' EXIT
+: > "$side"
+# Hold the real new-path slot 1 via the LIB (so the lib creates the compat
+# symlink as a side effect of winning slot 1), then exec sleep to keep the fd.
+( export HOST_CAPACITY_STATE_DIR="$csd" HOST_CAPACITY_SLOT1_COMPAT="$ccompat"
+  unset HOST_CAPACITY_SLOTS
+  # shellcheck source=../host-capacity-lib.sh
+  . "$lib"
+  host_capacity_acquire_heavy
+  printf '%s' "$HOST_CAPACITY_HELD_SLOT" > "$side"
+  exec sleep 30 ) &
+chold=$!
+wait_ready "$side"
+[ "$(cat "$side")" = "$csd/matou-swarm.lock" ] \
+  || fail "lib must hold the new-path slot 1, got: $(cat "$side")"
+[ -L "$ccompat" ] \
+  || fail "acquiring slot 1 must create the /tmp compat symlink (#205)"
+[ "$(readlink "$ccompat")" = "$csd/matou-swarm.lock" ] \
+  || fail "the compat symlink must point at the real slot 1, got: $(readlink "$ccompat")"
+exec 8>"$ccompat"       # an old-path opener: follows the symlink to the held inode
+if flock -n 8; then
+  exec 8>&-; kill "$chold" 2>/dev/null || true
+  fail "the compat symlink must flock the SAME inode as slot 1 — an unmodified older caller must still EXCLUDE while slot 1 is held"
+fi
+exec 8>&-
+kill "$chold" 2>/dev/null || true; wait "$chold" 2>/dev/null || true
+rm -rf "$csd" "$ccompat"
+trap 'rm -rf "$compat" "$statedir"; rm -f "$slot1" "$slot2" "$side"' EXIT
+pass=$((pass+1))
+
+# --- inode check (#205): a held lock deleted out from under the holder (a tmp
+#     cleaner unlinking it) reads as NOT live, so the holder stands down instead
+#     of acting as a slot owner while a fresh file squats the path and the next
+#     acquirer wins a DOUBLED slot. ---
+isd="$(mktemp -d)"
+out="$(bash -c '
+  export HOST_CAPACITY_STATE_DIR="$2" HOST_CAPACITY_SLOT1_COMPAT="$2/compat"
+  unset HOST_CAPACITY_SLOTS
+  . "$1"
+  host_capacity_acquire_heavy || { echo "ACQUIRE-FAILED"; exit 0; }
+  host_capacity_held_live     || { echo "FRESH-NOT-LIVE"; exit 0; }
+  rm -f "$HOST_CAPACITY_HELD_SLOT"     # the tmp cleaner unlinks the held lock
+  if host_capacity_held_live; then echo "STILL-LIVE-BUG"; else echo "refused"; fi
+' _ "$lib" "$isd")"
+[[ "$out" != *ACQUIRE-FAILED* ]] || fail "setup: acquire must succeed, got: $out"
+[[ "$out" != *FRESH-NOT-LIVE* ]] || fail "a freshly held slot must read as live, got: $out"
+[[ "$out" != *STILL-LIVE-BUG* ]] || fail "a held lock DELETED out from under the holder must NOT read as live — the inode check must refuse it (#205)"
+[[ "$out" == *refused* ]]        || fail "inode check did not refuse after deletion, got: $out"
+rm -rf "$isd"
 pass=$((pass+1))
 
 echo "host-capacity-lib: $pass groups passed"

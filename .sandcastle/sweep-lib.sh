@@ -8,10 +8,11 @@
 # `go test ./internal/wireconvention/...` with 1867 phantom findings (#187).
 #
 # run-swarm.sh sources this and runs sweep_worktrees from an EXIT trap. This USED
-# to lean on "we hold /tmp/matou-swarm.lock for the whole run, so no OTHER swarm
-# is live when this exit trap fires". That single-lock exclusivity DIED with #577
-# / ADR 0184: host capacity is now a TWO-slot pool (/tmp/matou-swarm.lock +
-# /tmp/matou-host-slot-2.lock) with NO repo affinity, so two swarm runs for the
+# to lean on "we hold the host-capacity slot lock for the whole run, so no OTHER
+# swarm is live when this exit trap fires". That single-lock exclusivity DIED
+# with #577 / ADR 0184: host capacity is now a TWO-slot pool (the pooled
+# host-capacity slots under the host state dir, #205/#218) with NO repo affinity,
+# so two swarm runs for the
 # SAME repo share one $HOME/swarm/<repo> workdir — hence one .sandcastle/worktrees/
 # dir — at the same time. A blind "remove every worktree here" on one run's exit
 # then unlinks the OTHER, still-live run's checkout out from under its worker
@@ -130,8 +131,8 @@ prune_session_logs() {
 #      older than the floor: no legitimate factory container lives past a
 #      run-lifetime, so this catches a leak that lost both its name and label.
 #
-# run-swarm.sh calls this from its EXIT trap while it holds the global
-# /tmp/matou-swarm.lock; a concurrent slot-2 sibling (#577/ADR 0184) is spared
+# run-swarm.sh calls this from its EXIT trap while it holds its global
+# host-capacity slot lock; a concurrent slot-2 sibling (#577/ADR 0184) is spared
 # because every ceiling is >= that kind's legitimate max lifetime. A container
 # that is NONE of the three (not a factory container) is never touched. Prints
 # each reaped id, one per line, and logs `id (reason, created …)` to stderr so a

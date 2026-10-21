@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS runs (
   ended_at       INTEGER,         -- NULL = believed still running
   verdict        TEXT,            -- the exit reason (completed, sandcastle-run-failed, killed:SIGTERM, ...)
   verdict_source TEXT,            -- the line/stage that decided the verdict
-  exit_code      INTEGER
+  exit_code      INTEGER,
+  host           TEXT             -- the pool host the run executed on (#202); NULL = unrecorded (additive)
 );
 
 CREATE TABLE IF NOT EXISTS attempts (
@@ -94,7 +95,22 @@ CREATE TABLE IF NOT EXISTS spend (
   account       TEXT,                   -- the active Claude account letter (A|B); NULL = unattributed
   cache_creation_tokens INTEGER,        -- cache-write tokens (~1.25x fresh input price); NULL = unrecorded (#96)
   cache_read_tokens     INTEGER,        -- cache-hit tokens (~0.1x fresh input price); NULL = unrecorded (#96)
-  model                 TEXT            -- the model that billed the tokens; NULL = unrecorded (#96)
+  model                 TEXT,           -- the model that billed the tokens; NULL = unrecorded (#96)
+  account_fp            TEXT            -- fingerprint sha256(token)[:12] of the account that billed (#200); NULL = unattributed
+);
+
+CREATE TABLE IF NOT EXISTS prices (
+  -- Operator-maintained public pricing, keyed by model id (#202): the USD-per-
+  -- million-token rate for each token class, so `spend-by --usd` can derive a
+  -- DOLLAR estimate from the token columns. Seeded by `price-set` / `price-load`
+  -- (prices.conf); a model with no row prices at 0 (the USD figure under-reports
+  -- rather than guessing). NOT spend authorization — a derived estimate only.
+  model               TEXT PRIMARY KEY,
+  input_per_mtok      REAL,    -- USD per 1e6 FRESH input tokens
+  output_per_mtok     REAL,    -- USD per 1e6 output tokens
+  cache_write_per_mtok REAL,   -- USD per 1e6 cache-creation tokens (~1.25x input)
+  cache_read_per_mtok REAL,    -- USD per 1e6 cache-read tokens (~0.1x input)
+  updated_at          INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_attempts_issue ON attempts(issue);
@@ -131,6 +147,13 @@ ADDITIVE_COLUMNS = [
     ("spend", "cache_creation_tokens", "INTEGER"),
     ("spend", "cache_read_tokens", "INTEGER"),
     ("spend", "model", "TEXT"),
+    # #200: the account FINGERPRINT (sha256(token)[:12]) beside the A/B letter,
+    # so spend attributes to the credential actually billed (per-project tokens,
+    # per-device). Additive + nullable like the rest: old rows read NULL.
+    ("spend", "account_fp", "TEXT"),
+    # #202: the executing pool host on the run row, so spend groups per-device.
+    # Additive + nullable: a db that predates it reads NULL, never rewritten.
+    ("runs", "host", "TEXT"),
 ]
 
 
@@ -192,12 +215,13 @@ def cmd_run_start(a):
         # Idempotent: a re-fired trigger with the same run id keeps the original
         # start; only fills the descriptive columns.
         conn.execute(
-            """INSERT INTO runs (run_id, repo, trigger, started_at)
-               VALUES (?,?,?,?)
+            """INSERT INTO runs (run_id, repo, trigger, started_at, host)
+               VALUES (?,?,?,?,?)
                ON CONFLICT(run_id) DO UPDATE SET
                  repo=COALESCE(excluded.repo, runs.repo),
-                 trigger=COALESCE(excluded.trigger, runs.trigger)""",
-            (a.run, a.repo, a.trigger, _now(a.started)),
+                 trigger=COALESCE(excluded.trigger, runs.trigger),
+                 host=COALESCE(excluded.host, runs.host)""",
+            (a.run, a.repo, a.trigger, _now(a.started), a.host),
         )
     conn.close()
 
@@ -360,11 +384,79 @@ def cmd_spend(a):
     with conn:
         conn.execute(
             "INSERT INTO spend (run_id, issue, input_tokens, output_tokens, requests, at, account, "
-            "cache_creation_tokens, cache_read_tokens, model) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "cache_creation_tokens, cache_read_tokens, model, account_fp) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (a.run, a.issue, a.input, a.output, a.requests, _now(a.at), a.account,
-             a.cache_creation, a.cache_read, a.model),
+             a.cache_creation, a.cache_read, a.model, a.account_fp),
         )
     conn.close()
+
+
+def _upsert_price(conn, model, inp, out, cw, cr, at):
+    """Upsert ONE model's per-Mtok rates. A re-set keeps the row (PRIMARY KEY on
+    model) and refreshes whichever rates were given, so a price revision is a
+    plain re-run. Operator data, not spend authorization (#202)."""
+    conn.execute(
+        """INSERT INTO prices (model, input_per_mtok, output_per_mtok,
+             cache_write_per_mtok, cache_read_per_mtok, updated_at)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(model) DO UPDATE SET
+             input_per_mtok=COALESCE(excluded.input_per_mtok, prices.input_per_mtok),
+             output_per_mtok=COALESCE(excluded.output_per_mtok, prices.output_per_mtok),
+             cache_write_per_mtok=COALESCE(excluded.cache_write_per_mtok, prices.cache_write_per_mtok),
+             cache_read_per_mtok=COALESCE(excluded.cache_read_per_mtok, prices.cache_read_per_mtok),
+             updated_at=excluded.updated_at""",
+        (model, inp, out, cw, cr, at))
+
+
+def cmd_price_set(a):
+    """Seed/update ONE model's public pricing (USD per 1e6 tokens, per class)."""
+    migrate(a.db)
+    conn = connect(a.db)
+    with conn:
+        _upsert_price(conn, a.model, a.input, a.output,
+                      a.cache_write, a.cache_read, _now(a.at))
+    conn.close()
+
+
+def cmd_price_load(a):
+    """Seed the price table from an operator conf (#202). One model per line:
+
+        <model-id> <input> <output> <cache_write> <cache_read>   # USD per Mtok
+
+    whitespace-separated; `#` comments and blank lines ignored. The rates are
+    PUBLIC pricing the operator maintains — a derived USD estimate, never a
+    spend authorization. Idempotent (each line upserts); a malformed line is
+    skipped, not fatal, so a partial conf still seeds every good row."""
+    migrate(a.db)
+    now = _now(a.at)
+    n = 0
+    conn = connect(a.db)
+    with conn:
+        with open(a.file, "r") as fh:
+            for line in fh:
+                line = line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                model = parts[0]
+                nums = []
+                ok = True
+                for p in parts[1:5]:
+                    try:
+                        nums.append(float(p))
+                    except ValueError:
+                        ok = False
+                        break
+                if not ok:
+                    continue
+                while len(nums) < 4:
+                    nums.append(0.0)
+                _upsert_price(conn, model, nums[0], nums[1], nums[2], nums[3], now)
+                n += 1
+    conn.close()
+    print(n)
 
 
 # --- session-file ingest (#98) -----------------------------------------------
@@ -400,7 +492,7 @@ def _parse_iso_ts(s):
         return None
 
 
-def ingest_session(conn, run, issue, path, account):
+def ingest_session(conn, run, issue, path, account, account_fp=None):
     """Parse one claude session jsonl into per-request spend + per-tool-call
     events on `conn`. Returns (n_spend_rows, n_tool_events). Raises on IO/parse
     of the file itself (cmd_ingest catches); a single malformed LINE is skipped,
@@ -427,14 +519,14 @@ def ingest_session(conn, run, issue, path, account):
                     # they SUM to the iteration's real request count.
                     conn.execute(
                         "INSERT INTO spend (run_id, issue, input_tokens, output_tokens, "
-                        "requests, at, account, cache_creation_tokens, cache_read_tokens, model) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        "requests, at, account, cache_creation_tokens, cache_read_tokens, model, account_fp) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                         (run, issue,
                          usage.get("input_tokens"), usage.get("output_tokens"), 1,
                          int(ts) if ts is not None else int(time.time()), account,
                          usage.get("cache_creation_input_tokens"),
                          usage.get("cache_read_input_tokens"),
-                         msg.get("model")))
+                         msg.get("model"), account_fp))
                     n_spend += 1
                 content = msg.get("content")
                 if isinstance(content, list):
@@ -478,7 +570,7 @@ def cmd_ingest(a):
         conn = connect(a.db)
         try:
             with conn:
-                n_spend, n_events = ingest_session(conn, a.run, a.issue, a.session, a.account)
+                n_spend, n_events = ingest_session(conn, a.run, a.issue, a.session, a.account, a.account_fp)
         finally:
             conn.close()
     except Exception:
@@ -494,7 +586,7 @@ def _print_rows(rows, headers):
         print("\t".join("" if c is None else str(c) for c in r))
 
 
-def q_issue(conn, args, repo):
+def q_issue(conn, a, repo):
     """History of one issue: attempts, then events, then spend — chronological.
 
     Issue numbers are PER-REPO but swarm.db is one shared db per host (ADR 0004
@@ -503,7 +595,7 @@ def q_issue(conn, args, repo):
     it through `runs.repo` via `run_id` — so each is LEFT JOINed to `runs` and
     filtered by repo. `repo=None` means the escape hatch (`--repo all`): no
     filter, every repo's rows (a LEFT JOIN keeps rows whose run row is missing)."""
-    issue = int(args[0])
+    issue = int(a.args[0])
     p = {"issue": issue, "repo": repo}
     rf = "" if repo is None else " AND r.repo = :repo"
     print("== attempts ==")
@@ -526,7 +618,7 @@ def q_issue(conn, args, repo):
         ["at", "run", "in", "out", "req"])
 
 
-def q_open_processes(conn, args, repo):
+def q_open_processes(conn, a, repo):
     """Believed-alive process rows — the #435 wedge surface (a row, no end).
 
     Host-scoped by design (ADR 0004 point 5) — the default answers a HOST
@@ -541,7 +633,7 @@ def q_open_processes(conn, args, repo):
         ["run", "kind", "ref", "command", "started"])
 
 
-def q_spend_weekly(conn, args, repo):
+def q_spend_weekly(conn, a, repo):
     """Token/request spend bucketed by ISO week. Host-scoped by design with an
     OPTIONAL repo filter (`--repo <slug>`); `repo=None` => the whole host."""
     rf = "" if repo is None else " WHERE r.repo = :repo"
@@ -566,7 +658,7 @@ def _percentile(sorted_vals, p):
     return sorted_vals[rank - 1]
 
 
-def q_queue_wait(conn, args, repo):
+def q_queue_wait(conn, a, repo):
     """Ready→claimed queue-wait percentiles bucketed by DAY, from `queue-wait`
     events (record-run-result.sh writes the seconds into `detail`). The backlog's
     core health number — how long a ticket sits claimable before a machine takes
@@ -591,7 +683,7 @@ def q_queue_wait(conn, args, repo):
     _print_rows(out, ["day", "n", "p50", "p90", "p99"])
 
 
-def q_red_by_stage(conn, args, repo):
+def q_red_by_stage(conn, a, repo):
     """Red runs (non-zero exit) grouped by the verdict/stage that killed them.
     Host-scoped by design with an OPTIONAL repo filter (`--repo <slug>`);
     `repo=None` => the whole host."""
@@ -603,11 +695,17 @@ def q_red_by_stage(conn, args, repo):
         ["stage", "red_runs"])
 
 
-def q_limit_lost(conn, args, repo):
-    """Lost capacity to Claude usage limits, per account, bucketed by ISO week
-    (#100). Reads the `limit-pause` edge events limit-lib.sh records — a `park`
-    opens a window for the exhausted account, the next `unpark` for that account
-    closes it — and sums the parked seconds into the week the park STARTED in.
+def q_limit_lost(conn, a, repo):
+    """Lost capacity to Claude usage limits, per account FINGERPRINT, bucketed by
+    ISO week (#100, re-keyed #200). Reads the `limit-pause` edge events
+    limit-lib.sh records — a `park` opens a window for the exhausted account, the
+    next `unpark` for that same account closes it — and sums the parked seconds
+    into the week the park STARTED in.
+
+    The grouping key is the token fingerprint `fp=<fp>` (#200), so two accounts
+    on one host (or a per-project token) each get their own lost-capacity line.
+    A pre-#200 event carries only `account=<letter>` and no `fp=`; it falls back
+    to the letter as the key, so historic rows still bucket and read unchanged.
 
     Host-scoped by nature: a subscription window is one host-global thing, so
     this reads every `limit-pause` row (no repo filter). An unclosed park (still
@@ -616,30 +714,99 @@ def q_limit_lost(conn, args, repo):
     rows = conn.execute(
         "SELECT at, detail FROM events WHERE kind = 'limit-pause' ORDER BY at, id"
     ).fetchall()
-    open_at = {}          # account -> the `at` of its currently-open park
-    agg = {}              # (week, account) -> [parked_seconds, windows]
+
+    def key_of(parts):
+        """The fingerprint `fp=<fp>`; falls back to `account=<letter>` (pre-#200
+        events carry no fp), then '?'."""
+        fp = next((p.split("=", 1)[1] for p in parts if p.startswith("fp=")), "")
+        if fp:
+            return fp
+        return next((p.split("=", 1)[1] for p in parts if p.startswith("account=")), "?")
+
+    open_at = {}          # fp -> the `at` of its currently-open park
+    agg = {}              # (week, fp) -> [parked_seconds, windows]
     for at, detail in rows:
         parts = (detail or "").split()
         edge = parts[0] if parts else ""
-        acct = next((p.split("=", 1)[1] for p in parts
-                     if p.startswith("account=")), "?")
+        key = key_of(parts)
         if edge == "park":
-            open_at.setdefault(acct, at)               # first park wins; re-hits ignored
-        elif edge == "unpark" and acct in open_at:
-            start = open_at.pop(acct)
+            open_at.setdefault(key, at)                # first park wins; re-hits ignored
+        elif edge == "unpark" and key in open_at:
+            start = open_at.pop(key)
             week = time.strftime("%Y-W%W", time.gmtime(start))
-            cell = agg.setdefault((week, acct), [0, 0])
+            cell = agg.setdefault((week, key), [0, 0])
             cell[0] += max(0, (at or 0) - (start or 0))
             cell[1] += 1
     _print_rows(
-        [(w, a, s, n) for (w, a), (s, n) in sorted(agg.items())],
-        ["week", "account", "parked_s", "windows"])
+        [(w, k, s, n) for (w, k), (s, n) in sorted(agg.items())],
+        ["week", "fp", "parked_s", "windows"])
+
+
+# The dimensions `spend-by --group` accepts, each mapped to the SQL that selects
+# it. `week` is the same ISO-week bucket spend-weekly uses; `host`/`repo` reach
+# the run row (spend carries no repo/host of its own — ADR 0004 point 5), so the
+# join to `runs` is always present. An unknown dimension is refused, never
+# silently dropped — a typo must not read as a different grouping.
+_SPEND_DIMS = {
+    "repo": "r.repo",
+    "host": "r.host",
+    "account": "s.account",
+    "model": "s.model",
+    "week": "strftime('%Y-W%W', s.at, 'unixepoch')",
+}
+
+# The per-row USD estimate (#202): each token class priced at its own per-Mtok
+# rate from the model-keyed `prices` table. A model with NO price row, or a token
+# class with a NULL rate, contributes 0 — the figure UNDER-reports rather than
+# guessing. LEFT JOIN so an unpriced row still counts its tokens in the token
+# columns; only its USD is 0.
+_USD_EXPR = (
+    "COALESCE(s.input_tokens,0)/1000000.0*COALESCE(p.input_per_mtok,0)"
+    " + COALESCE(s.output_tokens,0)/1000000.0*COALESCE(p.output_per_mtok,0)"
+    " + COALESCE(s.cache_creation_tokens,0)/1000000.0*COALESCE(p.cache_write_per_mtok,0)"
+    " + COALESCE(s.cache_read_tokens,0)/1000000.0*COALESCE(p.cache_read_per_mtok,0)"
+)
+
+
+def q_spend_by(conn, a, repo):
+    """Token/request spend grouped over any combination of repo, account, week,
+    host and model (`--group repo,account,week` by default), with an OPTIONAL
+    `--usd` dollar estimate joined from the operator-maintained `prices` table
+    (#202). Host-scoped by design with an OPTIONAL repo filter (`--repo <slug>`);
+    `repo=None` => the whole host.
+
+    The USD figure is a DERIVED estimate from public pricing the operator seeds —
+    never a spend authorization, and it under-reports (an unpriced model counts 0
+    dollars) rather than guess."""
+    group = getattr(a, "group", None) or "repo,account,week"
+    dims = [d.strip() for d in group.split(",") if d.strip()]
+    bad = [d for d in dims if d not in _SPEND_DIMS]
+    if bad:
+        raise SystemExit("spend-by: unknown --group dimension(s): %s (have: %s)"
+                         % (", ".join(bad), ", ".join(sorted(_SPEND_DIMS))))
+    want_usd = bool(getattr(a, "usd", False))
+    sel_cols = [("%s AS %s" % (_SPEND_DIMS[d], d)) for d in dims]
+    agg_cols = ["COALESCE(SUM(s.input_tokens),0)", "COALESCE(SUM(s.output_tokens),0)",
+                "COALESCE(SUM(s.requests),0)", "COUNT(*)"]
+    headers = list(dims) + ["in", "out", "req", "records"]
+    join = "FROM spend s LEFT JOIN runs r ON s.run_id = r.run_id"
+    if want_usd:
+        join += " LEFT JOIN prices p ON p.model = s.model"
+        agg_cols.append("ROUND(SUM(%s), 4)" % _USD_EXPR)
+        headers.append("usd")
+    where = "" if repo is None else " WHERE r.repo = :repo"
+    group_by = (" GROUP BY " + ", ".join(str(i + 1) for i in range(len(dims)))) if dims else ""
+    order_by = (" ORDER BY " + ", ".join(str(i + 1) for i in range(len(dims)))) if dims else ""
+    sql = ("SELECT " + ", ".join(sel_cols + agg_cols) + " " + join + where
+           + group_by + order_by)
+    _print_rows(conn.execute(sql, {"repo": repo}).fetchall(), headers)
 
 
 QUERIES = {
     "issue": q_issue,
     "open-processes": q_open_processes,
     "spend-weekly": q_spend_weekly,
+    "spend-by": q_spend_by,
     "red-by-stage": q_red_by_stage,
     "queue-wait": q_queue_wait,
     "limit-lost": q_limit_lost,
@@ -658,7 +825,7 @@ def cmd_query(a):
         repo = None
     conn = connect(a.db)
     try:
-        fn(conn, a.args, repo)
+        fn(conn, a, repo)
     finally:
         conn.close()
     return 0
@@ -676,6 +843,7 @@ def build_parser():
     s.add_argument("--repo")
     s.add_argument("--trigger")
     s.add_argument("--started", type=int)
+    s.add_argument("--host")                  # executing pool host (#202); omitted => NULL
 
     s = sub.add_parser("run-end"); s.set_defaults(func=cmd_run_end)
     s.add_argument("--run", required=True)
@@ -730,16 +898,35 @@ def build_parser():
     s.add_argument("--cache-creation", type=int)  # cache-write tokens; omitted => NULL (#96)
     s.add_argument("--cache-read", type=int)       # cache-read tokens; omitted => NULL (#96)
     s.add_argument("--model")                      # the billing model; omitted => NULL (#96)
+    s.add_argument("--account-fp", dest="account_fp")  # account fingerprint; omitted => NULL (#200)
 
     s = sub.add_parser("ingest"); s.set_defaults(func=cmd_ingest)
     s.add_argument("--run", required=True)
     s.add_argument("--issue", type=int)       # omitted => NULL (run-scoped)
     s.add_argument("--session", required=True)  # path to the claude session jsonl
     s.add_argument("--account")               # active account letter; omitted => NULL
+    s.add_argument("--account-fp", dest="account_fp")  # account fingerprint; omitted => NULL (#200)
+
+    # #202: operator-maintained public pricing, keyed by model id. `price-set`
+    # seeds/updates one row; `price-load` ingests a prices.conf. USD is a derived
+    # estimate for `spend-by --usd`, never a spend authorization.
+    s = sub.add_parser("price-set"); s.set_defaults(func=cmd_price_set)
+    s.add_argument("--model", required=True)
+    s.add_argument("--input", type=float)          # USD per 1e6 fresh input tokens
+    s.add_argument("--output", type=float)         # USD per 1e6 output tokens
+    s.add_argument("--cache-write", type=float, dest="cache_write")  # per 1e6 cache-creation
+    s.add_argument("--cache-read", type=float, dest="cache_read")    # per 1e6 cache-read
+    s.add_argument("--at", type=int)
+
+    s = sub.add_parser("price-load"); s.set_defaults(func=cmd_price_load)
+    s.add_argument("file")                         # prices.conf: `<model> <in> <out> <cw> <cr>` per line
+    s.add_argument("--at", type=int)
 
     s = sub.add_parser("query"); s.set_defaults(func=cmd_query)
     s.add_argument("name")
     s.add_argument("--repo")                  # None/all => host-wide (no filter)
+    s.add_argument("--group")                 # spend-by: comma list of repo,account,week,host,model
+    s.add_argument("--usd", action="store_true")  # spend-by: join the price table for a USD estimate
     s.add_argument("args", nargs="*")
 
     return p

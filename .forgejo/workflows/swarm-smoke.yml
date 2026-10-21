@@ -27,9 +27,13 @@ jobs:
           workdir="$HOME/swarm/$REPO_SLUG"
           mkdir -p "$workdir" && cd "$workdir"
           host="${SERVER_URL#https://}"
-          url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
-          if [ -d .git ]; then git remote set-url origin "$url"; git fetch origin main; git reset --hard origin/main
-          else git clone "$url" .; fi
+          # Credential-free origin (#195): no token in the URL or on argv. The smoke
+          # host has no git-setup.sh persist yet, so inline git-cred-lib's token-free
+          # helper, reading FORGEJO_TOKEN from the job env.
+          url="https://${host}/${REPO_SLUG}.git"
+          cred='credential.helper=!f(){ [ "$1" = get ] || exit 0; printf "username=swarm\npassword=%s\n" "${FORGEJO_TOKEN:-}"; }; f'
+          if [ -d .git ]; then git remote set-url origin "$url"; git -c "$cred" fetch origin main; git reset --hard origin/main
+          else git -c "$cred" clone "$url" .; fi
           # Heavy work rides a pooled host-capacity slot (#268); the clone
           # above just reset to origin/main, so the wrapper is present.
           bash .sandcastle/host-slot-wait.sh 1800 bash -c '

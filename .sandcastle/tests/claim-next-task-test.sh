@@ -102,7 +102,7 @@ check "run-0 refuses: warns on stderr" 'SWARM_RUN_ID= bash "$script" 2>&1 >/dev/
 
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
 jq -n '{"workflow_runs":[{"name":"swarm","status":"running","run_number":0}]}' >"$FAKE_DIR/tasks.json"
-out="$(SWARM_RUN_ID= SWARM_CLAIM_FORCE=1 bash "$script" 2>/dev/null)"
+out="$(SWARM_RUN_ID='' SWARM_CLAIM_FORCE=1 bash "$script" 2>/dev/null)"
 check "forced run-0 claim goes through" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
 check "forced claim posted at run 0" 'grep -q "swarm-claim host=eb03 run=0" "$FAKE_DIR/comments-431.json"'
 

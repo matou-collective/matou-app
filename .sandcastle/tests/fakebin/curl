@@ -57,7 +57,13 @@ case "$url" in
     n=$((n + 1))
     echo "$n" >"$FAKE_DIR/counter"
     printf '%s\n' "$body" >>"$FAKE_DIR/posts.log"
-    echo "{\"id\":\"NEWQ$n\",\"create_at\":$(date +%s%3N)}"
+    # create_at is epoch-MILLISECONDS (ask-human.sh's first_reply compares it to
+    # ms-valued reply stamps). Compute it as seconds*1000 — NOT `date +%s%3N`:
+    # uutils coreutils ignores the %3N width and returns full nanoseconds, so the
+    # stamp becomes ~1.8e17 and every reply falls below it, hanging ask-human
+    # (#225). seconds*1000 uses only %s and is byte-for-byte correct on GNU and
+    # uutils alike — the same idiom test-ask-human.sh stamps its fixtures with.
+    echo "{\"id\":\"NEWQ$n\",\"create_at\":$(( $(date +%s) * 1000 ))}"
     ;;
   */channels/*/posts*)
     cat "$FAKE_DIR/channel.json" 2>/dev/null || echo '{"posts":{},"order":[]}'
@@ -138,12 +144,17 @@ case "$url" in
       cat "$FAKE_DIR/comments-$id.json" 2>/dev/null || echo '[]'
     else
       printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
-      if printf '%s' "$body" | jq -r .body 2>/dev/null | grep -q '^swarm-claim '; then
+      cbody="$(printf '%s' "$body" | jq -r .body 2>/dev/null)"
+      # Persist a swarm-claim comment (so a later DELETE can find it, #22) OR a
+      # close-report gates-passed marker (#206: landing_pr_gates_passed GETs the
+      # PR's comments to decide whether an agent may merge) — the two comment
+      # kinds a later GET must see.
+      if printf '%s' "$cbody" | grep -qE '^swarm-claim |close-report: gates-passed'; then
         n="$(cat "$FAKE_DIR/comment-counter" 2>/dev/null || echo 1000)"; n=$((n + 1))
         echo "$n" >"$FAKE_DIR/comment-counter"
         num="${url%/comments}"; num="${num##*/}"
         existing="$(cat "$FAKE_DIR/comments-$num.json" 2>/dev/null || echo '[]')"
-        jq --argjson id "$n" --arg b "$(printf '%s' "$body" | jq -r .body)" \
+        jq --argjson id "$n" --arg b "$cbody" \
           '. + [{id:$id, body:$b}]' <<<"$existing" >"$FAKE_DIR/comments-$num.json"
         echo "{\"id\":$n}"
       else

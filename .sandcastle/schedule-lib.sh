@@ -153,25 +153,36 @@ schedule_ready_listing() { jq -r '.[] | "  #\(.number) \(.title)"' <<<"$1"; }
 # is the backstop either way.
 
 # schedule_stamp_path <repo-tag> -> the per-repo debounce stamp path.
-# Per-repo (#238): a shared /tmp/matou-swarm-lastready let each repo overwrite
-# the other's stamp, defeating the coalescing entirely. SWARM_DEBOUNCE_STAMP
-# overrides (tests, and an operator forcing a run).
+# Per-repo (#238): a shared matou-swarm-lastready let each repo overwrite the
+# other's stamp, defeating the coalescing entirely. Lives under the host state
+# dir off /tmp (#205/#218), the same root schedule-backstop.sh's order-repos
+# reads it from, so a tmp-clean/reboot no longer silently resets fairness.
+# SWARM_DEBOUNCE_STAMP overrides (tests, and an operator forcing a run).
 schedule_stamp_path() {
-  printf '%s' "${SWARM_DEBOUNCE_STAMP:-/tmp/matou-swarm-lastready-$1}"
+  printf '%s' "${SWARM_DEBOUNCE_STAMP:-${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}/matou-swarm-lastready-$1}"
 }
 
-# schedule_ready_hash <ready-json> -> the short digest the stamp is keyed on.
-schedule_ready_hash() { printf '%s' "$1" | sha1sum | cut -c1-16; }
+# schedule_ready_hash <ready-json> [head-sha] -> the short digest the stamp is
+# keyed on. #213: the optional head SHA is folded in so a landed fix on an
+# UNCHANGED ready-set re-arms the debounce immediately instead of coalescing
+# away for the whole window — the ready-set alone could not tell "the same
+# tickets, nothing landed" (coalesce) from "the same tickets, a fix just landed
+# on main" (run now). Empty/absent head keeps the historical ready-only digest
+# shape, so a caller that passes no head (or one with no origin/main ref) is
+# unchanged.
+schedule_ready_hash() { printf '%s\n%s' "$1" "${2:-}" | sha1sum | cut -c1-16; }
 
-# schedule_debounce_decide <ready-json> <stamp-path> <window-seconds>
+# schedule_debounce_decide <ready-json> <stamp-path> <window-seconds> [head-sha]
 #   -> "run"                 this trigger is genuine; the stamp is REWRITTEN
 #   -> "coalesce <age-secs>" the identical set was attempted <age>s ago
 # The caller records that it wrote a fresh stamp (run-swarm's stamp_written), so
 # a run that dies quietly without a worker can invalidate it on the way out
-# (#435) instead of coalescing away the very next genuine retry.
+# (#435) instead of coalescing away the very next genuine retry. #213: the
+# head SHA (origin/main at the start of this run) joins the digest so a landed
+# fix on a byte-identical ready-set is a genuine trigger, not a duplicate.
 schedule_debounce_decide() {
-  local ready="$1" stamp="$2" window="$3" ready_hash last_hash last_at now
-  ready_hash="$(schedule_ready_hash "$ready")"
+  local ready="$1" stamp="$2" window="$3" head="${4:-}" ready_hash last_hash last_at now
+  ready_hash="$(schedule_ready_hash "$ready" "$head")"
   now="$(date +%s)"
   if [ -s "$stamp" ]; then
     read -r last_hash last_at < "$stamp" || true

@@ -42,6 +42,10 @@ cat > "$tmp/bin/claude" <<'SH'
 #!/usr/bin/env bash
 [ -n "${CLAUDE_ARGV_LOG:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGV_LOG"
 [ -n "${CLAUDE_TOKEN_LOG:-}" ] && printf '%s\n' "${CLAUDE_CODE_OAUTH_TOKEN:-}" >> "$CLAUDE_TOKEN_LOG"
+# #198: record whether the standby/chat tokens leaked into this (unsandboxed)
+# child's env, so a test can assert they were stripped with `env -u`.
+[ -n "${CLAUDE_UNSET_LOG:-}" ] && printf 'B=%s MM=%s\n' \
+  "${CLAUDE_CODE_OAUTH_TOKEN_B:-UNSET}" "${MATTERMOST_BOT_TOKEN:-UNSET}" > "$CLAUDE_UNSET_LOG"
 n=1
 if [ -n "${CLAUDE_COUNT_FILE:-}" ]; then
   n="$(( $(cat "$CLAUDE_COUNT_FILE" 2>/dev/null || echo 0) + 1 ))"
@@ -385,7 +389,10 @@ out="$(run_triage CLAUDE_CODE_OAUTH_TOKEN=tokA CLAUDE_CODE_OAUTH_TOKEN_B=tokB \
   CLAUDE_EXIT=1 CLAUDE_OUTPUT="You've hit your weekly limit · resets Aug 1, 8am (UTC)" \
   CLAUDE_EXIT2=1 CLAUDE_OUTPUT2="You've hit your weekly limit · resets Aug 1, 8am (UTC)" 2>&1)" \
   || fail "both windows exhausted must still exit clean (got: $out)"
-[ -f "$marker" ] || fail "both windows exhausted must park the host"
+# #200: the park marker is keyed by the exhausted account's fingerprint — here
+# the standby (tokB), which the host failed over to before the second refusal.
+fp_tokB="$(printf '%s' tokB | sha256sum | cut -c1-12)"
+[ -f "${marker}-${fp_tokB}" ] || fail "both windows exhausted must park the host on the standby's fingerprinted marker"
 [ "$(cat "$count")" = 2 ] || fail "both accounts must have been tried, got $(cat "$count" 2>/dev/null) call(s)"
 pass=$((pass+1))
 
@@ -397,6 +404,20 @@ out="$(run_triage CLAUDE_COUNT_FILE="$count" \
   || fail "a single-account limit refusal must exit clean (got: $out)"
 [ -f "$marker" ] || fail "a single-account limit refusal must park the host"
 [ "$(cat "$count")" = 1 ] || fail "with no standby there is nothing to retry, got $(cat "$count" 2>/dev/null) call(s)"
+pass=$((pass+1))
+
+# ── #198: the unsandboxed triage claude child must NOT inherit the standby
+#     Claude token or the chat bot token ─────────────────────────────────────
+# Triage runs claude on the host with the full job env. Only the SELECTED token
+# (CLAUDE_CODE_OAUTH_TOKEN, set by claude_select_token) should reach the agent;
+# the standby (`_B`) and MATTERMOST_BOT_TOKEN ride `env -u` into the void.
+rm -f "$marker" "$verdict" "$active"
+unsetlog="$tmp/unset-log"; rm -f "$unsetlog"
+run_triage CLAUDE_CODE_OAUTH_TOKEN=tokA CLAUDE_CODE_OAUTH_TOKEN_B=tokB MATTERMOST_BOT_TOKEN=secret-mm \
+  CLAUDE_UNSET_LOG="$unsetlog" CLAUDE_EXIT=0 CLAUDE_OUTPUT=ok >/dev/null 2>&1 \
+  || fail "a clean triage must exit 0"
+[ "$(cat "$unsetlog")" = "B=UNSET MM=UNSET" ] \
+  || fail "#198: the claude child must not inherit the standby/chat tokens, got: $(cat "$unsetlog" 2>/dev/null)"
 pass=$((pass+1))
 
 # ── swarm.db trace + durable claude log (#91) ──────────────────────────────
@@ -430,6 +451,36 @@ moved="$(dbq "SELECT detail FROM events WHERE kind='triage_log'")"
 case "$moved" in "$logdir"/*) ;; *) fail "91a: the log must move UNDER the durable logdir (got: $moved)" ;; esac
 grep -q "TRIAGE-LOG-BODY" "$moved" \
   || fail "91a: the durable log must carry the captured claude output (got: $(cat "$moved" 2>/dev/null))"
+pass=$((pass+1))
+
+# ── #202: the triage claude call records ONE aggregate spend row ─────────────
+# run-triage now calls claude with `--output-format json`; its `.usage` block
+# becomes ONE account-attributed aggregate spend row via the shared swarm-db-lib
+# helper, so a busy-triaging account's budget is visible to the fleet Spend tab.
+# Shimmed claude emits a result object with a usage block; a spend row must land
+# attributed to the active account (A), run-scoped (triage is not issue-scoped).
+db_reset; rm -f "$marker" "$verdict" "$active"
+triage_json='{"type":"result","is_error":false,"result":"triaged everything","model":"claude-opus-4-8","usage":{"input_tokens":1234,"output_tokens":56,"cache_creation_input_tokens":7,"cache_read_input_tokens":8}}'
+run_triage CLAUDE_EXIT=0 CLAUDE_OUTPUT="$triage_json" >/dev/null 2>&1 \
+  || fail "202: a healthy triage (json result) must exit 0"
+[ "$(dbq "SELECT count(*) FROM spend")" = 1 ] \
+  || fail "202: the triage call must record exactly one aggregate spend row (got: $(dbq "SELECT count(*) FROM spend"))"
+[ "$(dbq "SELECT input_tokens FROM spend")" = 1234 ] \
+  || fail "202: the spend row must carry the usage block's input_tokens (got: $(dbq "SELECT input_tokens FROM spend"))"
+[ "$(dbq "SELECT output_tokens FROM spend")" = 56 ] \
+  || fail "202: the spend row must carry the usage block's output_tokens"
+[ "$(dbq "SELECT cache_read_tokens FROM spend")" = 8 ] \
+  || fail "202: the spend row must carry the usage block's cache_read tokens"
+[ "$(dbq "SELECT account FROM spend")" = A ] \
+  || fail "202: the spend row must attribute to the active account (A)"
+[ "$(dbq "SELECT model FROM spend")" = claude-opus-4-8 ] \
+  || fail "202: the spend row must carry the billing model from the result"
+# run-scoped: the spend ties to the triage run row (so spend-by --group host can
+# attribute it), and the run row carries the executing host (#202).
+[ "$(dbq "SELECT s.run_id = r.run_id FROM spend s JOIN runs r ON s.run_id=r.run_id")" = 1 ] \
+  || fail "202: the spend row must tie to the triage run row via run_id"
+[ -n "$(dbq "SELECT host FROM runs WHERE host IS NOT NULL")" ] \
+  || fail "202: the triage run row must carry the executing host (spend-by --group host)"
 pass=$((pass+1))
 
 # real fault — a non-limit claude failure still finalises both rows (verdict
