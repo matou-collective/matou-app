@@ -128,6 +128,9 @@ export function useOrgActInbox() {
   const notes = useKERINotificationService();
   const pending = ref(0);
   const lastError = ref<string | null>(null);
+  // Credential SAIDs this wallet skipped (keys[0] unsignable); surfaced so the
+  // steward UI can list the affected members (#709). Sticky, like lastError.
+  const skipped = ref<string[]>([]);
   let running: Promise<void> | null = null;
   let stopWatch: (() => void) | null = null;
 
@@ -156,11 +159,13 @@ export function useOrgActInbox() {
       mark: async (id) => { await keriClient.markNotificationRead(id); },
       recordSkipped: (said) => recordSkippedAct(group, said),
     });
+    const skippedSaids = await readSkippedActs(group);
+    skipped.value = skippedSaids;
     pending.value = res.failed + res.waiting;
     lastError.value = res.failed
       ? `${res.failed} change(s) from other stewards not applied yet`
       : res.waiting ? new NotSignerYet('').userMessage
-        : skippedActsMessage((await readSkippedActs(group)).length);
+        : skippedActsMessage(skippedSaids.length);
   }
 
   /** Single-flight: concurrent callers share one pass. Never rejects. */
@@ -184,5 +189,5 @@ export function useOrgActInbox() {
     stopWatch = null;
   }
 
-  return { pending, lastError, drain, start, stop };
+  return { pending, lastError, skipped, drain, start, stop };
 }
