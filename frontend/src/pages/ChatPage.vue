@@ -29,7 +29,7 @@ const keyboardOpen = useKeyboardOpen();
 // status-bar height once the keyboard is open (env() is 0 on web/Electron).
 const pageStyle = computed(() =>
   isMobile.value && viewportHeight.value != null
-    ? { height: `calc(${viewportHeight.value}px - env(safe-area-inset-top))` }
+    ? { height: `calc(${viewportHeight.value}px - var(--matou-safe-area-top))` }
     : {}
 );
 

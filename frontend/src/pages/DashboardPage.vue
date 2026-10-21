@@ -945,7 +945,7 @@ function handleRoleUpdated(newRole: string) {
   // bar. The negative margin has to live here, not on .welcome-header,
   // because this element's overflow:hidden would clip it. env() is 0 on
   // web/Electron, so this is a no-op there.
-  margin-top: calc(-1 * env(safe-area-inset-top));
+  margin-top: calc(-1 * var(--matou-safe-area-top));
 }
 
 .top-bar {
@@ -989,7 +989,7 @@ function handleRoleUpdated(newRole: string) {
   // Edge-to-edge mobile: .dashboard-page pulls itself up under the status bar
   // (see above); pad the header by the inset so its content clears the bar
   // while the gradient paints behind it. env() is 0 on web/Electron.
-  padding-top: calc(2rem + env(safe-area-inset-top));
+  padding-top: calc(2rem + var(--matou-safe-area-top));
 }
 
 .welcome-content {
