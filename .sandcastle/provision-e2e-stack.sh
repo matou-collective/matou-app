@@ -90,6 +90,10 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # (workflows set them explicitly, which always wins). Safe to source twice.
 # shellcheck source=swarm-identity.sh
 [ -f "$here/swarm-identity.sh" ] && . "$here/swarm-identity.sh"
+# git-cred-lib supplies the token-free credential helper (#195/#222) so the
+# workdir clone below never bakes FORGEJO_TOKEN into a git remote URL.
+# shellcheck source=git-cred-lib.sh
+. "$here/git-cred-lib.sh"
 
 REPO_SLUG="${REPO_SLUG:-Matou/matou-app}"
 INFRA="${MATOU_INFRA_DIR:-$HOME/matou/matou-infrastructure}"
@@ -373,9 +377,14 @@ ensure_workdir() {
   [ -n "${FORGEJO_TOKEN:-}" ] || fail workdir "FORGEJO_TOKEN is unset — cannot clone $REPO_SLUG into $WORKDIR (the workflows export it as \$FORGEJO_TOKEN)"
   local host url
   host="${FORGEJO_API#*://}"; host="${host%%/*}"; host="${host:-git.matou.nz}"
-  url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+  # Credential-free remote (#195/#222): the FORGEJO_TOKEN never rides in the URL
+  # (where it would persist in $WORKDIR/.git/config and in argv). git_cred_export
+  # injects the token per invocation via a token-free credential helper, read at
+  # git-call time from FORGEJO_TOKEN (asserted present above).
+  url="https://${host}/${REPO_SLUG}.git"
   converged; note "cloning $REPO_SLUG into $WORKDIR"
   mkdir -p "$WORKDIR"
+  git_cred_export
   git clone "$url" "$WORKDIR" || fail workdir "clone of $REPO_SLUG into $WORKDIR failed"
   ok workdir "cloned at $WORKDIR"
 }
