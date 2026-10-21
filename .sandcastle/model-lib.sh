@@ -5,8 +5,8 @@
 # `claude -p --model claude-opus-4-8` — which could drift apart silently.
 #
 # Sourceable, no side effects beyond defining SWARM_MODEL / SWARM_MODEL_MAP /
-# SWARM_HEAL_MODEL / SWARM_REPORT_MODEL (read from swarm.config, beside this
-# file) and the resolver functions. Consumers:
+# SWARM_HEAL_MODEL / SWARM_REPORT_MODEL / SWARM_REVIEW_MODEL (read from
+# swarm.config, beside this file) and the resolver functions. Consumers:
 #   - heal.sh                sources this, launches `claude --model "$SWARM_HEAL_MODEL"`
 #   - rehearsal-report.sh    sources this; its heal leg launches on
 #                            $SWARM_HEAL_MODEL, its diagnosis leg on
@@ -37,7 +37,12 @@ __model_lib_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${SWARM_MODEL_MAP:?swarm.config must set SWARM_MODEL_MAP}"
 : "${SWARM_HEAL_MODEL:?swarm.config must set SWARM_HEAL_MODEL}"
 : "${SWARM_REPORT_MODEL:?swarm.config must set SWARM_REPORT_MODEL}"
-export SWARM_MODEL SWARM_MODEL_MAP SWARM_HEAL_MODEL SWARM_REPORT_MODEL
+# The independent reviewer tier (#197): close-report.sh's reviewer gate runs on
+# SWARM_REVIEW_MODEL. It DEFAULTS to the heal tier (reading a diff and judging it
+# is the same diagnosis-quality work), so SWARM_HEAL_MODEL stays the single
+# source — a consumer decouples it by setting SWARM_REVIEW_MODEL in swarm.config.
+: "${SWARM_REVIEW_MODEL:=$SWARM_HEAL_MODEL}"
+export SWARM_MODEL SWARM_MODEL_MAP SWARM_HEAL_MODEL SWARM_REPORT_MODEL SWARM_REVIEW_MODEL
 
 # swarm_model_names — echo the short label suffixes (map keys), one per line.
 swarm_model_names() {

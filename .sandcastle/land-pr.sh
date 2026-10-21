@@ -33,6 +33,8 @@ fi
 # shellcheck source=swarm-identity.sh
 . "$here/swarm-identity.sh"
 export FORGEJO_TOKEN FORGEJO_API
+# shellcheck source=git-cred-lib.sh
+. "$here/git-cred-lib.sh"
 # shellcheck source=policy-lib.sh
 . "$here/policy-lib.sh"
 # shellcheck source=landing-lib.sh
@@ -65,13 +67,18 @@ if [ "$waiver" -eq 0 ] && [ "${#shots[@]}" -eq 0 ]; then
   exit 2
 fi
 
-# Inside the sandbox `origin` is unauthenticated; push by token URL. An explicit
-# LANDING_PUSH_REMOTE (a session on a host with its own credentials) wins.
+# The push (run in landing-lib.sh's landing_push) authenticates credential-free
+# (#195): the remote carries NO token, and git_cred_export injects git-cred-lib's
+# token-free credential helper into this process and its git children, so no token
+# rides in the remote URL or on argv. An explicit LANDING_PUSH_REMOTE (a session on
+# a host with its own credentials) still wins; otherwise derive a CREDENTIAL-FREE
+# remote from $FORGEJO_API so no host or repo is hardcoded.
 if [ -z "${LANDING_PUSH_REMOTE:-}" ]; then
   scheme="${FORGEJO_API%%://*}"; host="${FORGEJO_API#*://}"; host="${host%%/*}"
-  LANDING_PUSH_REMOTE="$scheme://swarm:$FORGEJO_TOKEN@$host/$(forgejo_repo_slug).git"
+  LANDING_PUSH_REMOTE="$scheme://$host/$(forgejo_repo_slug).git"
 fi
 export LANDING_PUSH_REMOTE
+git_cred_export
 
 existing="$(landing_open_pr_for "$issue" 2>/dev/null || true)"
 if ! pr="$(landing_push "$issue" "$title" "$body")" || [ -z "$pr" ]; then

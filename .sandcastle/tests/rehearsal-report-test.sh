@@ -393,10 +393,15 @@ pass=$((pass+1))
 pd_fn="$tmp/parse_diagnosis.sh"
 awk '/^parse_diagnosis\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$here/../rehearsal-report.sh" > "$pd_fn"
 grep -q '^parse_diagnosis() {' "$pd_fn" || fail "could not extract parse_diagnosis() from rehearsal-report.sh"
+# $pd_fn is an awk-extracted copy of parse_diagnosis() generated above — shellcheck cannot follow a runtime-generated source.
+# shellcheck source=/dev/null
 ( . "$pd_fn"; parse_diagnosis "" ) && fail "parse_diagnosis \"\" must return non-zero (empty is never an object; #140 jq 1.6)"
+# shellcheck source=/dev/null
 ( . "$pd_fn"; parse_diagnosis "   " ) && fail "parse_diagnosis on blank input must return non-zero (#140)"
+# shellcheck source=/dev/null
 ( . "$pd_fn"; parse_diagnosis '```json
 ```' ) && fail "parse_diagnosis on a fence-only blob must return non-zero (strips to empty; #140)"
+# shellcheck source=/dev/null
 ( . "$pd_fn"; out="$(parse_diagnosis '{"title":"t"}')" ) || fail "parse_diagnosis must still accept a clean JSON object"
 pass=$((pass+1))
 
@@ -721,7 +726,7 @@ pass=$((pass+1))
 #     (this is such a worker), the a76e7e0 inherited-env lesson.
 echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
 red_run "pairing timeout after 900000ms"
-SWARM_HOST= RUNNER_HOST=probe-declared-host REHEARSAL_HEALER=0 \
+SWARM_HOST='' RUNNER_HOST=probe-declared-host REHEARSAL_HEALER=0 \
   bash "$here/../rehearsal-report.sh" "$tmp/run" >/dev/null \
   || fail "reporter exited non-zero (evidence host, RUNNER_HOST)"
 grep -q 'on probe-declared-host' "$CURL_LOG" \

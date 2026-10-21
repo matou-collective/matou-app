@@ -125,5 +125,11 @@ def test_this_repos_own_layer_resolves(tmp_path):
     assert "/api/v1/repos/" in ident.forgejo_api
     assert ident.repo_slug.count("/") == 1
     assert ident.healer_state.endswith(os.path.join(".state", "healer"))
-    assert ident.limit_marker.startswith("/tmp/")
+    # #205/#218 moved the host-global markers off /tmp (a reboot wiped the park
+    # edge) into the host-capacity state dir — the default now resolves under
+    # <state>/swarm/state/… (#227: this assertion still read the pre-#205 /tmp).
+    # Asserts the SHAPE only — never the marker's literal basename, which carries
+    # a product-banned string the tui/ no-literal guard would (rightly) reject.
+    assert "/tmp/" not in ident.limit_marker
+    assert os.path.join("swarm", "state") in ident.limit_marker
     assert ident.swarm_db.endswith(".db")

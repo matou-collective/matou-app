@@ -147,9 +147,9 @@ VERIFY_WATCHING=1   # restore for anything after this group
 pass=$((pass+1))
 
 # ── 4. the protected-path boundary (#445) ─────────────────────────────────
-# STAGED behind PP_ENFORCE, default OFF: today the ordinary swarm still runs
-# machinery tickets directly, so a live rollback would revert exactly that
-# legitimate work.
+# PP_ENFORCE defaults ON (#193): once the worker stopped pushing main from the
+# sandbox, the rollback genuinely keeps a machinery edit off main. A consumer
+# can still opt out with PP_ENFORCE=0 (asserted below).
 ws="$tmp/ws"; mkdir -p "$ws/.sandcastle" "$ws/src"
 printf 'harness\n' > "$ws/.sandcastle/run-swarm.sh"
 printf 'product\n' > "$ws/src/app.ts"
@@ -157,6 +157,34 @@ printf 'product\n' > "$ws/src/app.ts"
 VERIFY_PP_BEFORE=""; PP_ENFORCE=0 verify_pp_snapshot "$ws"
 [ -z "$VERIFY_PP_BEFORE" ] || fail "PP_ENFORCE off must take no snapshot at all"
 PP_ENFORCE=0 verify_protected_paths "$ws" run-1 Acme/widget || fail "PP_ENFORCE off must be a silent no-op"
+pass=$((pass+1))
+
+# the DEFAULT (#193): with PP_ENFORCE unset, the boundary is ON — a snapshot is
+# taken and an untouched-tree pass returns silent 0 (no rollback, no alarm).
+VERIFY_PP_BEFORE=""; ( unset PP_ENFORCE; verify_pp_snapshot "$ws" )
+VERIFY_PP_BEFORE=""; unset PP_ENFORCE; verify_pp_snapshot "$ws"
+[ -n "$VERIFY_PP_BEFORE" ] || fail "the DEFAULT must fingerprint the machinery (PP_ENFORCE on by default, #193)"
+PP_ENFORCE=1 verify_pp_snapshot "$ws"   # restore the explicit-on baseline for the scenarios below
+pass=$((pass+1))
+
+# the per-repo OPT-OUT (#208): with no PP_ENFORCE in the environment, the policy
+# key PROTECTED_PATH_ENFORCE=off (exported by policy_load as
+# SWARM_POLICY_PROTECTED_PATH_ENFORCE) suppresses the boundary for that repo —
+# no snapshot, a silent no-op even when a machinery file changed under it.
+VERIFY_PP_BEFORE=""
+( unset PP_ENFORCE; SWARM_POLICY_PROTECTED_PATH_ENFORCE=off verify_pp_snapshot "$ws" )
+VERIFY_PP_BEFORE=""
+unset PP_ENFORCE; SWARM_POLICY_PROTECTED_PATH_ENFORCE=off verify_pp_snapshot "$ws"
+[ -z "$VERIFY_PP_BEFORE" ] || fail "the policy opt-out must take no snapshot (PROTECTED_PATH_ENFORCE=off, #208)"
+printf 'worker edited the harness while the repo opted OUT\n' > "$ws/.sandcastle/run-swarm.sh"
+SWARM_POLICY_PROTECTED_PATH_ENFORCE=off verify_protected_paths "$ws" run-1 Acme/widget \
+  || fail "the policy opt-out must be a silent no-op (PROTECTED_PATH_ENFORCE=off, #208)"
+# an explicit PP_ENFORCE in the environment still WINS over the policy opt-out.
+VERIFY_PP_BEFORE=""
+PP_ENFORCE=1 SWARM_POLICY_PROTECTED_PATH_ENFORCE=off verify_pp_snapshot "$ws"
+[ -n "$VERIFY_PP_BEFORE" ] || fail "an explicit PP_ENFORCE=1 must override the policy opt-out (#208)"
+printf 'harness\n' > "$ws/.sandcastle/run-swarm.sh"   # restore the clean baseline
+PP_ENFORCE=1 verify_pp_snapshot "$ws"
 pass=$((pass+1))
 
 # enforce ON, machinery untouched → silent pass
@@ -174,6 +202,7 @@ PATH="$tmp/bin:$PATH" PP_ENFORCE=1 verify_protected_paths "$ws" run-1 Acme/widge
   || fail "an untouched machinery tree must pass the boundary"
 [ ! -s "$NOTIFY_LOG" ] || fail "a silent boundary must announce nothing: $(cat "$NOTIFY_LOG")"
 [ ! -s "$GIT_LOG" ] || fail "a clean run must not park a rescue branch: $(cat "$GIT_LOG")"
+[ -z "$VERIFY_PP_VIOLATION" ] || fail "a clean boundary must leave VERIFY_PP_VIOLATION unset (#193)"
 pass=$((pass+1))
 
 # enforce ON, a worker edited the machinery → rolled back, NOT pushed, parked
@@ -184,6 +213,7 @@ RC=0
 PATH="$tmp/bin:$PATH" PP_ENFORCE=1 verify_protected_paths "$ws" run-1 Acme/widget >"$tmp/pp.out" 2>&1 || RC=$?
 [ "$RC" = 1 ] || fail "a protected-path violation must red the run, got $RC"
 [ "$SWARM_EXIT_REASON" = "protected-path-violation" ] || fail "the reason must be named, got '$SWARM_EXIT_REASON'"
+[ "$VERIFY_PP_VIOLATION" = 1 ] || fail "a breach must raise VERIFY_PP_VIOLATION for the landing seam's last-line-of-defense (#193)"
 [ "$(cat "$ws/.sandcastle/run-swarm.sh")" = harness ] || fail "the worker's machinery change must be ROLLED BACK"
 grep -q 'protected-path violation' "$NOTIFY_LOG" || fail "the violation must alarm: $(cat "$NOTIFY_LOG")"
 grep -q 'ready-for-session' "$NOTIFY_LOG" || fail "the alarm must name the escape path (ADR 0174)"

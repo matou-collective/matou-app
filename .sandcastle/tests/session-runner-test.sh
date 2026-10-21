@@ -7,6 +7,15 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
+# Hermetic token env (#227): the runner this suite drives sources limit-lib and
+# fingerprints the active token. A standing session / the matou-workstation CI
+# runner carries a real CLAUDE_CODE_OAUTH_TOKEN(_B) in its process env, which
+# would fp-key the park marker the "no standby must park the host" case asserts
+# on the bare path — reddening the suite only on a token-bearing host. The one
+# case that needs two accounts sets CLAUDE_CODE_OAUTH_TOKEN(_B) on its own
+# invocation; neutralise any ambient credential so the default is clean.
+unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_B CLAUDE_TOKEN_PRIMARY CLAUDE_ACCOUNT_FP 2>/dev/null || true
+
 # The rendered session-runner prompt lives at the harness root. Factory-side the
 # suite runs from <factory>/tests and the rendered copy is the self-pin under
 # .sandcastle/; consumer-side the suite is vendored into <repo>/.sandcastle/tests/

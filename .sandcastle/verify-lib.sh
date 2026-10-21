@@ -39,6 +39,11 @@ VERIFY_WATCHING=1
 # The protected-path snapshots (#445); the EXIT trap removes both.
 VERIFY_PP_BEFORE=""
 VERIFY_PP_AFTER=""
+# Set to 1 by verify_protected_paths when a worker breached the boundary (#193).
+# The landing seam reads it as a last-line-of-defense: the host NEVER pushes a
+# flagged breach to main, even if a caller reaches landing without the run-swarm
+# ordering's `|| exit 1`. Cleared at the top of each verify_protected_paths call.
+VERIFY_PP_VIOLATION=""
 
 _verify_notify() { bash "$VERIFY_NOTIFY" "$1" || true; }
 
@@ -137,14 +142,31 @@ verify_workers() {
 }
 
 # ── the protected-path boundary (#445) ────────────────────────────────────
-# STAGED behind PP_ENFORCE, default OFF: today the ORDINARY swarm still runs
-# machinery tickets directly, so a live rollback would revert exactly that
-# legitimate work. The target model routes machinery through the session-gated
-# escape path (worker files a `ready-for-session` issue; an interactive session
-# rules it, escalating to `ready-for-human` only on a one-way door — ADR 0174),
-# and prompt.md rule 9 already tells workers to route, not edit. The flip to
-# PP_ENFORCE=1 is a one-line cutover once ordinary tickets no longer carry
-# machinery changes.
+# Enforcement defaults ON (#193). It was staged OFF while push-mode workers
+# pushed `main` from the sandbox themselves: a rollback then reverted the host
+# working tree AFTER the breach was already on origin/main — cosmetic. #193 moved
+# the push-to-main off the sandbox (the worker pushes a per-run branch; the HOST
+# lands `main` only after this boundary runs), so the rollback now genuinely
+# keeps a machinery edit off `main`. Machinery changes route through the
+# session-gated escape path (a worker files a `ready-for-session` issue; an
+# interactive session rules it, escalating to `ready-for-human` only on a
+# one-way door — ADR 0174), which prompt.md rule 9 already instructs.
+#
+# The per-repo opt-out (#208) is the closed-vocabulary swarm-policy.sh key
+# PROTECTED_PATH_ENFORCE=off (GOTCHAS 17: a consumer declares it only after the
+# pin that knows it), exported by policy_load as
+# SWARM_POLICY_PROTECTED_PATH_ENFORCE — the sanctioned surface for a consumer
+# that still carries machinery tickets landing directly. An explicit PP_ENFORCE
+# in the environment still wins (break-glass / the offline test seam).
+
+# _verify_pp_enforced — rc 0 iff the protected-path boundary is active this run.
+_verify_pp_enforced() {
+  if [ -n "${PP_ENFORCE:-}" ]; then
+    [ "$PP_ENFORCE" = 1 ]
+  else
+    [ "${SWARM_POLICY_PROTECTED_PATH_ENFORCE:-on}" != off ]
+  fi
+}
 
 # verify_pp_snapshot <workspace> — fingerprint the machinery NOW, before a single
 # worker runs. Snapshotting here — after the pre-existing dirty state is whatever
@@ -154,7 +176,7 @@ verify_workers() {
 # compare and no-ops).
 verify_pp_snapshot() {
   VERIFY_PP_BEFORE=""
-  [ "${PP_ENFORCE:-0}" = 1 ] || return 0
+  _verify_pp_enforced || return 0
   VERIFY_PP_BEFORE="$(mktemp -d)"
   pp_snapshot "$1" "$VERIFY_PP_BEFORE" 2>/dev/null || true
 }
@@ -166,7 +188,8 @@ verify_pp_snapshot() {
 #         reaches main, and park HEAD on a rescue branch for a human to triage.
 verify_protected_paths() {
   local workspace="$1" run_db_id="$2" repo_slug="$3" banner paths rescue
-  [ "${PP_ENFORCE:-0}" = 1 ] && command -v pp_enforce >/dev/null 2>&1 || return 0
+  VERIFY_PP_VIOLATION=""
+  _verify_pp_enforced && command -v pp_enforce >/dev/null 2>&1 || return 0
   VERIFY_PP_AFTER="$(mktemp -d)"
   pp_snapshot "$workspace" "$VERIFY_PP_AFTER" 2>/dev/null || true
   banner="$(mktemp)"
@@ -177,6 +200,7 @@ verify_protected_paths() {
   fi
   cat "$banner" >&2   # the loud banner (paths + escape path) into the job log
   rm -f "$banner"
+  VERIFY_PP_VIOLATION=1   # the landing seam's last-line-of-defense reads this (#193)
   verdict_stage "protected-path violation — a worker edited machinery (#445)"
   swarmdb_event "$run_db_id" "" protected-path-violation \
     "worker changed protected machinery — rolled back, run failed" \

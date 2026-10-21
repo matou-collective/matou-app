@@ -65,7 +65,7 @@ maybe_fail() {  # <countdown-file> -> rc 1 (and decrement) while the count is >0
   # #144: the lister fires its ready-for-agent + standing-drive legs
   # concurrently (the #48 OVERLAP posture), so two shim processes race the
   # read-modify-write of ONE countdown file. Serialize with an atomic
-  # mkdir-lock (portable — the flake surfaced on a macOS host with no flock)
+  # mkdir-lock (portable — an atomic mkdir needs no flock, which not every runner ships)
   # so no lost update can drop the effective failure count. Fail CLOSED on a
   # missing/empty/non-integer count (still-failing, 503) rather than the old
   # `|| return 0` that laundered a truncated file into a spurious 200.

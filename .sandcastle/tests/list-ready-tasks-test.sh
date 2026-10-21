@@ -416,6 +416,31 @@ outn="$(env -u REHEARSAL_DRIVE_ISSUE SWARM_DRIVE_YIELD_SIGNAL="$tmp/drive-signal
 jq -e '.[] | select(.number == 400)' <<<"$outn" >/dev/null || fail "with no drive signal the ready set must surface as before"
 pass=$((pass+1))
 
+# ── #213: a PEER repo's want-file frees the slot after the current ticket ───
+# main.mts mirrors every live repo-wanted-<slug> into the host-signals dir this
+# run sees. A want-file for a DIFFERENT repo than this run's is a starved peer
+# waiting behind this drain — the lister answers [] BEFORE any API call so the
+# run claims nothing more. Our OWN want-file must NOT make us yield to ourself.
+wdir="$tmp/repo-wanted"; mkdir -p "$wdir"
+: > "$tmp/curl.log"
+: > "$wdir/repo-wanted-Acme-peer"           # a starved peer repo
+outp="$(env -u REHEARSAL_DRIVE_ISSUE REPO_SLUG=Acme/widget SWARM_REPO_WANTED_DIR="$wdir" \
+  CURL_LOG="$tmp/curl.log" bash "$here/../list-ready-tasks.sh" 2>"$tmp/peer.err")" \
+  || fail "the peer-want yield must exit 0"
+[ "$outp" = "[]" ] || fail "a peer repo's want-file must make the lister answer [], got: $outp"
+[ ! -s "$tmp/curl.log" ] || fail "the peer-want yield must come BEFORE any API call: $(cat "$tmp/curl.log")"
+grep -q "starved past its yield threshold" "$tmp/peer.err" || fail "the peer yield must say why on stderr: $(cat "$tmp/peer.err")"
+pass=$((pass+1))
+
+# our OWN want-file is not a peer's — the ready set must still surface
+rm -f "$wdir"/repo-wanted-*
+: > "$wdir/repo-wanted-Acme-widget"          # THIS run's own repo starving
+outo="$(env -u REHEARSAL_DRIVE_ISSUE REPO_SLUG=Acme/widget SWARM_REPO_WANTED_DIR="$wdir" \
+  bash "$here/../list-ready-tasks.sh")" || fail "own-want case must exit 0"
+jq -e '.[] | select(.number == 400)' <<<"$outo" >/dev/null \
+  || fail "a run must NOT yield to its OWN want-file — the ready set must surface"
+pass=$((pass+1))
+
 # ── #142: a failed read NAMES its endpoint + last HTTP status on stderr ─────
 # The old `curl -sf` threw the status away and returned a bare 22 for any
 # failure, so schedule-lib guessed "transient Forgejo 5xx" for a 401/404 stall

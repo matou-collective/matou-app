@@ -32,6 +32,17 @@ HEAL_PROMPT_FILE="${HEAL_PROMPT_FILE:-$here/heal-prompt.md}"
 # at the evidence dir; the EXIT trap finalises them. Best-effort by construction
 # (every writer swallows its exit), so a missing engine never reds a heal run.
 . "$here/swarm-db-lib.sh"
+# shellcheck source=rehearsal-heal-lib.sh
+# The law-grade repair rails (#203): heal_rails (line/file caps, product-surface
+# refusal, assertion-weakening + self-modification checks) and heal_push
+# (rebase-onto-origin/main + re-validate + verified-landed push) already exist
+# and are unit-proven for the rehearsal healer; the swarm healer reuses them so a
+# claude-committed repair lands ONLY through the same mechanical gate, never an
+# unbounded `git push` from the shared checkout. The credential-free git auth
+# (#195) rides in the same way: git_cred_strip_url + git_cred_persist/export
+# (re-exported from git-cred-lib.sh via rehearsal-heal-lib.sh) authenticate the
+# repair clone's push with no token in the URL or on argv.
+. "$here/rehearsal-heal-lib.sh"
 
 # Secrets: env wins (the workflow provides the authoritative value);
 # the bind-mounted secrets file is the fallback for host runs
@@ -135,6 +146,18 @@ verdict_is_fresh() {
   [ -f "$1" ] && [ -n "$(find "$1" -newermt "-$RUN_WINDOW" 2>/dev/null)" ]
 }
 
+# Runtime kill switch (#203): HEAL=0 in env, or touch the off-file
+# ($HOME/swarm/state/heal.off by default) — honoured WITHOUT a workflow
+# re-render (the gap HEAL_DRY_RUN left: it needs the workflow re-rendered, so it
+# could not stop a misfiring healer between renders). Checked before the healer
+# lock, before any evidence gathering, any claude call, and any chat/tracker
+# post — exactly the before-any-network posture session-runner.off takes.
+HEAL_OFF_FILE="${HEAL_OFF_FILE:-$HOME/swarm/state/heal.off}"
+if [ "${HEAL:-1}" = "0" ] || [ -f "$HEAL_OFF_FILE" ]; then
+  echo "heal: kill switch is on (HEAL=0 or $HEAL_OFF_FILE present) — quiet tick"
+  exit 0
+fi
+
 # One healer at a time PER REPO. Our OWN lock — never the swarm's — and
 # per-repo (#238) so idss's healer never blocks matou-app's incident.
 HEALER_LOCK="${HEALER_LOCK:-/tmp/matou-healer-$REPO_TAG.lock}"
@@ -151,7 +174,7 @@ flock -n 8 || { echo "heal: another healer holds the lock — exiting"; exit 0; 
 # healer's consecutive-defer count is its OWN (its own cadence, so a shared
 # counter would conflate streaks — #664); the yield line carries the reservation's
 # age so it and the executor's "skipped N ticks" line corroborate.
-HEALER_DRIVE_DEFER_COUNT="${HEALER_DRIVE_DEFER_COUNT:-/tmp/matou-healer-drive-defer-count}"
+HEALER_DRIVE_DEFER_COUNT="${HEALER_DRIVE_DEFER_COUNT:-${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}/matou-healer-drive-defer-count}"
 if host_capacity_drive_wanted; then
   defer_n="$(host_capacity_consumer_defer_bump "$HEALER_DRIVE_DEFER_COUNT")"
   echo "heal: a rehearsal drive has reserved host capacity (#663) — yielding this run to a ready drive — reservation age $(host_capacity_drive_wanted_age)s — skipped $defer_n consecutive tick(s)"
@@ -176,8 +199,18 @@ echo "heal: evidence at $EVIDENCE (mode=$MODE workflow=$WORKFLOW)"
 # design, exactly as everywhere else in the mirror.
 heal_run_db_id=""
 heal_run_verdict=""
+# The throwaway repair clone (#203): the heal agent investigates and commits in
+# an ISOLATED checkout, never the shared $WORKDIR, so a wedged/aborted repair
+# can never corrupt a running worker's checkout. run_agent sets this; the EXIT
+# trap removes it on every exit path. HEAL_PUSH_RESULT records how a committed
+# repair fared at the rails: none (no commit / diagnosis-only) | pushed (landed
+# through heal_rails+heal_push) | refused (committed but the rails or the push
+# rejected it — a human lands a reviewed fix, ties #168).
+HEAL_CLONE=""
+HEAL_PUSH_RESULT="none"
 heal_on_exit() {
   local ec=$?
+  [ -n "$HEAL_CLONE" ] && rm -rf "$HEAL_CLONE" 2>/dev/null || true
   [ -n "$heal_run_db_id" ] || return 0
   local now; now="$(date +%s)"
   swarmdb proc-close --run "$heal_run_db_id" --ref "$$" --ended "$now"
@@ -187,6 +220,64 @@ heal_on_exit() {
 trap heal_on_exit EXIT
 
 api() { curl -sf --max-time 30 -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
+
+# How many matrix legs (job indices) to probe for logs before giving up (#188).
+HEAL_JOB_LOG_MAX_LEGS="${HEAL_JOB_LOG_MAX_LEGS:-20}"
+
+# collect_job_logs <run-url> — put the failing run's OWN job log(s) in the
+# bundle as `job-log.txt` (#188). The one route this Forgejo serves is the run's
+# WEB url + `/jobs/<leg>/attempt/1/logs` — the `/attempt/1/` segment is
+# mandatory (omitting it 404s, which cost three 2026-10-09 passes a "mechanism
+# not identified"), and the API url 404s entirely. Built from the passed run
+# url, never a literal `actions/runs` string in this source, so the
+# actions-endpoint ratchet stays green (AC1).
+#
+# On a cross-host failure (#135) this is the ONLY fault text the bundle can
+# carry — every host-local artefact is empty by construction — so the decisive
+# single line (`Could not resolve host: …`) reaches the diagnosis agent here.
+#
+# Every leg (job index 0..n-1) is fetched so a matrix fault is attributable to
+# its leg and "sibling green, this leg red" is proven from the logs, not a
+# duration argument (AC2). Best-effort and fail-soft (AC3): a non-2xx / timeout
+# on the FIRST leg leaves a one-line note and NEVER reds the heal run; a run url
+# we never had leaves an explicit "not fetched" note, never a silent empty file
+# (AC4, GOTCHAS 30).
+collect_job_logs() { # <run-url>
+  local run_url="${1:-}" out="$EVIDENCE/job-log.txt"
+  if [ -z "$run_url" ]; then
+    printf 'job log not fetched: no run URL for this incident (mode=%s) — nothing was probed\n' "$MODE" > "$out"
+    return 0
+  fi
+  run_url="${run_url%/}"
+  # A per-job html_url carries a `/jobs/<n>…` suffix; strip back to the run base
+  # so the leg index we append is authoritative.
+  case "$run_url" in */jobs/*) run_url="${run_url%%/jobs/*}" ;; esac
+  : > "$out"
+  local leg=0 resp rc http body
+  while [ "$leg" -lt "$HEAL_JOB_LOG_MAX_LEGS" ]; do
+    rc=0
+    resp="$(curl -s --max-time 30 -w $'\n%{http_code}' \
+      -H "Authorization: token $FORGEJO_TOKEN" \
+      "$run_url/jobs/$leg/attempt/1/logs")" || rc=$?
+    http="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+    if [ "$rc" -ne 0 ]; then
+      # Transport failure / timeout. On leg 0 the whole fetch is unavailable;
+      # past it, treat it as the end of the matrix (we already have leg 0..n-1).
+      [ "$leg" -eq 0 ] && printf 'job log unavailable (curl exit %s) — probed %s/jobs/0/attempt/1/logs\n' "$rc" "$run_url" > "$out"
+      break
+    fi
+    if [ "${http:0:1}" = 2 ]; then
+      { printf '===== job %s (attempt 1) — %s/jobs/%s/attempt/1/logs\n' "$leg" "$run_url" "$leg"
+        printf '%s\n' "$body"; } >> "$out"
+      leg=$((leg + 1))
+      continue
+    fi
+    # A non-2xx: leg 0 means no readable log at all; past it, the end of the legs.
+    [ "$leg" -eq 0 ] && printf 'job log unavailable (HTTP %s) — probed %s/jobs/0/attempt/1/logs\n' "${http:-000}" "$run_url" > "$out"
+    break
+  done
+  return 0
+}
 
 gather_evidence() {
   # Probe the endpoint the automation actually depends on, paged: Forgejo
@@ -210,6 +301,7 @@ gather_evidence() {
   : > "$EVIDENCE/worker-logs.txt"
   : > "$EVIDENCE/worker-logs-older.txt"
   local f nfresh=0 nolder=0
+  # shellcheck disable=SC2045 # -t orders by mtime (newest first, the cap below depends on it); log names never contain spaces/newlines.
   for f in $(ls -t "$WORKDIR/.sandcastle/logs/"*.log 2>/dev/null); do
     if [ -n "$(find "$f" -newermt "-$RUN_WINDOW" 2>/dev/null)" ]; then
       [ "$nfresh" -lt 5 ] || continue
@@ -258,12 +350,17 @@ gather_evidence() {
     echo "heal: $msg"
   fi
   # GLOBAL by design (#238): the swarm lock serializes one heavy worker per
-  # host across both repos, so the healer probes the same shared lock.
-  if flock -n /tmp/matou-swarm.lock -c true 2>/dev/null; then
-    echo free > "$EVIDENCE/swarm-lock.txt"
-  else
-    echo held > "$EVIDENCE/swarm-lock.txt"
-  fi
+  # host across both repos, so the healer probes the same shared lock. Probe
+  # EVERY pooled capacity slot, not just slot 1 (#203): the prompt gates a
+  # `reset --hard origin/main` of the shared workdir on swarm-lock.txt=`free`,
+  # but a worker holding SLOT 2 is just as much a live user of that checkout as
+  # one holding slot 1 — probing only slot 1 let the healer reset the workdir
+  # out from under a slot-2 worker. `held` iff ANY configured slot is held.
+  local slot lock_state=free
+  for slot in $HOST_CAPACITY_SLOTS; do
+    if ! flock -n "$slot" -c true 2>/dev/null; then lock_state=held; break; fi
+  done
+  echo "$lock_state" > "$EVIDENCE/swarm-lock.txt"
 }
 
 # The signature's raw material.
@@ -318,10 +415,28 @@ error_line() { # <workflow>
   printf 'no verdict for workflow %s' "$wf"
 }
 
+# The chat sender. Overridable for tests via HEAL_NOTIFY_CMD (mirrors
+# HEAL_AGENT_CMD), so a scenario can drive a delivery FAILURE (a 5xx brownout,
+# which makes notify-mattermost.sh exit non-zero) without a live channel.
+HEAL_NOTIFY_CMD="${HEAL_NOTIFY_CMD:-}"
+# POST_DELIVERED (#203): set by post() to 1 iff the send SUCCEEDED, else 0 — the
+# escalation latch keys on it so a Mattermost brownout during the one @ben ping
+# no longer silences the signature for the whole cooldown. A no-chat deployment
+# (notify-mattermost.sh prints to stderr and exits 0 on purpose) counts as
+# DELIVERED, so callers behave identically with or without chat wired up; only a
+# configured send that ERRORS (curl -f on a 5xx → non-zero exit, swallowed here)
+# reads as undelivered and makes the escalate branch retry next tick.
+POST_DELIVERED=1
 post() { # post <msg> [thread_root] → echoes post id (empty when chat unset)
-  local msg="$1" root="${2:-}"
+  local msg="$1" root="${2:-}" rc=0
   [ -n "${HEAL_DRY_RUN:-}" ] && msg="[dry-run] $msg"
-  bash "$here/notify-mattermost.sh" "$msg" "$root" || true
+  if [ -n "$HEAL_NOTIFY_CMD" ]; then
+    ${HEAL_NOTIFY_CMD} "$msg" "$root" || rc=$?
+  else
+    bash "$here/notify-mattermost.sh" "$msg" "$root" || rc=$?
+  fi
+  POST_DELIVERED=0; [ "$rc" -eq 0 ] && POST_DELIVERED=1
+  return 0
 }
 
 run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
@@ -332,6 +447,22 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
   # lets the container sweep reap a container the agent leaks at
   # HEAL_REAP_CEILING (#122), instead of waiting out the multi-hour image belt.
   heal_run_db_id="heal-$REPO_TAG-$(date +%s)-$$"
+  # Throwaway repair clone (#203): the agent investigates and COMMITS its code
+  # repair in an isolated checkout, never the shared $WORKDIR — a wedged or
+  # aborted repair can no longer corrupt a running worker's checkout, and the
+  # agent's own `git push` cannot reach `main` (the clone's origin is the local
+  # workdir, not the remote; it is re-pointed to the remote only AFTER the agent
+  # returns, for the rails-gated heal_push below). A fresh/wedged workdir that
+  # will not clone falls back to a bare throwaway dir so the agent STILL runs
+  # outside $WORKDIR; it just has no push path (nothing to rebase onto).
+  [ -n "$HEAL_CLONE" ] && rm -rf "$HEAL_CLONE" 2>/dev/null
+  HEAL_CLONE="$(mktemp -d "/tmp/matou-heal-clone-$REPO_TAG.XXXXXX")"
+  local clone_pre=""
+  if git clone -q "$WORKDIR" "$HEAL_CLONE" >>"$EVIDENCE/clone.log" 2>&1; then
+    clone_pre="$(git -C "$HEAL_CLONE" rev-parse HEAD 2>/dev/null || true)"
+  else
+    echo "heal: $WORKDIR not clonable — agent runs in a bare throwaway dir, no push path" >> "$EVIDENCE/clone.log"
+  fi
   {
     cat "$HEAL_PROMPT_FILE"
     echo; echo "## This incident"
@@ -344,6 +475,11 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
     echo "- Swarm workdir: $WORKDIR"
     echo "- Evidence directory: $EVIDENCE (read every file)"
     echo "- Write your report to: $EVIDENCE/diagnosis.md"
+    # #203: a code repair is COMMITTED in the throwaway clone; the healer
+    # validates it against the rails and lands it. Only in a push repo (not a
+    # dry run, not a pr-default repo) — the #167 branch below already bars a
+    # landing there, and a dry run changes nothing.
+    { [ -z "${HEAL_DRY_RUN:-}" ] && [ -z "$HEAL_NO_LAND" ]; } && echo "- Repair checkout: $HEAL_CLONE — a THROWAWAY clone. Do your harness-infra code repair HERE and COMMIT it (one commit); the healer re-validates it against the diff rails and pushes it to \`main\` for you. Do NOT \`git push\` yourself. Host-level repairs that are not code (e.g. resetting the shared workdir when swarm-lock.txt says \`free\`) still act on \`$WORKDIR\` directly."
     [ -n "${HEAL_DRY_RUN:-}" ] && echo "- DRY RUN: diagnose only. Make NO commits, NO pushes, file NO tickets."
     # #167: a pr-default repo REVIEWS every landing on main — override the repairs
     # enrichment's "push to main" for a code fix. Diagnosis and ticket-filing are
@@ -367,7 +503,9 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
   # pid — ended_at NULL = believed alive), and one `heal` event pointing at the
   # evidence dir. The verdict is EARNED below and finalised by the EXIT trap.
   local heal_started; heal_started="$(date +%s)"
-  swarmdb_run_start "$heal_run_db_id" "${REPO_SLUG:-$REPO_TAG}" heal "$heal_started"
+  # #202: stamp the executing host on the run row (HEAL_EVIDENCE_HOST already
+  # resolved it up top: SWARM_HOST else `hostname`) so spend groups per-device.
+  swarmdb_run_start "$heal_run_db_id" "${REPO_SLUG:-$REPO_TAG}" heal "$heal_started" "$HEAL_EVIDENCE_HOST"
   swarmdb proc-open --run "$heal_run_db_id" --kind claude --ref "$$" \
     --command "heal $wf ($sig)" --started "$heal_started"
   swarmdb_event "$heal_run_db_id" "" heal "investigating $wf ($sig)" "$EVIDENCE"
@@ -380,10 +518,24 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
     # container the agent still leaks past all of this is caught by the sweep's
     # `matou.factory=heal` label reap (#122) — belt, braces, and a floor.
     if [ -n "${HEAL_AGENT_CMD:-}" ]; then
-      # Test seam: the stub receives the prompt as $1.
-      timeout --kill-after=30 900 ${HEAL_AGENT_CMD} "$(cat "$ctx")" > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
+      # Test seam: the stub receives the prompt as $1. Runs in the throwaway
+      # clone, exactly like the real agent (#203).
+      ( cd "$HEAL_CLONE" && timeout --kill-after=30 900 ${HEAL_AGENT_CMD} "$(cat "$ctx")" ) > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
     else
-      ( cd "$WORKDIR" && timeout --kill-after=30 900 claude -p --model "$SWARM_HEAL_MODEL" \
+      # #198: this claude runs UNSANDBOXED on the host with the full job env.
+      # Strip the standby Claude token, the primary snapshot, and the chat bot
+      # token from the child — the diagnosing agent needs none of them
+      # (claude_select_token already put the ACTIVE account in
+      # CLAUDE_CODE_OAUTH_TOKEN; FORGEJO_TOKEN stays for tracker reads).
+      # #203: runs in the throwaway clone, never the shared $WORKDIR.
+      # #202: `--output-format json` so the diagnosis call's `.usage` block is
+      # captured for the spend row below. On a clean call stderr is empty, so
+      # agent-out.log IS the single JSON object the helper parses; a call that
+      # also wrote stderr prose folds in harmlessly (the helper reads NOTHING
+      # from a non-JSON file — best-effort, never reds the run).
+      ( cd "$HEAL_CLONE" && timeout --kill-after=30 900 \
+          env -u CLAUDE_CODE_OAUTH_TOKEN_B -u CLAUDE_TOKEN_PRIMARY -u MATTERMOST_BOT_TOKEN \
+          claude -p --model "$SWARM_HEAL_MODEL" --output-format json \
           --dangerously-skip-permissions "$(cat "$ctx")" ) > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
     fi
     # Shared detector (limit-lib.sh) — see the note in run-swarm.sh's guard. Mid-
@@ -408,6 +560,60 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
     fi
     break
   done
+  # ── spend: attribute the diagnosis call's token usage to the active account
+  # (#202). Only a REACHED, non-limit claude call gets here (a limit refusal is
+  # "not a spent diagnosis" and exited above). The `--output-format json` result
+  # is agent-out.log; turn its usage block into ONE aggregate spend row via the
+  # shared swarm-db-lib helper — run-scoped (the incident is not issue-scoped),
+  # the same account-attributed shape the worker/session/triage calls record.
+  # Best-effort: a usage-less / unparseable log writes nothing and never reds.
+  local heal_account; heal_account="$(claude_active_account)"
+  if [ "$(swarmdb_spend_from_result "$heal_run_db_id" "" "$heal_account" "$EVIDENCE/agent-out.log")" = 1 ]; then
+    echo "heal: recorded the diagnosis call's token spend for account $heal_account (#202)"
+  fi
+  # Land a claude-committed repair ONLY through the mechanical rails (#203). The
+  # agent committed in the throwaway clone; here the healer re-validates that
+  # commit with heal_rails (one commit, ≤3 files, ≤cap non-test lines, no
+  # product-surface change, no weakened check, no self-modification) and lands it
+  # with heal_push (rebase onto origin/main, re-validate against the replayed
+  # parent, verified-landed push). A refusal — over the cap, off the allowed
+  # surface, a weakened check — or a failed push leaves NOTHING on main and sets
+  # HEAL_PUSH_RESULT=refused, so the caller escalates for a human-landed reviewed
+  # fix (ties #168). Attempted only when the agent cleanly committed in a real
+  # clone, in a push repo, outside a dry run (the incident prompt barred a repair
+  # landing in the other cases, so the clone HEAD cannot have moved for a landing).
+  HEAL_PUSH_RESULT=none
+  local clone_head=""
+  [ -n "$clone_pre" ] && clone_head="$(git -C "$HEAL_CLONE" rev-parse HEAD 2>/dev/null || true)"
+  if [ "$status" -eq 0 ] && [ -n "$clone_pre" ] && [ -n "$clone_head" ] \
+     && [ "$clone_head" != "$clone_pre" ] \
+     && [ -z "${HEAL_DRY_RUN:-}" ] && [ -z "$HEAL_NO_LAND" ]; then
+    mkdir -p "$EVIDENCE/logs"
+    if ! heal_rails "$HEAL_CLONE" "$clone_pre"; then
+      HEAL_PUSH_RESULT=refused
+      echo "heal: repair refused by the rails ($HEAL_RAIL_REASON) — not landing on main ($sig)"
+    else
+      # Re-point the repair clone's origin from the local $WORKDIR to the real
+      # remote, CREDENTIAL-FREE (#195): strip any embedded credential from the URL
+      # and persist git-cred-lib's token-free helper so heal_push's `git push
+      # origin` authenticates with no token in the URL or on argv. git_cred_export
+      # covers this process's git children too. A local-path origin (the test
+      # fixtures' shape) passes through git_cred_strip_url unchanged.
+      local rurl; rurl="$(git -C "$WORKDIR" remote get-url origin 2>/dev/null || true)"
+      if [ -n "$rurl" ]; then
+        git -C "$HEAL_CLONE" remote set-url origin "$(git_cred_strip_url "$rurl")" 2>/dev/null || true
+        git_cred_persist -C "$HEAL_CLONE" 2>/dev/null || true
+      fi
+      git_cred_export
+      if heal_push "$HEAL_CLONE" "$clone_pre" "$EVIDENCE"; then
+        HEAL_PUSH_RESULT=pushed
+        echo "heal: repair landed on main through the rails ($sig)"
+      else
+        HEAL_PUSH_RESULT=refused
+        echo "heal: repair push refused ($sig) — nothing landed on main"
+      fi
+    fi
+  fi
   # Earn the run verdict from the investigation's real outcome (#92): a produced
   # diagnosis is `diagnosed`, anything else `no-diagnosis`. The EXIT trap stamps
   # whichever we set here onto the run row and closes the process row.
@@ -419,8 +625,13 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
   return 1
 }
 
-handle_incident() { # <workflow> <errline>
-  local wf="$1" errline="$2" sig decision thread degraded=""
+handle_incident() { # <workflow> <errline> [<run-url>]
+  local wf="$1" errline="$2" run_url="${3:-}" sig decision thread degraded=""
+  # Put this incident's own job log in the bundle BEFORE any investigation reads
+  # it (#188). Per incident (not once in gather_evidence) so a watchdog sweep's
+  # distinct runs each get their own leg logs, and the file is fresh for the
+  # run_agent call below.
+  collect_job_logs "$run_url"
   sig="$(compute_signature "$wf" "$errline")"
   decision="$(ledger_decide "$sig" "$NOW")"
   thread="$(ledger_get "$sig" thread_id)"
@@ -445,7 +656,10 @@ handle_incident() { # <workflow> <errline>
       # out, then go quiet for the rest of the cooldown. Silence here is the
       # point — the incident is already on the thread above.
       post "@ben :rotating_light: **$wf has failed ${HEAL_MAX_REPLIES}+ times with the same fault** (\`$sig\`) — the healer is going quiet on it until the cooldown expires or the fault changes. ${RUN_URL:-} · evidence: \`$EVIDENCE\` on $HEAL_EVIDENCE_HOST" "$thread" >/dev/null
-      ledger_set "$sig" escalated 1
+      # Latch the silence ONLY when the ping was actually delivered (#203): a
+      # swallowed 5xx must not silence the signature for the whole cooldown.
+      if [ "${POST_DELIVERED:-1}" = 1 ]; then ledger_set "$sig" escalated 1
+      else echo "heal: escalation ping not delivered ($sig) — not latching, will retry next tick"; fi
       ;;
     silent)
       echo "heal: $sig already escalated and silenced — posting nothing"
@@ -459,7 +673,9 @@ handle_incident() { # <workflow> <errline>
       # ticketed as a known product bug. The fault stays visible in the run
       # history and on the thread; only the PING is once per window.
       post "@ben :rotating_light: **$wf recurred after a repair attempt** (\`$sig\`) — the healer will not retry, and is going quiet on it until the cooldown expires or the fault changes. ${RUN_URL:-} · evidence: \`$EVIDENCE\` on $HEAL_EVIDENCE_HOST" "$thread" >/dev/null
-      ledger_set "$sig" escalated 1
+      # Latch ONLY on a delivered ping (#203) — see escalate-noisy.
+      if [ "${POST_DELIVERED:-1}" = 1 ]; then ledger_set "$sig" escalated 1
+      else echo "heal: escalation ping not delivered ($sig) — not latching, will retry next tick"; fi
       ;;
     investigate|investigate-stale)
       local pid
@@ -493,7 +709,19 @@ handle_incident() { # <workflow> <errline>
         pid="$(post "${ping}:stethoscope: **Healer — $wf** (\`$sig\`) ${RUN_URL:-}${degraded}
 $head_lines" "$thread")"
         [ -z "$thread" ] && [ -n "$pid" ] && ledger_set "$sig" thread_id "$pid"
-        if [ -n "$act" ] && [ "$act" != "none" ] && [ -z "${HEAL_DRY_RUN:-}" ]; then
+        if [ "${HEAL_PUSH_RESULT:-none}" = pushed ]; then
+          # The agent's code repair LANDED on main through the rails (#203) — a
+          # bounded, verified repair whatever the prose says. Mark it repaired so
+          # a recurrence takes the loop-breaker (the healer never repairs twice).
+          ledger_set "$sig" repaired 1
+        elif [ "${HEAL_PUSH_RESULT:-none}" = refused ]; then
+          # The agent committed a repair but it breached the diff rails (over the
+          # file/line cap, off the allowed surface, a weakened check) or could not
+          # land — NOTHING reached main. Do NOT mark it repaired; escalate for a
+          # human-landed reviewed fix (ties #168), and keep it on the reply ladder.
+          post "@ben :construction: **$wf — healer repair exceeded the diff rails** (\`$sig\`, ${HEAL_RAIL_REASON:-over rails}) — the fix was NOT landed on main; a human should land a reviewed PR. ${RUN_URL:-} · evidence: \`$EVIDENCE\` on $HEAL_EVIDENCE_HOST" "$thread" >/dev/null
+          [ -z "$(ledger_get "$sig" repaired)" ] && ledger_set "$sig" repaired 0
+        elif [ -n "$act" ] && [ "$act" != "none" ] && [ -z "${HEAL_DRY_RUN:-}" ]; then
           if action_is_ticket_only "$act"; then
             # Filing a ticket is the right action for a product-class fault —
             # and it is NOT a repair (#79): nothing on the host or in the repo
@@ -529,6 +757,17 @@ $head_lines" "$thread")"
       ;;
   esac
   ledger_set "$sig" last_seen "$NOW"
+  # Cross-host dedup observability (#203): the per-host file ledger decides this
+  # host's dedup, but a sibling host working the same pool cannot SEE it. Mirror
+  # every incident decision into swarm.db `events` as a `heal-dedup` row carrying
+  # the signature, workflow, decision, and the healer's host — so the fleet
+  # monitor (which reads every host's events) can observe that signature X was
+  # deduped on host H at time T across the whole pool, not just in one host's
+  # /tmp. Best-effort (swarmdb swallows every failure); the run never depends on
+  # it, and the kind is distinct from run_agent's `heal` event so trace counts
+  # stay unambiguous.
+  swarmdb_event "heal-dedup-$REPO_TAG" "" heal-dedup \
+    "sig=$sig wf=$wf decision=$decision host=$HEAL_EVIDENCE_HOST" "$EVIDENCE"
 }
 
 gather_evidence
@@ -546,7 +785,7 @@ if claude_limit_parked; then
 fi
 
 if [ "$MODE" = "hook" ]; then
-  handle_incident "$WORKFLOW" "$(error_line "$WORKFLOW")"
+  handle_incident "$WORKFLOW" "$(error_line "$WORKFLOW")" "${RUN_URL:-}"
 else
   found=0
   # (c) API reachability / latency incident (#1462). The probe now records
@@ -564,7 +803,7 @@ else
   if [ "$api_rc" = 0 ] && [ "${api_http:0:1}" = 2 ] && [ -z "$api_slow" ]; then
     : # a fast 2xx — the API is healthy
   else
-    handle_incident "forgejo-api" "API probe: http=${api_http:-?} elapsed=${api_s}s curl_exit=${api_rc:-?} (unhealthy; threshold 30s)"
+    handle_incident "forgejo-api" "API probe: http=${api_http:-?} elapsed=${api_s}s curl_exit=${api_rc:-?} (unhealthy; threshold 30s)" ""
     found=1
   fi
   # (a)+(b) failure streaks / always-red — skip workflows whose ledger was
@@ -574,7 +813,7 @@ else
     recent="$(find "$HEALER_STATE" -maxdepth 1 -type f -newermt "-6 hours" \
       -exec grep -l "^workflow=$wf$" {} + 2>/dev/null | head -1 || true)"
     [ -n "$recent" ] && { echo "heal: $wf already ledgered recently — skipping"; continue; }
-    handle_incident "$wf" "watchdog: $kind ($(error_line "$wf"))"
+    handle_incident "$wf" "watchdog: $kind ($(error_line "$wf"))" "$(watchdog_run_url "$EVIDENCE/runs.json" "$wf")"
     found=1
   done < <(watchdog_detect "$EVIDENCE/runs.json")
   if [ "$found" -eq 0 ]; then echo "heal: watchdog — all healthy"; fi

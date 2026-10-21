@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # fence-lib.sh — the D3 container fence (#568). Sourced by run-swarm.sh.
 #
 # Since the 2026-08-12 rootful-docker cutover, worker containers no longer

@@ -82,7 +82,8 @@ fi
 
 payload="$(mktemp 2>/dev/null)" || exit 0
 markers="$(mktemp 2>/dev/null)" || { rm -f "$payload"; exit 0; }
-trap 'rm -f "$payload" "$markers"' EXIT
+fps="$(mktemp 2>/dev/null)" || { rm -f "$payload" "$markers"; exit 0; }
+trap 'rm -f "$payload" "$markers" "$fps"' EXIT
 
 cat > "$payload" 2>/dev/null || exit 0
 jq -e . "$payload" >/dev/null 2>&1 \
@@ -102,6 +103,18 @@ jq -r '.stdout // ""' "$payload" 2>/dev/null \
       }
       END { for (i = 0; i < n; i++) { iss = order[i]; print iss "\t" out[iss] "\t" com[iss] } }
     ' > "$markers" 2>/dev/null || true
+
+# #200: the per-iteration account FINGERPRINT. The claude-fence shim prints one
+# `claude-account-fp=<fp>` protocol line per iteration (one claude invocation per
+# iteration — sub-agents run in-process and never re-invoke the shim), captured
+# in the combined worker output. The fp lines zip positionally against
+# iterations[] IN ORDER, exactly like the SANDCASTLE_ATTEMPT markers above.
+# Capturing it per iteration — rather than reading the host active-account marker
+# ONCE after the run (which raced a mid-run failover) — attributes each iteration
+# to the account it actually ran on. An iteration with no fp line leaves the fp
+# empty and the spend writer omits the flag (account_fp reads NULL).
+jq -r '.stdout // ""' "$payload" 2>/dev/null \
+  | grep -oE 'claude-account-fp=[0-9a-f]+' | sed 's/^claude-account-fp=//' > "$fps" 2>/dev/null || true
 
 # The whole run's log file (RunResult.logFilePath — run-scoped, not per
 # iteration) as one run-scoped event, so it isn't dropped alongside the
@@ -133,6 +146,10 @@ while [ "$i" -lt "$n_iter" ]; do
   line="$(sed -n "$((i + 1))p" "$markers" 2>/dev/null || true)"
   issue=""; outcome=""; commits=""
   [ -n "$line" ] && IFS=$'\t' read -r issue outcome commits <<<"$line"
+
+  # #200: the fingerprint for THIS iteration (positional zip, same as markers).
+  account_fp="$(sed -n "$((i + 1))p" "$fps" 2>/dev/null || true)"
+  case "$account_fp" in *[!0-9a-f]*) account_fp="" ;; esac
 
   # #95: real per-iteration start/end epochs from the session file, threaded into
   # the attempt row below. Both must be purely numeric before use; anything else
@@ -182,7 +199,7 @@ while [ "$i" -lt "$n_iter" ]; do
   ingested=0
   if [ -n "$log_path" ] && [ -f "$log_path" ]; then
     n_spend=0
-    read -r n_spend _ <<<"$(swarmdb_ingest "$run_id" "$issue" "$log_path" "$active_account")" || n_spend=0
+    read -r n_spend _ <<<"$(swarmdb_ingest "$run_id" "$issue" "$log_path" "$active_account" "$account_fp")" || n_spend=0
     case "$n_spend" in ''|*[!0-9]*) n_spend=0 ;; esac
     [ "$n_spend" -gt 0 ] && ingested=1
   fi
@@ -193,14 +210,18 @@ while [ "$i" -lt "$n_iter" ]; do
   if [ "$ingested" -eq 0 ]; then
     model_args=()
     [ -n "$model" ] && model_args=(--model "$model")
+    # #200: stamp the per-iteration account fingerprint when the worker log
+    # surfaced one; omitted => account_fp reads NULL.
+    fp_args=()
+    [ -n "$account_fp" ] && fp_args=(--account-fp "$account_fp")
     if [ -n "$issue" ]; then
       swarmdb spend --run "$run_id" --issue "$issue" --input "$in_tok" --output "$out_tok" \
         --cache-creation "$cache_c" --cache-read "$cache_r" --requests "$req" \
-        --account "$active_account" ${model_args[@]+"${model_args[@]}"}
+        --account "$active_account" ${model_args[@]+"${model_args[@]}"} ${fp_args[@]+"${fp_args[@]}"}
     else
       swarmdb spend --run "$run_id" --input "$in_tok" --output "$out_tok" \
         --cache-creation "$cache_c" --cache-read "$cache_r" --requests "$req" \
-        --account "$active_account" ${model_args[@]+"${model_args[@]}"}
+        --account "$active_account" ${model_args[@]+"${model_args[@]}"} ${fp_args[@]+"${fp_args[@]}"}
     fi
   fi
 

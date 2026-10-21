@@ -59,9 +59,15 @@ swarmdb() {
 
 # --- typed writers run-swarm.sh calls ----------------------------------------
 
-# swarmdb_run_start <run_id> <repo> <trigger> <started_epoch>
+# swarmdb_run_start <run_id> <repo> <trigger> <started_epoch> [host]
+# The executing pool host (#202) is stamped on the run row when supplied, so
+# spend groups per-device via `spend-by --group …,host`. Optional and additive:
+# a caller that omits it writes NULL (the pre-#202 behaviour, byte-identical).
 swarmdb_run_start() {
-  swarmdb run-start --run "$1" --repo "$2" --trigger "$3" --started "$4"
+  local host_args=()
+  [ -n "${5:-}" ] && host_args=(--host "$5")
+  swarmdb run-start --run "$1" --repo "$2" --trigger "$3" --started "$4" \
+    ${host_args[@]+"${host_args[@]}"}
 }
 
 # swarmdb_run_end <run_id> <verdict> <source> <exit_code> <ended_epoch>
@@ -93,19 +99,21 @@ swarmdb_event() {
   fi
 }
 
-# swarmdb_ingest <run_id> <issue|''> <session_jsonl_path> <account|''> — #98:
-# parse ONE claude session jsonl into per-request `spend` rows + per-tool-call
-# `events`. Unlike the other writers this one's stdout MATTERS — it echoes
-# `<n_spend> <n_tool_events>` so record-run-result.sh can tell whether the
-# per-request rows landed (and thus skip its aggregate fallback). Best-effort:
-# a missing engine, or any failure, echoes `0 0` and never fails the caller.
+# swarmdb_ingest <run_id> <issue|''> <session_jsonl_path> <account|''> [account_fp]
+# — #98: parse ONE claude session jsonl into per-request `spend` rows +
+# per-tool-call `events`. Unlike the other writers this one's stdout MATTERS — it
+# echoes `<n_spend> <n_tool_events>` so record-run-result.sh can tell whether the
+# per-request rows landed (and thus skip its aggregate fallback). The account
+# fingerprint (#200) stamps every per-request row when supplied. Best-effort: a
+# missing engine, or any failure, echoes `0 0` and never fails the caller.
 swarmdb_ingest() {
-  local run="$1" issue="$2" session="$3" account="${4:-}"
+  local run="$1" issue="$2" session="$3" account="${4:-}" account_fp="${5:-}"
   swarmdb_available || { echo "0 0"; return 0; }
   _swarmdb_assert_ok || { echo "0 0"; return 0; }
   local args=(ingest --run "$run" --session "$session")
   [ -n "$issue" ] && args+=(--issue "$issue")
   [ -n "$account" ] && args+=(--account "$account")
+  [ -n "$account_fp" ] && args+=(--account-fp "$account_fp")
   python3 "$_SWARMDB_PY" --db "$SWARM_DB" "${args[@]}" 2>/dev/null || echo "0 0"
 }
 

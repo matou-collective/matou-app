@@ -2,7 +2,7 @@
 # Offline tests for heal-lib.sh. Run: bash .sandcastle/tests/heal-lib-test.sh
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export HEALER_STATE="$(mktemp -d)"
+HEALER_STATE="$(mktemp -d)"; export HEALER_STATE
 trap 'rm -rf "$HEALER_STATE"' EXIT
 . "$here/../heal-lib.sh"
 
@@ -256,6 +256,37 @@ JSON
 out="$(watchdog_detect "$wd_fixture")"
 [ "$out" = "$(printf 'custom\talways-red')" ] || fail "absent .workflow_id must fall back to the job name, got: $out"
 rm -f "$wd_fixture"
+pass=$((pass+1))
+
+# --- watchdog_run_url: the run's web URL for the workflow the detector keyed on
+# (#188). In watchdog mode there is no RUN_URL env, so heal.sh needs the suspect
+# run's own html_url to fetch its job logs; watchdog_run_url folds .workflow_id
+# the same way watchdog_detect does and returns the most-recent run's html_url. ---
+wd_url_fixture="$(mktemp)"
+cat > "$wd_url_fixture" <<'JSON'
+{"workflow_runs":[
+ {"name":"swarm (1)","workflow_id":"swarm.yml","status":"failure","run_number":200,"html_url":"https://git.example/O/R/actions/runs/200/jobs/0"},
+ {"name":"swarm (2)","workflow_id":"swarm.yml","status":"failure","run_number":200,"html_url":"https://git.example/O/R/actions/runs/200/jobs/1"},
+ {"name":"swarm (1)","workflow_id":"swarm.yml","status":"success","run_number":199,"html_url":"https://git.example/O/R/actions/runs/199/jobs/0"},
+ {"name":"seam","workflow_id":"ci.yml","status":"failure","run_number":14671,"html_url":"https://git.example/O/R/actions/runs/14671/jobs/0"}
+]}
+JSON
+# most-recent run (200) for the folded workflow 'swarm', NOT the older 199
+[ "$(watchdog_run_url "$wd_url_fixture" swarm)" = "https://git.example/O/R/actions/runs/200/jobs/0" ] \
+  || fail "watchdog_run_url must return the most recent run's html_url for the folded workflow, got: $(watchdog_run_url "$wd_url_fixture" swarm)"
+# a different workflow resolves to its own run via the folded .workflow_id
+[ "$(watchdog_run_url "$wd_url_fixture" ci)" = "https://git.example/O/R/actions/runs/14671/jobs/0" ] \
+  || fail "watchdog_run_url must fold .workflow_id (ci.yml -> ci), got: $(watchdog_run_url "$wd_url_fixture" ci)"
+# a payload with NO html_url (older/foreign shape) → empty, so the caller notes
+# the log was not fetched (AC4) rather than fetching a bogus URL
+cat > "$wd_url_fixture" <<'JSON'
+{"workflow_runs":[
+ {"name":"swarm (1)","workflow_id":"swarm.yml","status":"failure","run_number":200}
+]}
+JSON
+[ -z "$(watchdog_run_url "$wd_url_fixture" swarm)" ] \
+  || fail "watchdog_run_url must return empty when the payload carries no html_url, got: $(watchdog_run_url "$wd_url_fixture" swarm)"
+rm -f "$wd_url_fixture"
 pass=$((pass+1))
 
 # --- probe_api records curl's real outcome, not a blanket `timeout` (#1462) ---

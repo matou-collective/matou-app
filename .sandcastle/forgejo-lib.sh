@@ -230,6 +230,17 @@ forgejo_close_pr() { # forgejo_close_pr <pr-number> -> HTTP code on stdout, rc 0
     "$FORGEJO_API/pulls/$1" -d '{"state":"closed"}'
 }
 
+forgejo_reopen_issue() { # forgejo_reopen_issue <issue-num> -> HTTP code on stdout, rc 0 always
+  # PATCH the issue state back to open. The false-green reconcile (#283) reopens
+  # an issue a push-mode close-report closed against the worker branch when the
+  # host's later land rolled back and `main` never carried the commits — the
+  # inverse of forgejo_close_pr, same "what code did it get" tolerate-the-outcome
+  # shape (a `labels` field here would be ignored — GOTCHAS 2 — so the relabel is
+  # a separate /labels call).
+  _forgejo_code -X PATCH -H 'Content-Type: application/json' \
+    "$FORGEJO_API/issues/$1" -d '{"state":"open"}'
+}
+
 forgejo_pr_combined_status() { # forgejo_pr_combined_status <pr-number> -> CombinedStatus JSON on stdout; rc non-zero if the head sha is unknown or the GET fails
   # The merge-if-green gate (#15) reads whether every required check on the PR
   # head is `success`. Forgejo's combined-status endpoint keys off a commit, not

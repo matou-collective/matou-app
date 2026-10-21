@@ -5,8 +5,8 @@
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-pass=0 fail=0
-check() { if eval "$2"; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: $1"; fi; }
+# shellcheck source=lib.sh
+. "$here/lib.sh"
 
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/git" <<'SH'
@@ -80,8 +80,10 @@ check "a missing screenshot file is refused (rc 2)" '[ "$rc" -eq 2 ] && grep -q 
 fresh; ISSUE_LABELS="$PRLABELS" land 7 "fix (#7)" "$tmp/body.md" "$tmp/after.png"; rc=$?
 check "screenshot path exits 0" '[ "$rc" -eq 0 ]'
 check "it prints the PR number" '[ "$(tail -1 "$tmp/out")" = 101 ]'
-check "it pushes agent/issue-7 by token URL, never main, never --force" \
-  'grep -q "^push http://swarm:tok@fj.test/Acme/widget.git HEAD:refs/heads/agent/issue-7$" "$GIT_PUSHES" && ! grep -q "main\|force" "$GIT_PUSHES"'
+check "it pushes agent/issue-7 to a CREDENTIAL-FREE remote, never main, never --force (#195)" \
+  'grep -q "^push http://fj.test/Acme/widget.git HEAD:refs/heads/agent/issue-7$" "$GIT_PUSHES" && ! grep -q "main\|force" "$GIT_PUSHES"'
+check "…with no token anywhere in the push argv (#195 — auth is the credential helper, not the URL)" \
+  '! grep -qE "swarm:|tok@|FORGEJO_TOKEN" "$GIT_PUSHES"'
 check "the PR body opens with closes #7 and carries the worker's words" \
   '[ "$(head -1 "$STATE/pr-body")" = "closes #7" ] && grep -q "rail foot" "$STATE/pr-body"'
 check "the screenshot is attached to the PR" 'jq -e "any(.[]; .name == \"after.png\")" "$STATE/assets.json" >/dev/null'

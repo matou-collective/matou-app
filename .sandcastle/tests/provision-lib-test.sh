@@ -66,6 +66,29 @@ FORGEJO_TOKEN=tok-fj MATTERMOST_BOT_TOKEN=tok-mm DIGITALOCEAN_ACCESS_TOKEN="" \
 grep -rqF tok-fj "$d/.env" 2>/dev/null && fail "a token must NEVER be written into .env"
 pass=$((pass+1))
 
+# ── 3b. the SELECTED Claude token ships as a 0600 file too (#198) ──────────
+# Since #198 the Claude OAuth token is delivered via a file + the claude-fence
+# shim, never a docker -e value (the same docker inspect .Config.Env breach the
+# other tokens avoid). provision_write_secrets writes the SELECTED account's
+# value (run-swarm.sh runs claude_select_token first); the #510 failover path
+# rewrites it so the shim's next worker reads the standby.
+d="$(workdir claude-secret)"; provision_store_dirs "$d"
+CLAUDE_CODE_OAUTH_TOKEN=tok-A FORGEJO_TOKEN="" MATTERMOST_BOT_TOKEN="" DIGITALOCEAN_ACCESS_TOKEN="" \
+  provision_write_secrets "$d"
+[ "$(cat "$d/secrets/claude_oauth_token")" = tok-A ] || fail "the SELECTED Claude token must be written"
+[ "$(stat -c %a "$d/secrets/claude_oauth_token")" = 600 ] || fail "the Claude token file must be 0600"
+grep -rqF tok-A "$d/.env" 2>/dev/null && fail "the Claude token must NEVER land in .env (the -e breach vector)"
+# the failover rewrite: the SAME file now carries the account just flipped to.
+CLAUDE_CODE_OAUTH_TOKEN=tok-B provision_write_claude_secret "$d"
+[ "$(cat "$d/secrets/claude_oauth_token")" = tok-B ] || fail "failover must REWRITE the Claude token file to the standby"
+[ "$(stat -c %a "$d/secrets/claude_oauth_token")" = 600 ] || fail "the rewritten Claude token file must stay 0600"
+# an unset token writes nothing — the shim falls back to its ambient env (a bare
+# local run with no mount).
+d2="$(workdir claude-unset)"; provision_store_dirs "$d2"
+CLAUDE_CODE_OAUTH_TOKEN="" provision_write_claude_secret "$d2"
+[ ! -e "$d2/secrets/claude_oauth_token" ] || fail "an unset Claude token must not write an empty file"
+pass=$((pass+1))
+
 # ── 4. the cold pnpm-store guard (#489 / GOTCHAS #20) ─────────────────────
 # A fresh host's EMPTY store makes every worker's frozen install fetch the whole
 # tree inside the sandbox, which fails (exit 243) — zero workers born, anonymous
@@ -116,7 +139,7 @@ env -u GITHUB_ACTIONS bash -c ". '$sc/env-allowlist-lib.sh'; . '$sc/verdict-lib.
 [ -f "$d/.env" ] || fail "host-mode first run should have created .env"
 
 d="$(workdir host-clean)"
-printf 'CLAUDE_CODE_OAUTH_TOKEN=sk-test\nFORGEJO_API=https://example\n' > "$d/.env"
+printf 'ANTHROPIC_API_KEY=sk-test\nFORGEJO_API=https://example\n' > "$d/.env"
 before="$(cat "$d/.env")"
 env -u GITHUB_ACTIONS bash -c ". '$sc/env-allowlist-lib.sh'; . '$sc/verdict-lib.sh'; . '$sc/provision-lib.sh'; provision_env_materialize '$d'" \
   || fail "host-mode with a clean .env must pass"
@@ -124,7 +147,7 @@ env -u GITHUB_ACTIONS bash -c ". '$sc/env-allowlist-lib.sh'; . '$sc/verdict-lib.
 pass=$((pass+1))
 
 d="$(workdir host-bad)"
-printf 'CLAUDE_CODE_OAUTH_TOKEN=sk-test\nFOO_TOKEN=leaked\n' > "$d/.env"
+printf 'ANTHROPIC_API_KEY=sk-test\nFOO_TOKEN=leaked\n' > "$d/.env"
 before="$(cat "$d/.env")"
 vp="$tmp/env-verdict.txt"
 if env -u GITHUB_ACTIONS SWARM_VERDICT_PATH="$vp" bash -c "

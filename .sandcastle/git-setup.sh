@@ -15,6 +15,8 @@ set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=verdict-lib.sh
 . "$here/verdict-lib.sh"
+# shellcheck source=git-cred-lib.sh
+. "$here/git-cred-lib.sh"
 : "${REPO_SLUG:?}"
 : "${FORGEJO_TOKEN:?}"
 
@@ -28,9 +30,18 @@ verdict_begin "${GIT_SETUP_VERDICT_PATH:-$default_verdict}"
 git_log="$(mktemp)"
 verdict_stage "git-setup (clone/fetch/checkout/reset)" "$git_log"
 
-# Test seam: point at a local fixture repo offline instead of the real
-# git.matou.nz remote (tests/git-setup-test.sh).
-url="${GIT_SETUP_REMOTE_URL:-https://swarm:${FORGEJO_TOKEN}@git.matou.nz/${REPO_SLUG}.git}"
+# The remote is CREDENTIAL-FREE (#195): the org-wide FORGEJO_TOKEN never rides
+# in origin's URL (where it persisted in the shared .git/config every worker
+# bind-mounts, and in argv). Auth is injected per invocation by git-cred-lib's
+# token-free credential helper — git_cred_export covers git-setup's own
+# clone/fetch below, and git_cred_persist (after a clean checkout) wires the
+# workdir so every LATER git call in it (run-swarm's push, landing-lib's rescue
+# ladder, heal_push — all separate processes) authenticates with no token on
+# disk or argv. git_cred_strip_url defends against an explicitly-passed
+# credentialed URL. Test seam: GIT_SETUP_REMOTE_URL points at a local fixture
+# repo offline instead of the real git.matou.nz remote (tests/git-setup-test.sh).
+url="$(git_cred_strip_url "${GIT_SETUP_REMOTE_URL:-https://git.matou.nz/${REPO_SLUG}.git}")"
+git_cred_export
 
 # Transport posture (#1411 — the git-transport THIRD surface of #1359/#1394's
 # rule that "a probe that cannot reach the server has not obtained a verdict").
@@ -123,6 +134,12 @@ fi
 # clean checkout into a red git-setup verdict.
 if [ "$ec" -eq 0 ]; then
   git config core.hooksPath .sandcastle/git-hooks 2>/dev/null || true
+  # Persist the token-free credential helper so every LATER git call in this
+  # shared workdir authenticates without a token in the URL/config or on argv
+  # (#195). The helper carries only a `cat <secret-file>`, never the token, so
+  # the shared .git/config stays credential-free. Guarded: a config hiccup must
+  # never turn a clean checkout into a red git-setup verdict.
+  git_cred_persist 2>/dev/null || true
 fi
 verdict_write "$ec"
 rm -f "$git_log"

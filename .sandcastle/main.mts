@@ -1,9 +1,10 @@
 import { run, claudeCode } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { resolveBranchStrategy } from "./branch-strategy.mts";
 
 // Simple loop: an agent that picks ready tasks one by one and closes them.
 // Task source: .sandcastle/list-ready-tasks.sh (Forgejo, DAG-filtered) via the
@@ -69,6 +70,16 @@ console.log(`worker: launching on model ${SWARM_MODEL}`);
 // user's git config. Absent on a bare `pnpm run sandcastle` — then we inject
 // nothing and git falls back to its usual config, same best-effort posture as
 // SWARM_DB_RUN_ID below.
+//
+// CLAUDE_ACCOUNT_FP (#223, follow-up to #200): the fingerprint of the Claude
+// token this run selected, exported by execute-lib.sh's claude_select_token
+// before it launches us (and re-exported on a mid-run failover, which re-runs
+// `pnpm run sandcastle` so we re-read it here). Forwarded so the container's
+// prepare-commit-msg hook can stamp the `Factory-Account: <fp>` trailer onto the
+// worker's commits — per-account attribution in `git log`, keyed by the same
+// fingerprint #200 already keys the limit markers and spend rows by. The token
+// itself NEVER crosses this boundary: only its fingerprint, exactly as the
+// claude-fence shim computes it in-container for its own protocol line.
 function factoryGitIdentityEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of [
@@ -76,6 +87,7 @@ function factoryGitIdentityEnv(): Record<string, string> {
     "GIT_AUTHOR_EMAIL",
     "GIT_COMMITTER_NAME",
     "GIT_COMMITTER_EMAIL",
+    "CLAUDE_ACCOUNT_FP",
   ]) {
     const value = process.env[key];
     if (value) env[key] = value;
@@ -190,10 +202,88 @@ const driveTimer = setInterval(() => {
   }
 }, 2000);
 driveTimer.unref();
-// driveMirrorStop — on every exit path: stop polling, emit the marker if the
-// run ended while a reservation stood, and remove the run-scoped dir.
+
+// #213 (swarm fairness): the peer-repo want-file mirror — the generalisation of
+// the #111 drive mirror above. A PEER repo's swarm has starved past its yield
+// threshold and declared a host-side want-file (`/tmp/matou-repo-wanted-<slug>`,
+// swarm-yield-signal.sh over swarm-yield-lib.sh); list-ready-tasks.sh answers []
+// for a run whose slug is NOT the want-file's, so this draining run claims
+// nothing more and frees the shared host slot after its current ticket. Those
+// want-files live on the HOST; a sandbox only sees HOST_SIGNALS_DIR read-only,
+// so — exactly like the drive reservation — this host-side poller copies every
+// FRESH peer want-file into `HOST_SIGNALS_DIR/repo-wanted-<slug>` and removes the
+// mirror of any that went stale or away. This run's OWN want-file (this repo
+// starving) is EXCLUDED: a run must never yield to itself. The dir of want-files
+// and the slug→tag keying match swarm-yield-lib.sh's `swarm_repo_wanted_path`
+// (`<slug>` with every `/` turned to `-`); the mirror filename is the
+// `repo-wanted-<tag>` contract list-ready-tasks.sh matches on.
+const REPO_WANTED_DIR = process.env.HOST_CAPACITY_REPO_WANTED_DIR ?? "/tmp";
+const REPO_WANTED_PREFIX = "matou-repo-wanted-";
+const REPO_WANTED_MIRROR_PREFIX = "repo-wanted-";
+const ownRepoTag = (
+  process.env.REPO_SLUG || (process.env.FORGEJO_API ?? "").replace(/^.*\/repos\//, "")
+).replace(/\//g, "-");
+// Same freshness rule as the drive reservation (host_capacity_drive_wanted):
+// present AND mtime younger than the TTL — an expired want-file is not one.
+function repoWantedFresh(p: string): boolean {
+  try {
+    return (Date.now() - statSync(p).mtimeMs) / 1000 < DRIVE_WANTED_TTL_S;
+  } catch {
+    return false;
+  }
+}
+// Reconcile the mirror to the host's live peer want-files: write the ones that
+// should be mirrored, remove the ones that should not. Idempotent, best-effort —
+// a failed write/remove is simply retried on the next 2 s tick.
+function reconcileRepoWanted(): void {
+  const wanted = new Set<string>();
+  try {
+    for (const name of readdirSync(REPO_WANTED_DIR)) {
+      if (!name.startsWith(REPO_WANTED_PREFIX)) continue;
+      const tag = name.slice(REPO_WANTED_PREFIX.length);
+      if (!tag || tag === ownRepoTag) continue; // never mirror our own want-file
+      if (repoWantedFresh(`${REPO_WANTED_DIR}/${name}`)) wanted.add(tag);
+    }
+  } catch {
+    // the want-file dir is absent on a host that has never signalled — nothing
+    // to mirror; fall through to clear any mirror left from a previous tick.
+  }
+  for (const tag of wanted) {
+    const dst = `${HOST_SIGNALS_DIR}/${REPO_WANTED_MIRROR_PREFIX}${tag}`;
+    if (existsSync(dst)) continue;
+    try {
+      writeFileSync(dst, "");
+    } catch {
+      // best effort — the next tick retries
+    }
+  }
+  try {
+    for (const name of readdirSync(HOST_SIGNALS_DIR)) {
+      if (!name.startsWith(REPO_WANTED_MIRROR_PREFIX)) continue; // leave drive-wanted/start-sha/run-landing untouched
+      if (wanted.has(name.slice(REPO_WANTED_MIRROR_PREFIX.length))) continue;
+      try {
+        rmSync(`${HOST_SIGNALS_DIR}/${name}`);
+      } catch {
+        // already gone
+      }
+    }
+  } catch {
+    // HOST_SIGNALS_DIR was mkdir'd above; ignore a transient read error.
+  }
+}
+// Seed once synchronously so the first iteration's lister sees a peer that was
+// already starving at launch, with no 2 s gap; then poll like the drive mirror.
+reconcileRepoWanted();
+const repoWantedTimer = setInterval(reconcileRepoWanted, 2000);
+repoWantedTimer.unref();
+
+// driveMirrorStop — on every exit path: stop BOTH host-signal pollers (the #111
+// drive mirror and the #213 peer-want mirror), emit the drive marker if the run
+// ended while a reservation stood, and remove the run-scoped dir (which clears
+// every mirror it holds).
 function driveMirrorStop(): void {
   clearInterval(driveTimer);
+  clearInterval(repoWantedTimer);
   if (driveYieldArmed) {
     console.log(`SANDCASTLE_YIELDED_TO_DRIVE run=${swarmDbRunId ?? "unknown"}`);
   }
@@ -211,16 +301,17 @@ try {
     name: "worker",
 
     // Sandbox provider — runs the agent inside an isolated container.
-    // `mounts` delivers FORGEJO_TOKEN/MATTERMOST_BOT_TOKEN/DIGITALOCEAN_ACCESS_TOKEN
-    // as read-only files under /run/secrets instead of forwarding them as `-e`
-    // env vars — env vars land in `docker inspect .Config.Env`, which is
-    // readable by anyone with Docker API access (the 2026-07-11 breach vector;
-    // see docs/architecture/07-secrets-architecture.md). run-swarm.sh
-    // materializes .sandcastle/secrets/* from its own process env before every
-    // run. CLAUDE_CODE_OAUTH_TOKEN is NOT moved here — it's Anthropic's
-    // long-lived automation token, which the `claude` CLI only accepts as an
-    // env var (no file-based flag exists), so it remains a documented,
-    // tool-level residual exposure. Rotate it periodically.
+    // `mounts` delivers every bearer token — FORGEJO_TOKEN, MATTERMOST_BOT_TOKEN,
+    // DIGITALOCEAN_ACCESS_TOKEN, and (since #198) the Claude OAuth token — as
+    // read-only files under /run/secrets instead of forwarding them as `-e`
+    // env vars, which land in `docker inspect .Config.Env`, readable by anyone
+    // with Docker API access (the 2026-07-11 breach vector; see
+    // docs/SECRETS_CHECKLIST.md). run-swarm.sh materializes .sandcastle/secrets/*
+    // from its own process env before every run. The `claude` CLI only accepts
+    // its token as CLAUDE_CODE_OAUTH_TOKEN (no file-based flag), so the Dockerfile
+    // installs a `claude` shim (claude-fence) first on PATH that reads the mounted
+    // secrets/claude_oauth_token file and execs the real CLI with it in the child
+    // env only — the token never appears in the container's inspectable env.
     sandbox: docker({
       mounts: [
         { hostPath: ".sandcastle/secrets", sandboxPath: "/run/secrets", readonly: true },
@@ -272,11 +363,24 @@ try {
     // per run, or set it to 1 for a single-shot mode.
     maxIterations: 3,
 
-    // Branch strategy — merge-to-head creates a temporary branch for the agent
-    // to work on, then merges the result back to HEAD when the run completes.
-    // This is required when using copyToWorktree, since head mode bind-mounts
-    // the host directory directly (no worktree to copy into).
-    branchStrategy: { type: "merge-to-head" },
+    // Branch strategy — LANDING-aware (#230; branch-strategy.mts has the full
+    // why). merge-to-head runs the agent on a temp worktree branch and merges
+    // it back to HEAD (`main`) when the run completes — right under
+    // LANDING=push, where `main` is the landing surface. Under LANDING=pr the
+    // landing already happened via the worker's pull request, so that post-run
+    // merge is redundant AND is the thing that reds the run on a STATUS.md
+    // concurrent-write conflict (SyncError; GOTCHAS 72): there we pin the
+    // worktree to a per-run-unique NAMED branch, which Sandcastle collects
+    // commits from but never merges onto `main`. The temp branch is discarded
+    // by the next run's `git reset --hard origin/main`, like the
+    // `sandcastle/worker/*` branches merge-to-head already leaves behind.
+    branchStrategy: resolveBranchStrategy(
+      process.env.SWARM_POLICY_LANDING,
+      `sandcastle/worker/${new Date()
+        .toISOString()
+        .replace(/[^0-9]/g, "")
+        .slice(0, 14)}-${Math.random().toString(16).slice(2, 8)}`,
+    ),
 
     // node_modules is NOT copied from the host: the host's pnpm layout records
     // host store paths in .modules.yaml, so inside the container pnpm demands a
@@ -317,6 +421,24 @@ try {
           // host push is never gated. Relative path resolves from the worktree
           // root; guarded so a config hiccup can't abort the sandbox.
           { command: "git config core.hooksPath .sandcastle/git-hooks || true" },
+          // Credential-free origin (#195): `origin` inside the sandbox carries NO
+          // token (the org-wide FORGEJO_TOKEN no longer rides in its URL — where it
+          // persisted in the shared .git/config every worker bind-mounts). Wire
+          // git-cred-lib.sh's token-free credential helper into this worktree so a
+          // worker's manual `git push origin` and land-pr.sh authenticate with no
+          // token on disk or argv: the helper is a POINTER to the secret (a
+          // `cat /run/secrets/forgejo_token` deferred to git-invocation time), never
+          // the secret. The empty first value resets any inherited helper so only
+          // ours runs; useHttpPath=false scopes the credential to the host. Must
+          // stay byte-identical to git-cred-lib.sh's GIT_CRED_HELPER. Guarded so a
+          // config hiccup can't abort the sandbox.
+          {
+            command:
+              "git config --replace-all credential.helper '' " +
+              "&& git config --add credential.helper " +
+              "'!f(){ [ \"$1\" = get ] || exit 0; t=\"${FORGEJO_TOKEN:-}\"; for p in \"${SWARM_TOKEN_FILE:-}\" \"${SWARM_SANDBOX_TOKEN_FILE:-/run/secrets/forgejo_token}\"; do [ -n \"$p\" ] && [ -r \"$p\" ] && { t=\"$(cat \"$p\")\"; break; }; done; printf \"username=swarm\\npassword=%s\\n\" \"$t\"; }; f' " +
+              "&& git config credential.useHttpPath false || true",
+          },
         ],
       },
     },

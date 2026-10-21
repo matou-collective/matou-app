@@ -278,4 +278,29 @@ grep -q "DRIFT:" "$tmp/err" "$tmp/out" \
   && fail "T10: must NOT claim drift when it never read the factory: $(cat "$tmp/err")"
 pass=$((pass+1))
 
+# T11: FACTORY_REF may name a TAG (#209). Drift resolves it to its SHA and
+# surfaces both; the byte-comparison still keys on the SHA, so a tag pointing at
+# the in-sync pin is drift-clean. (This case uses the real local remote, not the
+# fakebin — a tag/branch-only file is fetched by name, then rev-parsed.)
+git -C "$factory_src" tag -a v-sync -m v-sync "$rev_a"
+printf 'echo two\n' >"$sc/two.sh"                 # rev_a content
+printf 'one.sh\ntwo.sh\n' >"$sc/FACTORY_MANIFEST"
+printf 'v-sync\n' >"$sc/FACTORY_REF"
+run "$tmp/out" "$tmp/err"
+[ "$rc" -eq 0 ] || fail "T11: a tag FACTORY_REF at the in-sync pin should exit 0: $(cat "$tmp/err")"
+grep -q "^check-harness-drift: OK" "$tmp/out" || fail "T11: a tag pin should be drift-clean: $(cat "$tmp/out")"
+grep -q "FACTORY_REF pin is tag v-sync (resolved $rev_a)" "$tmp/out" \
+  || fail "T11: should surface the tag resolved to its sha: $(cat "$tmp/out")"
+pass=$((pass+1))
+
+# T12: the two-line "<sha>\ntag=<tag>" form that `onboard.sh vendor <tag>`
+# writes — sha fetched directly, tag surfaced as the human label.
+printf '%s\ntag=v-sync\n' "$rev_a" >"$sc/FACTORY_REF"
+run "$tmp/out" "$tmp/err"
+[ "$rc" -eq 0 ] || fail "T12: two-line tag+sha FACTORY_REF should exit 0: $(cat "$tmp/err")"
+grep -q "^check-harness-drift: OK" "$tmp/out" || fail "T12: should be drift-clean: $(cat "$tmp/out")"
+grep -q "FACTORY_REF pin is tag v-sync (resolved $rev_a)" "$tmp/out" \
+  || fail "T12: should surface the recorded tag label: $(cat "$tmp/out")"
+pass=$((pass+1))
+
 echo "check-harness-drift: $pass passed"

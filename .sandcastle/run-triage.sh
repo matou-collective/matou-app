@@ -136,7 +136,7 @@ fi
 # count is its OWN (its :05/:35 cadence differs from swarm's and
 # session-runner's, so a shared counter would conflate three streaks — #664); the
 # yield line carries the reservation's age to corroborate the executor's skip log.
-TRIAGE_DRIVE_DEFER_COUNT="${TRIAGE_DRIVE_DEFER_COUNT:-/tmp/matou-triage-drive-defer-count}"
+TRIAGE_DRIVE_DEFER_COUNT="${TRIAGE_DRIVE_DEFER_COUNT:-${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}/matou-triage-drive-defer-count}"
 if host_capacity_drive_wanted; then
   defer_n="$(host_capacity_consumer_defer_bump "$TRIAGE_DRIVE_DEFER_COUNT")"
   echo "run-triage: a rehearsal drive has reserved host capacity (#663) — yielding this run to a ready drive — reservation age $(host_capacity_drive_wanted_age)s — skipped $defer_n consecutive tick(s)"
@@ -216,7 +216,9 @@ verdict_stage "triage skill (claude -p /triage)" "$triage_log"
 # captured log to $TRIAGE_LOGDIR. Best-effort: a missing engine no-ops silently.
 triage_run_db_id="triage-$repo_tag-$(date +%s)-$$"
 triage_started="$(date +%s)"
-swarmdb_run_start "$triage_run_db_id" "$repo_slug" triage "$triage_started"
+# The executing host (#202), stamped on the run row so spend groups per-device.
+triage_host="${SWARM_HOST:-$(hostname 2>/dev/null || echo unknown)}"
+swarmdb_run_start "$triage_run_db_id" "$repo_slug" triage "$triage_started" "$triage_host"
 swarmdb proc-open --run "$triage_run_db_id" --kind triage --ref "$$" \
   --command "run-triage $repo_slug — $n issue(s)" --started "$triage_started"
 triage_recorded=1
@@ -272,8 +274,23 @@ fi
 # are exhausted and the quiet park is honest again.
 claude_select_token
 triage_attempt=1
+# #202: capture the claude call's `--output-format json` result (its `.usage`
+# block) so the triage call's token spend becomes ONE aggregate `spend` row via
+# the shared swarm-db-lib helper — the same account-attributed shape the swarm
+# worker and the session runner already record. stdout (the JSON) lands in
+# $triage_result; stderr stays on $triage_log; the result is then folded into
+# $triage_log so the limit scan AND the #18 verdict error-lines block still see
+# the full output whichever stream a refusal landed on.
+triage_result="$(mktemp)"
 while :; do
-  if ! timeout 2700 claude --model "$SWARM_MODEL" -p "/triage You are running headless in CI: no human can answer questions, so never ask any. Every untriaged issue must leave this run carrying a triage label. When you hit ambiguity or a judgement call you would normally ask a human about, first try to RULE it yourself under ADR 0174 ($two_way_door): if the call is revertible by a later commit or label change and provable by an existing test/drive/probe, and it is not on the one-way-door list (personal credentials, a security-posture widening, a member-facing trust accept, data destruction, non-routine spend), post the ruling to the issue — 'Ruled by agent under ADR 0174 — veto anytime', the ruling, why it is a two-way door, and what proves it — and apply the label your ruling calls for. Only label ready-for-human when the call is a genuine one-way door (state which in a '## Why human' line naming the human residue), or needs-info if the reporter must supply missing information.$triage_enrich" --dangerously-skip-permissions 2>&1 | tee "$triage_log"; then
+  # #198: this claude runs UNSANDBOXED on the host with the full job env. Strip
+  # the standby Claude token, the primary snapshot, and the chat bot token from
+  # the child — the agent needs none of them (claude_select_token already put
+  # the ACTIVE account in CLAUDE_CODE_OAUTH_TOKEN; FORGEJO_TOKEN stays, the
+  # /triage skill curls the tracker with it).
+  if ! timeout 2700 env -u CLAUDE_CODE_OAUTH_TOKEN_B -u CLAUDE_TOKEN_PRIMARY -u MATTERMOST_BOT_TOKEN \
+      claude --model "$SWARM_MODEL" --output-format json -p "/triage You are running headless in CI: no human can answer questions, so never ask any. Every untriaged issue must leave this run carrying a triage label. When you hit ambiguity or a judgement call you would normally ask a human about, first try to RULE it yourself under ADR 0174 ($two_way_door): if the call is revertible by a later commit or label change and provable by an existing test/drive/probe, and it is not on the one-way-door list (personal credentials, a security-posture widening, a member-facing trust accept, data destruction, non-routine spend), post the ruling to the issue — 'Ruled by agent under ADR 0174 — veto anytime', the ruling, why it is a two-way door, and what proves it — and apply the label your ruling calls for. Only label ready-for-human when the call is a genuine one-way door (state which in a '## Why human' line naming the human residue), or needs-info if the reporter must supply missing information.$triage_enrich" --dangerously-skip-permissions >"$triage_result" 2>>"$triage_log"; then
+    cat "$triage_result" >> "$triage_log" 2>/dev/null || true   # fold the JSON/error into the log for the limit scan + verdict
     # A limit refusal parks the host for every caller and exits CLEAN (never
     # red) — but only after the standby account was tried (#510); any other
     # failure still reddens honestly (the EXIT trap's verdict reads the log).
@@ -290,12 +307,29 @@ while :; do
     fi
     exit 1
   fi
+  # Fold the clean JSON result into the log (evidence) AND echo it to stdout so
+  # the operator / CI job log still sees the triage output, as the old `tee` did.
+  tee -a "$triage_log" < "$triage_result" 2>/dev/null || true
   break
 done
 triage_verdict="triaged"   # the claude call returned clean; the run row closes green
 # A real triage pass ran — reset the per-repo consecutive-yield streak and clear
 # any starvation-signal episode marker (#110), so the next yield counts from 1.
 triage_yield_reset
+
+# ── spend: attribute the triage call's token usage to the active account (#202)
+# The #91 run/process rows recorded WHICH host triaged, but no spend — so a
+# busy-triaging account's budget was invisible to the fleet Usage/Spend tab. The
+# `--output-format json` result captured above carries the call's usage block;
+# turn it into ONE aggregate spend row via the shared swarm-db-lib helper (the
+# same path session-runner uses, #94). Run-scoped (triage is not issue-scoped).
+# Best-effort: a usage-less / unparseable result writes nothing and never reds
+# the tick.
+triage_account="$(claude_active_account)"
+if [ "$(swarmdb_spend_from_result "$triage_run_db_id" "" "$triage_account" "$triage_result")" = 1 ]; then
+  echo "run-triage: recorded the triage call's token spend for account $triage_account (#202)"
+fi
+rm -f "$triage_result" 2>/dev/null || true
 
 # Each post-claude stage names ITSELF (#104). verdict_stage was last set to the
 # claude stage WITH the claude log as its errlog; leaving it there meant any

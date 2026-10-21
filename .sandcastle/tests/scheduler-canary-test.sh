@@ -86,6 +86,7 @@ iso() { date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ; }
 # run_canary — one tick. Every knob is an env override so the case wiring stays
 # local; the state dir persists across calls within a case so de-bounce works.
 STATE="$tmp/state"
+# shellcheck disable=SC2120 # optional env-override args are passed through via "$@"; callers may pass none.
 run_canary() {
   : > "$tmp/posts.log"
   env PATH="$tmp/bin:$PATH" FORGEJO_TOKEN=dummy \

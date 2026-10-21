@@ -258,9 +258,21 @@ gate_run() {
 # gate_files_from_prepush — read git's pre-push stdin
 # (`<local-ref> <local-sha> <remote-ref> <remote-sha>` per line) and echo the
 # union of files changed across every pushed ref, one per line, sorted-unique.
-# A branch deletion (all-zero local sha) contributes nothing. When the remote
-# sha is unknown (new ref / zero), fall back to the merge-base with origin/main,
-# then to the commit's own diff.
+# A branch deletion (all-zero local sha) contributes nothing.
+#
+# Base selection — scope the gate to the change this push adds on top of main,
+# never to the full delta from an ancient remote-branch head (#253):
+#   * remote sha is a live branch head (a valid commit NOT already contained in
+#     origin/main) → base = rsha: lint only the commits this push adds on top of
+#     the previously-pushed tip (the incremental PR-update case);
+#   * remote sha is unknown (new ref / zero) OR a STALE/placeholder branch
+#     sitting at an ancestor of origin/main → base = merge-base(lsha, origin/main):
+#     lint what the push introduces relative to main. A placeholder branch (e.g.
+#     an `agent/issue-<N>` left at an old ancestor of main with no PR) would
+#     otherwise make base=rsha drag in all of main's intervening history and
+#     mis-fire the gate on unrelated languages — the push gets blocked though its
+#     real slice touches nothing gated (#253);
+#   * no base resolvable at all → fall back to the commit's own diff.
 gate_files_from_prepush() {
   local lref lsha rref rsha base
   {
@@ -268,7 +280,8 @@ gate_files_from_prepush() {
       [ -n "${lsha:-}" ] || continue
       case "$lsha" in *[!0]*) : ;; *) continue ;; esac  # all-zero = branch delete
       if [ -n "${rsha:-}" ] && [ "$rsha" != "$GATE_ZERO_SHA" ] &&
-         git cat-file -e "$rsha^{commit}" 2>/dev/null; then
+         git cat-file -e "$rsha^{commit}" 2>/dev/null &&
+         ! git merge-base --is-ancestor "$rsha" origin/main 2>/dev/null; then
         base="$rsha"
       else
         base="$(git merge-base "$lsha" origin/main 2>/dev/null || true)"

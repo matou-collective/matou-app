@@ -10,7 +10,7 @@
 # so both the signal script and `run-triage.sh` (which RESETS the counter on a
 # real triage pass) share one definition of the counter path and the threshold.
 #
-# Distinct from the drive-defer counter (`/tmp/matou-triage-drive-defer-count`,
+# Distinct from the drive-defer counter (`$HOME/swarm/state/matou-triage-drive-defer-count`,
 # #664): that counts ONLY the ticks a rehearsal drive reservation made triage
 # stand down; THIS counts EVERY consecutive yield (both host slots busy, the
 # workdir busy, a drive reserved, the Claude window parked) while untriaged

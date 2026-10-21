@@ -13,6 +13,8 @@ headless on the runner host (`matou-workstation`) as user `dev`.
   OLDER worker context — background only, never the current fault),
   `run-verdict.txt` (the failing workflow's own stage/exit/error marker, when it
   left one — the ground-truth fault the signature keyed on),
+  `job-log.txt` (the failing run's own job log — on a cross-host failure the
+  only fault text the bundle carries; built per-leg for a matrix),
   `runner-journal.txt`, `workdir-git.txt`, `host.txt` (disk/mem),
   `api-timing.txt` (Forgejo latency probe), `swarm-lock.txt`
   (`free`/`held` — whether a swarm run is active RIGHT NOW).

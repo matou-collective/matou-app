@@ -32,6 +32,7 @@ chmod +x "$tmp/bin/curl"
 marker="$tmp/claude-limit"
 curl_log="$tmp/curl.log"
 
+# shellcheck disable=SC2120 # optional env-override args are passed through via "$@"; callers may pass none.
 run_swarm() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     -u GITHUB_ACTIONS \

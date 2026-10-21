@@ -5,6 +5,10 @@
 # and the loop-guard marks. Real throwaway git repos, no shims.
 # Run: bash .sandcastle/tests/rehearsal-heal-lib-test.sh
 set -euo pipefail
+# #277: neutralise any ambient account fingerprint so the no-fingerprint scrub
+# scenario (8) exercises the fp-LESS path on every host, not just those where
+# CLAUDE_ACCOUNT_FP happens to be unset. Matches the #227 hermeticity sweep.
+unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_B CLAUDE_TOKEN_PRIMARY CLAUDE_ACCOUNT_FP 2>/dev/null || true
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/../rehearsal-heal-lib.sh"
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -267,6 +271,22 @@ msg="$(git -C "$co" log -1 --pretty=%B)"
 grep -qi 'closes #378' <<<"$msg" && fail "close keyword survived scrub"
 grep -q 'advances #378' <<<"$msg" || fail "keyword not rewritten to advances"
 grep -q '^rehearsal healer: ' <<<"$msg" || fail "prefix not enforced"
+# #223: with no CLAUDE_ACCOUNT_FP in env, scrub leaves the message byte-identical
+# to pre-#223 — no attribution trailer.
+grep -q '^Factory-Account:' <<<"$msg" && fail "trailer stamped with no fingerprint set"
+pass=$((pass+1))
+
+# 8b: #223 — the healer clone wires no hooksPath, so scrub itself stamps the
+# Factory-Account trailer from CLAUDE_ACCOUNT_FP (the account the heal ran on).
+co="$tmp/co8b"; pre="$(mkco "$co")"
+( cd "$co" && echo a >> base.txt && git commit -aqm "rehearsal healer: fix #379" )
+CLAUDE_ACCOUNT_FP=abc123def456 scrub_commit_message "$co"
+msg="$(git -C "$co" log -1 --pretty=%B)"
+[ "$(grep -c '^Factory-Account: abc123def456' <<<"$msg")" = 1 ] || fail "8b: one Factory-Account trailer with the fingerprint"
+grep -q '^rehearsal healer: ' <<<"$msg" || fail "8b: prefix still enforced alongside the trailer"
+# Idempotent: a second scrub with the same fp does not duplicate the trailer.
+CLAUDE_ACCOUNT_FP=abc123def456 scrub_commit_message "$co"
+[ "$(git -C "$co" log -1 --pretty=%B | grep -c '^Factory-Account:')" = 1 ] || fail "8b: trailer duplicated on re-scrub"
 pass=$((pass+1))
 
 # 9: mechanical-failure counter: 0 → mark → 1 → mark → 2 → clear → 0
@@ -324,22 +344,29 @@ heal_push "$co" "$pre" "$rd" && fail "heal_push landed despite a rebase conflict
 [ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset to pre after rebase conflict"
 pass=$((pass+1))
 
-# --- rehearsal_heal_authed_url (#676) ----------------------------------------
+# --- credential-free origin (#195, supersedes rehearsal_heal_authed_url #676) --
+# The healer now clones/pushes with a credential-free origin + git-cred-lib's
+# token-free helper, never a swarm:$FORGEJO_TOKEN@ URL. rehearsal-heal-lib sources
+# git-cred-lib, so git_cred_strip_url / git_cred_export / git_cred_persist are in
+# scope here — the helper injects auth at git time, no token on disk or argv.
 
-# 12: a bare git.matou.nz https URL gets the swarm:$FORGEJO_TOKEN credential
-FORGEJO_TOKEN=tok12
-got="$(rehearsal_heal_authed_url "https://git.matou.nz/Matou/idss.git")"
-[ "$got" = "https://swarm:tok12@git.matou.nz/Matou/idss.git" ] || fail "credential not injected: $got"
+# 12: the retired credential-INJECTING function is GONE (no token ever in a URL)
+! command -v rehearsal_heal_authed_url >/dev/null 2>&1 || fail "rehearsal_heal_authed_url should be removed (#195)"
+command -v git_cred_strip_url >/dev/null 2>&1 || fail "rehearsal-heal-lib must source git-cred-lib (git_cred_strip_url in scope)"
 pass=$((pass+1))
 
-# 13: a local bare-repo path (the test fixtures' shape) passes through unchanged
-got="$(rehearsal_heal_authed_url "$tmp/origin.git")"
+# 13: a token-bearing git.matou.nz origin is STRIPPED to credential-free — the
+# inverse of the old inject: auth now rides the helper, never the URL
+got="$(git_cred_strip_url "https://swarm:tok12@git.matou.nz/Matou/idss.git")"
+[ "$got" = "https://git.matou.nz/Matou/idss.git" ] || fail "credential not stripped: $got"
+pass=$((pass+1))
+
+# 14: a local bare-repo path (the fixtures' shape) and a bare https URL both pass
+# through unchanged — the clone / remote set-url call is a no-op on them
+got="$(git_cred_strip_url "$tmp/origin.git")"
 [ "$got" = "$tmp/origin.git" ] || fail "local path was rewritten: $got"
-pass=$((pass+1))
-
-# 14: a URL that already carries userinfo passes through unchanged (idempotent)
-got="$(rehearsal_heal_authed_url "https://swarm:tok12@git.matou.nz/Matou/idss.git")"
-[ "$got" = "https://swarm:tok12@git.matou.nz/Matou/idss.git" ] || fail "already-credentialed URL was rewritten: $got"
+got="$(git_cred_strip_url "https://git.matou.nz/Matou/idss.git")"
+[ "$got" = "https://git.matou.nz/Matou/idss.git" ] || fail "bare https URL was rewritten: $got"
 pass=$((pass+1))
 
 echo "OK: $pass cases"
