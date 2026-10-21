@@ -346,6 +346,7 @@ import type { Contribution } from 'src/types/projects';
 import { useProfilesStore } from 'stores/profiles';
 import { useProjectsStore } from 'stores/projects';
 import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
+import { normalizeEstimatedHours, normalizeContributionBudget } from 'src/lib/contributionPlanning';
 import AssignmentCard from 'src/components/contributions/AssignmentCard.vue';
 import MemberPicker from 'src/components/common/MemberPicker.vue';
 import type { MemberOption } from 'src/components/common/MemberPicker.vue';
@@ -581,9 +582,9 @@ function handleSubmit() {
         deliverables: form.value.deliverables.filter((d) => d.trim()),
         acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
         skill_requirements: form.value.skill_requirements.filter((s) => s.trim()),
-        estimated_duration: form.value.estimated_duration,
+        estimated_duration: normalizeEstimatedHours(form.value.estimated_duration),
         deadline: toISODate(form.value.deadline) || undefined,
-        budget: form.value.budget?.trim() || undefined,
+        budget: normalizeContributionBudget(form.value.budget),
         ...(isSub && form.value.assigned_contributor_id
           ? { assigned_contributor_id: form.value.assigned_contributor_id }
           : {}),
@@ -604,9 +605,9 @@ function handleSubmit() {
       deliverables: form.value.deliverables.filter((d) => d.trim()),
       acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
       skill_requirements: form.value.skill_requirements.filter((s) => s.trim()),
-      estimated_duration: form.value.estimated_duration,
+      estimated_duration: normalizeEstimatedHours(form.value.estimated_duration),
       deadline: toISODate(form.value.deadline) || undefined,
-      budget: form.value.budget?.trim() || undefined,
+      budget: normalizeContributionBudget(form.value.budget),
       ...(form.value.assigned_contributor_id
         ? { assigned_contributor_id: form.value.assigned_contributor_id }
         : {}),
@@ -626,9 +627,9 @@ function handleSubmit() {
     deliverables: form.value.deliverables.filter((d) => d.trim()),
     acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
     skill_requirements: form.value.skill_requirements.filter((s) => s.trim()),
-    estimated_duration: form.value.estimated_duration,
+    estimated_duration: normalizeEstimatedHours(form.value.estimated_duration),
     deadline: toISODate(form.value.deadline) || undefined,
-    budget: form.value.budget.trim() || undefined,
+    budget: normalizeContributionBudget(form.value.budget),
     created_by: 'current-user',
     ...(form.value.assigned_contributor_id ? { assigned_contributor_id: form.value.assigned_contributor_id } : {}),
   };
