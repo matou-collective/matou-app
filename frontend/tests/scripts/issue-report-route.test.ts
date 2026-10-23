@@ -28,10 +28,18 @@ describe('issue report route', () => {
   });
 
   it('a production build posts to Mātou, not the community config server', async () => {
-    expect(getIssueReportUrl()).toBe('http://awa.matou.nz:3904');
+    expect(getIssueReportUrl()).toBe('https://coa-infra.matou.nz');
     await submitIssue({ type: 'improvement', title: 't', body: 'b' });
-    expect(fetchMock.mock.calls[0][0]).toBe('http://awa.matou.nz:3904/api/v1/issues');
+    expect(fetchMock.mock.calls[0][0]).toBe('https://coa-infra.matou.nz/api/v1/issues');
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).type).toBe('improvement');
+  });
+
+  // Regression guard for #727: a cleartext prod endpoint is killed by
+  // Capacitor/Android's network-security policy before fetch() ever runs, so
+  // the report fails on mobile with no HTTP response. The scheme must be
+  // https: — asserted directly on the resolved URL, not via stubbed fetch.
+  it('the prod report URL is https (never cleartext)', () => {
+    expect(getIssueReportUrl()).toMatch(/^https:\/\//);
   });
 
   it('dev and test keep the local config server', () => {
