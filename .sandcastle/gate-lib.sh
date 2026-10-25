@@ -51,7 +51,13 @@ gate_langs_for_files() {
 gate_go_default_cmd() {
   local root="$1"
   nix develop "$root#go-ci" --command bash -euo pipefail -c '
-    unformatted="$(gofmt -l . | grep -v "^node_modules/" || true)"
+    gofiles="$(find . -type f -name "*.go" \
+      -not -path "./node_modules/*" -not -path "./.sandcastle/nix-store/*" \
+      -printf "%P\\n" 2>/dev/null || true)"
+    if [ -z "$gofiles" ]; then
+      echo "gofmt debt check FAILED: found no Go files to scan — refusing to pass" >&2; exit 1
+    fi
+    unformatted="$(printf "%s\\n" "$gofiles" | xargs -d "\\n" -r gofmt -l || true)"
     if [ -n "$unformatted" ]; then
       echo "gofmt debt — run gofmt -w on:"; printf "%s\n" "$unformatted"; exit 1
     fi
@@ -170,6 +176,29 @@ gate_ts_stage() {
   ( cd "$root" && gate_scrub_git_env && gate_ts_default_cmd "$root" )
 }
 
+# gate_gofmt_tree_go_files — newline-separated, root-relative list of the repo's
+# OWN Go files: the tree minus the gitignored local build artifacts that carry
+# FOREIGN Go, `node_modules/` and `.sandcastle/nix-store/`. Pruning the scan's
+# INPUT (not filtering its output) is what keeps the verdict readable: a nix store
+# ships the Go distribution's own `src/`, whose deliberately-malformed testdata
+# makes gofmt print hundreds of parse errors before any verdict at all.
+#
+# The nix-store entry is why the host gofmt gate never worked. Gate 3b landed
+# 2026-09-12, one day AFTER a nix store appeared in the swarm workdir, and that
+# store holds ~340 files gofmt calls unformatted. So every Go push from a workdir
+# carrying one was blocked by a verdict about files this repo does not own and
+# cannot fix, whatever the pushed code looked like. CI never saw it (a clean
+# checkout has no nix-store), leaving #344 the only honest gofmt verdict — and a
+# gate that always blocks is a gate that gets bypassed, which is how gofmt debt
+# reached main again in ce04cd10, the repeat of f291b547/#1429 Gate 3b exists to
+# stop. Prune the input, never the exit status: the gate still fails closed.
+# Assumes cwd is the repo root.
+gate_gofmt_tree_go_files() {
+  find . -type f -name '*.go' \
+    -not -path './node_modules/*' -not -path './.sandcastle/nix-store/*' \
+    -printf '%P\n' 2>/dev/null || true
+}
+
 # gate_gofmt_default_cmd <root> — the cheap gofmt-only check: `gofmt -l` over the
 # tree (mirrors the gofmt step of gate_go_default_cmd / seam-smoke.sh's #344
 # stage), with NO nix shell and NO compile — a pure parse+print, sub-second on a
@@ -177,8 +206,17 @@ gate_ts_stage() {
 # where the full Go seam (build/vet/test/lint) cannot (#198): it costs nothing.
 # Assumes cwd is <root> (its caller cd's there inside the git-env-scrub subshell).
 gate_gofmt_default_cmd() {
-  local unformatted
-  unformatted="$(gofmt -l . | grep -v '^node_modules/' || true)"
+  local gofiles unformatted
+  gofiles="$(gate_gofmt_tree_go_files)"
+  # No Go file at all in a repo whose pushed range touched Go means the pruner or
+  # the cwd is wrong, not that the tree is clean. Fail CLOSED, like the missing-
+  # gofmt arm of gate_gofmt_stage: a blocked push beats a red main (#1458).
+  if [ -z "$gofiles" ]; then
+    echo "gate: gofmt check found no Go files to scan under $PWD — refusing to" >&2
+    echo "gate: report a clean tree it never looked at (#1458). Fix the scan." >&2
+    return 4
+  fi
+  unformatted="$(printf '%s\n' "$gofiles" | xargs -d '\n' -r gofmt -l || true)"
   if [ -n "$unformatted" ]; then
     echo "gofmt debt — run gofmt -w on:" >&2
     printf '%s\n' "$unformatted" >&2

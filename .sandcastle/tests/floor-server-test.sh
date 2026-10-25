@@ -49,5 +49,27 @@ else
   (cd "$floor" && node --test server/*.test.js 2>&1 | tail -20)
 fi
 
+# The browser layer (web/src, Vue 3 + Vite — floor-vue design 2026-10-21) has
+# its own component suite (Vitest) and a build; both need the floor's
+# node_modules, which no harness test installs. Present → run them; absent →
+# say so, loudly, and leave the structural + server verdict above standing.
+if [ -d "$floor/node_modules/vitest" ]; then
+  if (cd "$floor" && npx vitest run >/dev/null 2>&1); then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1)); echo "FAIL: floor/web component suite (vitest)"
+    (cd "$floor" && npx vitest run 2>&1 | tail -30)
+  fi
+  if (cd "$floor" && npx vite build >/dev/null 2>&1); then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1)); echo "FAIL: floor/web build (vite build)"
+    (cd "$floor" && npx vite build 2>&1 | tail -20)
+  fi
+else
+  echo "floor-server-test: SKIPPED the component suite + build — no node_modules under fleet-tui/floor"
+  echo "  (cd fleet-tui/floor && npm ci) to cover web/src; it is UNCOVERED by this run."
+fi
+
 echo "floor-server-test: $pass/$((pass + fail)) checks passed"
 [ "$fail" -eq 0 ]

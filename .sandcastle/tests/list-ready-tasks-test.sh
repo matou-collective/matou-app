@@ -208,10 +208,46 @@ JSON
 out4="$(bash "$here/../list-ready-tasks.sh")" || fail "priority run exited non-zero"
 [ "$(jq -r '[.[].number] | join(",")' <<<"$out4")" = "701,703,700,702" ] \
   || fail "priority issues must sort first, tracker order kept within groups (got $(jq -c '[.[].number]' <<<"$out4"))"
-jq -e 'all(.[]; keys == ["body","landing","landing_label","model","number","title","url"])' <<<"$out4" >/dev/null \
-  || fail "emitted shape changed — expected {body,landing,landing_label,model,number,title,url} (the priority flag must not leak; .model must survive)"
+jq -e 'all(.[]; keys == ["blocker","body","created_at","landing","landing_label","model","number","priority","title","url"])' <<<"$out4" >/dev/null \
+  || fail "emitted shape changed — expected {body,landing,landing_label,model,number,title,url} (.priority/.blocker/.created_at are additive since #301; .model must survive)"
 jq -e 'all(.[]; .model == null)' <<<"$out4" >/dev/null \
   || fail "unlabelled tickets must surface .model=null (default model)"
+pass=$((pass+1))
+
+# 6b: within each group the OLDEST ticket (created_at) comes first — the
+#     tracker answers newest-first, which made a fresh ticket jump every older
+#     one in its group; a filing date is the queue's line. Tickets without a
+#     created_at (older fixtures) keep tracker order (case 6 above). The helper
+#     is emitted (additive, #301) so the fleet queue can order across repos.
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 800, "title": "ordinary newest", "body": "b", "html_url": "u/800", "created_at": "2026-10-20T10:00:00Z", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 801, "title": "priority newer", "body": "b", "html_url": "u/801", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name":"ready-for-agent"},{"name":"priority"}]},
+  {"number": 802, "title": "ordinary oldest", "body": "b", "html_url": "u/802", "created_at": "2026-10-01T10:00:00Z", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 803, "title": "priority oldest", "body": "b", "html_url": "u/803", "created_at": "2026-10-05T10:00:00Z", "labels": [{"name":"ready-for-agent"},{"name":"priority"}]}
+]
+JSON
+out4b="$(bash "$here/../list-ready-tasks.sh")" || fail "oldest-first run exited non-zero"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out4b")" = "803,801,802,800" ] \
+  || fail "within a group the oldest ticket must come first: priority 803,801 then 802,800 (got $(jq -c '[.[].number]' <<<"$out4b"))"
+jq -e 'all(.[]; keys == ["blocker","body","created_at","landing","landing_label","model","number","priority","title","url"])' <<<"$out4b" >/dev/null \
+  || fail "emitted shape changed — created_at is additive since #301 (expected {blocker,body,created_at,landing,landing_label,model,number,priority,title,url})"
+pass=$((pass+1))
+
+# 6c (#301): the FLEET PICK signal. A one-ticket run's lister answers exactly
+#     the pick when it is still ready, [] (plus a stderr line) when it is gone,
+#     and the full order when no signal is mounted. The fields the fleet merge
+#     reads survive on the pick.
+jq -e '.[0] | (.priority == true) and (.blocker == false) and (.created_at == "2026-10-05T10:00:00Z")' <<<"$out4b" >/dev/null \
+  || fail "the emitted ticket must carry priority/blocker/created_at for the fleet merge (#301)"
+out4c="$(SWARM_FLEET_PICK_SIGNAL="$tmp/fleet-pick" bash -c 'printf "802\n" > "$SWARM_FLEET_PICK_SIGNAL"; bash "$0"' "$here/../list-ready-tasks.sh")" || fail "fleet-pick run exited non-zero"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out4c")" = "802" ] \
+  || fail "with a fleet-pick signal naming 802 the lister must answer exactly #802 (got $(jq -c '[.[].number]' <<<"$out4c"))"
+printf '999\n' > "$tmp/fleet-pick"
+out4d="$(SWARM_FLEET_PICK_SIGNAL="$tmp/fleet-pick" bash "$here/../list-ready-tasks.sh" 2>"$tmp/pick.err")" || fail "gone-pick run exited non-zero"
+[ "$(jq 'length' <<<"$out4d")" = "0" ] || fail "a fleet pick that is no longer ready must answer [] (got $(jq -c '[.[].number]' <<<"$out4d"))"
+grep -q "fleet pick #999 is no longer ready" "$tmp/pick.err" || fail "a gone fleet pick must be named on stderr"
+rm -f "$tmp/fleet-pick"
 pass=$((pass+1))
 
 # 7: a ticket's model-<name> label surfaces as its `.model` suffix — the field
@@ -294,8 +330,8 @@ JSON
 out8="$(bash "$here/../list-ready-tasks.sh")" || fail "drive-blocker ordering run exited non-zero"
 [ "$(jq -r '[.[].number] | join(",")' <<<"$out8")" = "900,400,300" ] \
   || fail "the drive blocker (#900) must sort first, then priority (#400), then the rest (#300) (got $(jq -c '[.[].number]' <<<"$out8"))"
-jq -e 'all(.[]; keys == ["body","landing","landing_label","model","number","title","url"])' <<<"$out8" >/dev/null \
-  || fail "emitted shape changed — the blocker helper flag must not leak (expected {body,landing,landing_label,model,number,title,url})"
+jq -e 'all(.[]; keys == ["blocker","body","created_at","landing","landing_label","model","number","priority","title","url"])' <<<"$out8" >/dev/null \
+  || fail "emitted shape changed — the blocker flag is additive since #301 (expected {blocker,body,created_at,landing,landing_label,model,number,priority,title,url})"
 pass=$((pass+1))
 
 # 10b: with NO standing drive (the common case), ordering is byte-identical to

@@ -211,6 +211,7 @@ for stage in \
     'preflight_policy_gate' \
     'schedule_janitor_rearm' \
     'schedule_list_ready_or_verdict' \
+    'schedule_fleet_pick' \
     'schedule_debounce_decide' \
     'preflight_model_gate' \
     'provision_env_materialize' \
@@ -231,6 +232,15 @@ for stage in \
   [ "$ln" -gt "$prev" ] || fail "$stage is out of order (line $ln, previous stage at $prev)"
   prev="$ln"
 done
+pass=$((pass+1))
+
+# #301: the slot holder is written only once the run has its ticket — AFTER
+# the fleet pick — so a leg that stands down leaves no ticket-shaped holder.
+hp="$(stage_line host_capacity_holder_write)"; fp="$(stage_line schedule_fleet_pick)"
+[ -n "$hp" ] && [ -n "$fp" ] && [ "$hp" -gt "$fp" ] \
+  || fail "host_capacity_holder_write must come after schedule_fleet_pick (holder line $hp, pick line $fp)"
+grep -q 'report_self_rearm "\$worker_ran" "\$repo_slug" "\$sandcastle_attempts"' "$rs" \
+  || fail "report_self_rearm must be handed the repo slug and the attempts file (#301)"
 pass=$((pass+1))
 
 # every seam library it depends on is sourced
