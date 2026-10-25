@@ -253,7 +253,7 @@ collect_job_logs() { # <run-url>
   # so the leg index we append is authoritative.
   case "$run_url" in */jobs/*) run_url="${run_url%%/jobs/*}" ;; esac
   : > "$out"
-  local leg=0 resp rc http body
+  local leg=0 resp rc http body found=0 last_http=""
   while [ "$leg" -lt "$HEAL_JOB_LOG_MAX_LEGS" ]; do
     rc=0
     resp="$(curl -s --max-time 30 -w $'\n%{http_code}' \
@@ -261,21 +261,32 @@ collect_job_logs() { # <run-url>
       "$run_url/jobs/$leg/attempt/1/logs")" || rc=$?
     http="${resp##*$'\n'}"; body="${resp%$'\n'*}"
     if [ "$rc" -ne 0 ]; then
-      # Transport failure / timeout. On leg 0 the whole fetch is unavailable;
-      # past it, treat it as the end of the matrix (we already have leg 0..n-1).
-      [ "$leg" -eq 0 ] && printf 'job log unavailable (curl exit %s) — probed %s/jobs/0/attempt/1/logs\n' "$rc" "$run_url" > "$out"
+      # Transport failure / timeout: the endpoint itself is unreachable, not a
+      # per-leg gap. Stop probing — each miss costs the full --max-time, so
+      # hammering every remaining leg would stall the sweep for minutes.
+      [ "$found" -eq 0 ] && printf 'job log unavailable (curl exit %s) — probed %s/jobs/%s/attempt/1/logs\n' "$rc" "$run_url" "$leg" > "$out"
       break
     fi
     if [ "${http:0:1}" = 2 ]; then
       { printf '===== job %s (attempt 1) — %s/jobs/%s/attempt/1/logs\n' "$leg" "$run_url" "$leg"
         printf '%s\n' "$body"; } >> "$out"
+      found=1
       leg=$((leg + 1))
       continue
     fi
-    # A non-2xx: leg 0 means no readable log at all; past it, the end of the legs.
-    [ "$leg" -eq 0 ] && printf 'job log unavailable (HTTP %s) — probed %s/jobs/0/attempt/1/logs\n' "${http:-000}" "$run_url" > "$out"
-    break
+    # A non-2xx (typically 404): a GAP in the job matrix, not necessarily its
+    # end. Forgejo's job indices are not contiguous (#304: run 24158 served leg
+    # 0 → 200, leg 1 → 404, leg 2 → 200), so breaking on the first miss skipped
+    # any failing leg above a gap. Keep probing the remaining legs up to
+    # HEAL_JOB_LOG_MAX_LEGS; a 404 returns at once, so the bound stays cheap.
+    last_http="${http:-000}"
+    leg=$((leg + 1))
   done
+  # Nothing readable across every probed leg → the explicit note (AC4,
+  # GOTCHAS 30), never a silent empty file.
+  if [ "$found" -eq 0 ] && [ ! -s "$out" ]; then
+    printf 'job log unavailable (HTTP %s) — probed %s/jobs/0..%s/attempt/1/logs\n' "${last_http:-000}" "$run_url" "$((HEAL_JOB_LOG_MAX_LEGS - 1))" > "$out"
+  fi
   return 0
 }
 

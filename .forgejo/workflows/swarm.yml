@@ -7,14 +7,33 @@ on:
   # claim/release toggle of `agent-working` re-fired this workflow, and under
   # the concurrency group below (which queues, never drops) a limit-parked
   # host that claimed-and-released N ready tickets per run queued ≥N successors
-  # per run — 2,700 waiting no-op runs across four repos on 2026-08-26. Newly
-  # readied tickets are picked up by the :15/:45 cron and by the D5 self-rearm
-  # dispatch (report-lib.sh) instead.
+  # per run — 2,700 waiting no-op runs across four repos on 2026-08-26.
+  #
+  # Since #301 the SCHEDULER is the fleet queue watcher on each pool host
+  # (fleet-queue.sh, a ~2-min host cron): it merges every repo's own ready list
+  # into ONE fleet order (priority, then filing date, a closed ticket's
+  # dependants first) and `workflow_dispatch`es the head ticket's repo with
+  # `inputs.ticket` + `inputs.host` — so exactly one leg (that host's) runs
+  # exactly that ticket. A finishing run re-arms the same way (report-lib.sh).
+  # The `closed` event and the :15/:45 cron stay as BACKSTOPS: such a leg reads
+  # the host's fleet cache and stands down when the head is elsewhere
+  # (schedule-lib.sh). A newly readied ticket is picked up within a tick.
   issues:
     types: [closed]
   schedule:
     - cron: "15,45 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      ticket:
+        description: "the fleet pick (#301): this run works exactly this issue number, or stands down if it is gone"
+        required: false
+        type: string
+        default: ""
+      host:
+        description: "the pool host whose leg runs this dispatch (#301); every other host's leg stands down"
+        required: false
+        type: string
+        default: ""
 
 # Concurrency: `cancel-in-progress: false` with NO group. On Forgejo 15 that is
 # the ONE shape that means "never cancel, never queue" (services/actions/
@@ -76,9 +95,22 @@ jobs:
           DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
           SWARM_RUN_ID: ${{ github.run_number }}
+          # #301: the fleet queue's dispatch inputs (empty on a cron/closed run),
+          # this leg's own host label, and the issue a `closed` event names.
+          SWARM_TICKET: ${{ github.event.inputs.ticket }}
+          SWARM_TARGET_HOST: ${{ github.event.inputs.host }}
+          SWARM_LEG_HOST: ${{ matrix.host }}
+          SWARM_CLOSED_ISSUE: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
           export SWARM_HOST="$(hostname)"
+          # #301: a fleet-queue dispatch names ONE host. Every other host's leg
+          # stands down here — before the drive gate, before any slot — so one
+          # dispatch is one run and an idle host's legs never race for the pick.
+          if [ -n "${SWARM_TARGET_HOST:-}" ] && [ "$SWARM_TARGET_HOST" != "${SWARM_LEG_HOST:-}" ]; then
+            echo "swarm: this run was dispatched to $SWARM_TARGET_HOST (#301) — not this leg's host (${SWARM_LEG_HOST:-?}); standing down"
+            exit 0
+          fi
           # Yield-starvation signal (#213): a swarm yield is `exit 0` — a green
           # run — so N consecutive both-slots-busy losses for a repo with ready
           # tickets look identical to N healthy no-op ticks (a low-traffic repo

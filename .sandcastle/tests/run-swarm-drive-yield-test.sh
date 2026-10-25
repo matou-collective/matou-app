@@ -103,13 +103,16 @@ grep -q "yielding this run to a ready drive" <<<"$out4" && fail "no reservation 
 [ -f "$defer" ] && fail "an absent reservation must reset the consecutive-defer counter (still present: $(cat "$defer"))"
 pass=$((pass+1))
 
-# --- ticket holder: written at start from HOST_CAPACITY_HELD_SLOT, cleared by on_exit ---
-# The suite has no fake pnpm/docker on this host — every prior case here dies
-# BEFORE the toolchain, at preflight_gate's ONE live network call
-# (guard_issue_write_permission -> forgejo_issue_write_probe -> curl), which is
-# the earliest point reached after the ticket holder is written (right after
-# swarmdb_run_start) and before on_exit clears it. Snapshot there instead of
-# in a fake pnpm. Overwriting curl here is safe: tests 1-4 above already ran
+# --- ticket holder (#301): written only once the run HAS a ticket — after the
+# ready set and the fleet pick — never at start. The suite has no fake
+# pnpm/docker on this host, so every case here dies at preflight_gate's ONE live
+# network call (guard_issue_write_permission -> forgejo_issue_write_probe ->
+# curl), which comes BEFORE the listing: a holder seen there would mean a leg
+# that lists nothing, or stands down for the fleet, painted a ticket-shaped
+# card on the Floor for its ten-second slot (the "empty ticket" noise #301
+# removed). Snapshot at that call; the stages test pins the write site's
+# position after schedule_fleet_pick, and host-capacity-lib's test pins the
+# holder's shape. Overwriting curl here is safe: tests 1-4 above already ran
 # with the original fake.
 slot="$tmp/held-slot"; : > "$slot"
 seen="$tmp/holder-seen.json"
@@ -120,17 +123,10 @@ echo '[]'
 SH
 chmod +x "$tmp/bin/curl"
 run_swarm HOST_CAPACITY_HELD_SLOT="$slot" HELD_HOLDER="$slot.holder" HOLDER_SEEN="$seen" >/dev/null 2>&1 || true
-[ -s "$seen" ] || fail "ticket holder must exist by the time run-swarm reaches its toolchain"
-[ "$(jq -r .kind "$seen")" = ticket ]        || fail "ticket holder kind: $(cat "$seen")"
-[ "$(jq -r .ref "$seen")" = run ]            || fail "ticket holder ref must be 'run': $(cat "$seen")"
-[ "$(jq -r .worker "$seen")" = swarm-worker ] || fail "ticket holder worker: $(cat "$seen")"
-[ "$(jq -r .repo "$seen")" = Acme/widget ]   || fail "ticket holder repo must be the run's REPO_SLUG: $(cat "$seen")"
-jq -e '.run_id | type == "string" and length > 0' "$seen" >/dev/null || fail "ticket holder must carry the run id: $(cat "$seen")"
-[ ! -e "$slot.holder" ] || fail "on_exit must clear the ticket holder"
-# Unset → nothing written, no error.
-rm -f "$seen"
-run_swarm HELD_HOLDER="$slot.holder" HOLDER_SEEN="$seen" >/dev/null 2>&1 || true
-[ ! -e "$seen" ] && [ ! -e "$slot.holder" ] || fail "no HOST_CAPACITY_HELD_SLOT → no holder written"
+[ ! -s "$seen" ] || fail "a run that never reached its ticket must write NO slot holder (#301), saw: $(cat "$seen")"
+[ ! -e "$slot.holder" ] || fail "no holder may be left behind on exit"
+grep -q '^host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket run "$repo_slug" swarm-worker "$run_db_id"$' "$here/../run-swarm.sh" \
+  || fail "run-swarm.sh must still write the ticket/run holder once it has a ticket"
 pass=$((pass+1))
 
 echo "run-swarm-drive-yield: $pass scenarios passed"

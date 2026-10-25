@@ -252,6 +252,12 @@ label_id() {
 }
 aw_id="$(label_id agent-working)"
 ab_id="$(label_id agent-blocked)"
+# ready-for-session's id — the runner drops it from a pr-mode ticket once its PR is
+# open (#302), so a drained-by-PR ticket leaves the session lane (the Floor/Board
+# Session column) instead of being re-picked every tick. Present by construction
+# (the queue read below filters on this very label), so label_id resolves it; a
+# repo somehow missing it fails loud here exactly like the two above.
+rfs_id="$(label_id ready-for-session)"
 
 # This host's name (pure, no network) — needed by the stale-claim sweep below to
 # attribute and clean THIS host's own cross-host claim markers (#125), and reused
@@ -384,24 +390,31 @@ for n in $candidates; do
   if [ -f "$SESSION_RUNNER_STATE/fail-$n" ] && [ "$(cat "$SESSION_RUNNER_STATE/fail-$n")" -ge 2 ]; then
     echo "session-runner: #$n failed twice — escalated, skipped"; continue
   fi
-  # landing-pr skip (#165, idss ADR 0265/0267): a ticket that lands by PR must
-  # NOT be worked by an unattended session — this runner's prompt pushes straight
-  # to main, which would BYPASS the PR rail the idss tripwire only PAGES about,
-  # never prevents. Skip it with a one-line log for an interactive session to open
-  # the PR by hand. landing_mode_for (#164) resolves BOTH the per-ticket `landing-pr`
-  # label and a pr-DEFAULT repo. Like host affinity, this is "not this runner's
-  # ticket", NOT a failed attempt: skipped BEFORE the claim/attempt marker/fail-$n.
-  # rc 1 (unreadable ticket, or an off-allowlist landing-* label) → skip too: better
-  # a quiet retried tick than risk a landing-pr ticket walking onto main (the same
-  # fail-CLOSED posture landing_push takes — an unreadable ticket lands nowhere).
-  if sr_landing="$(landing_mode_for "$n" 2>/dev/null)"; then
-    if [ "$sr_landing" = pr ]; then
-      echo "session-runner: #$n lands by PR (landing-pr label or pr-default repo) — skipped for an interactive session to open the PR by hand (#165, not an attempt)"
+  # how the ticket lands (#164): push or pr. #302 lets the session WORK a pr-mode
+  # ticket — the prompt branches on the mode resolved here, opening the ticket's PR
+  # through the rail (land-pr.sh) instead of pushing main, so pr-default repos drain
+  # without a human opening each PR by hand. landing_mode_for resolves BOTH the
+  # per-ticket `landing-pr` label and a pr-DEFAULT repo. Only the UNRESOLVABLE case
+  # stays a skip: #165's fail-CLOSED posture (an unreadable ticket, or an
+  # off-allowlist landing-* label) must never risk landing a ticket the wrong way,
+  # so it is skipped — not this runner's ticket, NOT a failed attempt (no claim/
+  # attempt marker/fail-$n) — rather than guessed.
+  if ! sr_landing="$(landing_mode_for "$n" 2>/dev/null)"; then
+    echo "session-runner: #$n — cannot resolve how it lands; skipped rather than risk landing it the wrong way (#165/#302, not an attempt)"
+    continue
+  fi
+  if [ "$sr_landing" = pr ]; then
+    # Already handed to review? A pr-mode ticket with an OPEN agent PR is past the
+    # session's job (a human merges it), so it does not belong in the session
+    # queue. Drop ready-for-session — it leaves the Session lane and is never
+    # re-picked — and skip it, not an attempt. This also self-heals a session
+    # SIGKILLed after it opened the PR but before the outcome path could unqueue
+    # it, so no second full session is ever spent reopening the same PR.
+    if sr_existing_pr="$(landing_open_pr_for "$n" 2>/dev/null)" && [ -n "$sr_existing_pr" ]; then
+      echo "session-runner: #$n already has an open PR (#$sr_existing_pr) — handed to review; dropping ready-for-session, skipped (#302, not an attempt)"
+      api -X DELETE "$FORGEJO_API/issues/$n/labels/$rfs_id" >/dev/null 2>&1 || true
       continue
     fi
-  else
-    echo "session-runner: #$n — cannot resolve how it lands; skipped rather than risk pushing a landing-pr ticket to main (#165, not an attempt)"
-    continue
   fi
   open_deps="$(api "$FORGEJO_API/issues/$n/dependencies?limit=50" \
     | jq '[.[] | select(.state == "open")] | length')" \
@@ -558,6 +571,8 @@ prompt="$(cat "$SESSION_RUNNER_PROMPT_FILE")
 
 Ticket #$pick: $title
 
+Landing mode for this ticket (resolved by the runner): $sr_landing
+
 $body"
 claude_select_token
 
@@ -635,6 +650,20 @@ session_runner_nudge
 after="$(api "$FORGEJO_API/issues/$pick")" || after=""
 state_after="$(jq -r '.state // "unknown"' <<<"$after")"
 still_session="$(jq -r '[.labels[].name] | index("ready-for-session") != null' <<<"$after" 2>/dev/null || echo true)"
+# pr-mode (#302): the session lands through a pull request a HUMAN merges — it does
+# NOT close the ticket (close-report leaves it open) and need not relabel. An OPEN
+# agent PR for this ticket IS the advance: the work is handed to review. Recognise
+# it, drop ready-for-session so the drained ticket leaves the session lane (never
+# re-picked), and fall into the advanced path below. A push-mode ticket is judged
+# exactly as before (closed, or ready-for-session already gone). Guarded on the
+# push outcomes so a pr ticket the session DID close/relabel is not double-handled.
+if [ "$sr_landing" = pr ] && [ "$state_after" != closed ] && [ "$still_session" != false ]; then
+  if sr_opened_pr="$(landing_open_pr_for "$pick" 2>/dev/null)" && [ -n "$sr_opened_pr" ]; then
+    echo "session-runner: #$pick — opened PR #$sr_opened_pr; dropping ready-for-session (handed to review, #302)"
+    api -X DELETE "$FORGEJO_API/issues/$pick/labels/$rfs_id" >/dev/null 2>&1 || true
+    still_session=false
+  fi
+fi
 if [ "$state_after" = "closed" ] || [ "$still_session" = "false" ]; then
   echo "session-runner: #$pick outcome: advanced (state=$state_after, ready-for-session=$still_session)"
   rm -f "$SESSION_RUNNER_STATE/fail-$pick"

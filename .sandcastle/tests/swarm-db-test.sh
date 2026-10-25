@@ -674,4 +674,62 @@ grep -q "$outside/leak.db" "$sandbox/.swarmdb-leak-attempts" || fail "the breadc
 [ -f "$sandbox/ok.db" ] || fail "the tripwire must ALLOW a write whose SWARM_DB is under the sandbox"
 pass=$((pass+1))
 
+# --- #117: prune-fixtures deletes ONLY leaked fixture shapes, dry-run default ---
+# The one-time cleanup #116's prevention could not do: fixture rows already in a
+# live db. Every fixture shape must go (with its child rows); every real row —
+# including a real `limit-park` unpark "window reset" edge — must survive.
+pdb="$tmp/prune.db"
+p() { python3 "$py" --db "$pdb" "$@"; }
+pval() { SWARM_DB="$pdb" val "$1"; }
+# fixtures
+p run-start --run triage-x-y-1788049474-1 --repo x/y --trigger cron
+p run-start --run heal-x-y-1788049476-2 --repo Matou/dev-factory --trigger heal  # fixture under a real repo
+p proc-open --run heal-x-y-1788049476-2 --kind claude --ref 1
+p event --run heal-x-y-1788049476-2 --kind heal --detail d
+p run-start --run Acme-widget-1787498847-3 --repo Acme/widget --trigger push
+p attempt --run Acme-widget-1787498847-3 --issue 9
+p spend --run Acme-widget-1787498847-3 --input 1
+p run-start --run odd-run --repo x/y
+p event --run limit-park --kind limit-pause --detail "park account=A" --evidence /tmp/tmp.G0hFzwrfN1/limit-marker
+# real rows that must survive
+p run-start --run Matou-dev-factory-973-2395660 --repo Matou/dev-factory --trigger label
+p proc-open --run Matou-dev-factory-973-2395660 --kind claude --ref 2
+p attempt --run Matou-dev-factory-973-2395660 --issue 117
+p spend --run Matou-dev-factory-973-2395660 --input 5
+p event --run Matou-dev-factory-973-2395660 --kind limit-pause --detail "park account=A" --evidence "resets 6pm (UTC)"
+p event --run limit-park --kind limit-pause --detail "unpark account=A" --evidence "window reset"
+p event --run limit-park --kind gate --evidence /tmp/tmp.X/limit-marker   # wrong kind: not the fixture shape
+p run-start --run Matou-x-y-1 --repo Matou/x-y                             # GLOB is exact, not %-x-y-%
+total_before="$(pval "SELECT (SELECT COUNT(*) FROM runs)+(SELECT COUNT(*) FROM events)+(SELECT COUNT(*) FROM processes)+(SELECT COUNT(*) FROM attempts)+(SELECT COUNT(*) FROM spend)")"
+# dry-run (default): reports the exact set, deletes nothing.
+dry="$(p prune-fixtures)"
+[ "$dry" = "$(printf 'runs 4\nevents 2\nprocesses 1\nattempts 1\nspend 1\ndry-run')" ] \
+  || fail "prune-fixtures dry-run must report the exact fixture set: [$dry]"
+[ "$(pval "SELECT (SELECT COUNT(*) FROM runs)+(SELECT COUNT(*) FROM events)+(SELECT COUNT(*) FROM processes)+(SELECT COUNT(*) FROM attempts)+(SELECT COUNT(*) FROM spend)")" = "$total_before" ] \
+  || fail "prune-fixtures without --apply must delete NOTHING"
+# --apply: the same set goes, in one transaction.
+applied="$(p prune-fixtures --apply)"
+[ "$applied" = "$(printf 'runs 4\nevents 2\nprocesses 1\nattempts 1\nspend 1\napplied')" ] \
+  || fail "prune-fixtures --apply must report what it deleted: [$applied]"
+[ "$(pval "SELECT COUNT(*) FROM runs WHERE repo IN ('x/y','Acme/widget') OR run_id GLOB '*-x-y-1788*' OR run_id GLOB 'Acme-*'")" = 0 ] \
+  || fail "every fixture run must be gone"
+[ "$(pval "SELECT COUNT(*) FROM events WHERE evidence GLOB '/tmp/tmp.*/limit-marker' AND kind='limit-pause'")" = 0 ] \
+  || fail "every fixture park event must be gone"
+[ "$(pval "SELECT COUNT(*) FROM runs")" = 2 ] || fail "real runs must survive prune-fixtures"
+[ "$(pval "SELECT COUNT(*) FROM events")" = 3 ] \
+  || fail "real events (incl. the window-reset unpark and a non-limit-pause /tmp evidence) must survive"
+[ "$(pval "SELECT COUNT(*) FROM events WHERE run_id='limit-park' AND evidence='window reset'")" = 1 ] \
+  || fail "a real unpark 'window reset' edge is NOT a fixture shape and must survive"
+for t in processes attempts spend; do
+  [ "$(pval "SELECT COUNT(*) FROM $t")" = 1 ] || fail "the real run's $t row must survive"
+done
+# idempotent: a second --apply finds nothing.
+[ "$(p prune-fixtures --apply)" = "$(printf 'runs 0\nevents 0\nprocesses 0\nattempts 0\nspend 0\napplied')" ] \
+  || fail "a second prune-fixtures --apply must be a no-op"
+# an absent db is an error, never a freshly-migrated empty one.
+p_absent_rc=0; python3 "$py" --db "$tmp/absent.db" prune-fixtures 2>/dev/null || p_absent_rc=$?
+[ "$p_absent_rc" -ne 0 ] && [ ! -f "$tmp/absent.db" ] \
+  || fail "prune-fixtures must refuse (non-zero, no file created) when the db is absent"
+pass=$((pass+1))
+
 echo "swarm-db: $pass groups passed"

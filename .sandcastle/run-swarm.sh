@@ -11,7 +11,7 @@
 #
 #   preflight   preflight-lib.sh   self-tests, policy, model — all fail CLOSED
 #   identity    identity-lib.sh    identity_apply, the #31 contract seam
-#   schedule    schedule-lib.sh    drive yield, janitor, ready set, debounce
+#   schedule    schedule-lib.sh    drive yield, janitor, ready set, fleet pick, debounce
 #   provision   provision-lib.sh   .env, secrets, stores, install, image, nix
 #   execute     execute-lib.sh     the worker loop + cancel/auth/limit failover
 #   verify      verify-lib.sh      worker births (#435), protected paths (#445)
@@ -183,11 +183,10 @@ swarmdb_run_start "$run_db_id" "$repo_slug" "$swarm_trigger" "$run_started" "$sw
 # reader (or a healer on another box) can attribute the run to a host without
 # cross-referencing the Actions job log. Best-effort like every mirror write.
 swarmdb_event "$run_db_id" "" host "host=$swarm_exec_host runner=$swarm_exec_runner"
-# Label the host-capacity slot the workflow won for this run (slot-aware
-# fleet). The workflow holds the flock inline and exports the path; the issue
-# is not known here (claims happen in the sandbox), so ref=run and the fleet
-# monitor reads the issue from this run's swarm.db attempts.
-host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket run "$repo_slug" swarm-worker "$run_db_id"
+# The host-capacity slot holder (slot-aware fleet) is written further down,
+# once this run KNOWS it has a ticket (#301): a leg that lists nothing, or
+# stands down for the fleet, holds its slot for seconds and must not paint a
+# ticket-shaped card on the Floor for it.
 
 on_exit() {
   local ec=$?
@@ -329,7 +328,23 @@ if [ "$n" -eq 0 ]; then
 fi
 echo "run-swarm: $n ready task(s):"
 schedule_ready_listing "$ready"
+
+# ── schedule: the fleet pick (#301) ─────────────────────────────────────────
+# ONE ticket, chosen fleet-wide (schedule-lib.sh has the three ways a leg learns
+# it). Standing down here is a clean, named exit before any slot holder, stamp
+# or provisioning — the fleet queue watcher owns the dispatch.
+pick_file="$(mktemp)"
+schedule_fleet_pick "$ready" "$repo_slug" "$pick_file" \
+  || { rm -f "$pick_file"; echo "run-swarm: $SCHEDULE_FLEET_NOTE"; SWARM_EXIT_REASON="$SCHEDULE_FLEET_REASON"; exit 0; }
+echo "run-swarm: $SCHEDULE_FLEET_NOTE"
+ready="$(cat "$pick_file")"; rm -f "$pick_file"
+ready_nums="$(schedule_ready_nums "$ready")"; n="$(schedule_ready_count "$ready")"
 swarmdb_event "$run_db_id" "" ready-set "$n ready task(s)" "[$ready_nums]"
+# Label the host-capacity slot the workflow won for this run (slot-aware
+# fleet). The workflow holds the flock inline and exports the path; the issue
+# is not known here (claims happen in the sandbox), so ref=run and the fleet
+# monitor reads the issue from this run's swarm.db attempts.
+host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket run "$repo_slug" swarm-worker "$run_db_id"
 
 stamp="$(schedule_stamp_path "$repo_tag")"
 # #213: fold origin/main's head SHA into the debounce digest so a landed fix on
@@ -352,6 +367,11 @@ stamp_written=1   # from here a quiet death without a worker must clear the stam
 # and removes it on exit.
 SWARM_HOST_SIGNALS_DIR="${SWARM_HOST_SIGNALS_DIR:-${TMPDIR:-/tmp}/matou-host-signals-$run_db_id}"
 export SWARM_HOST_SIGNALS_DIR
+# #301: mirror the fleet pick into the sandbox (/run/host-signals/fleet-pick)
+# so the in-sandbox lister answers exactly that ticket, or [] once it is gone —
+# claim-next-task.sh then claims it or nothing. No pick (a host with no fleet
+# view) → no file → the lister's own order, as before.
+schedule_fleet_pick_signal "$SWARM_HOST_SIGNALS_DIR"
 
 preflight_model_gate "$repo_slug" "$ready" || exit 1
 preflight_landing_gate "$repo_slug" "$ready" || exit 1
@@ -453,7 +473,7 @@ landing_stage "$repo_slug" "$ready" "$start_sha" || {
 # ── report ──────────────────────────────────────────────────────────────────
 report_post_summary "$repo_slug" "$repo_web" "$n" "$start_sha" "$ready" \
   "$LANDING_OPENED_PRS" "$LANDING_MERGED_PRS"
-report_self_rearm "$worker_ran"
+report_self_rearm "$worker_ran" "$repo_slug" "$sandcastle_attempts"
 
 if [ -n "${EXECUTE_YIELDED_TO_DRIVE:-}" ]; then
   SWARM_EXIT_REASON="yielded-to-drive"   # #111: finished its current task, then stood down for the drive

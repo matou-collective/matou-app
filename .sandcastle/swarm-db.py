@@ -378,6 +378,57 @@ def cmd_sweep_orphans(a):
         print("swept %s %s" % (run_id, trig))
 
 
+# Test-fixture rows that leaked into a LIVE db before #116's SWARM_DB seam +
+# tripwire (#117). Each predicate is a shape no real run can produce: the
+# fixture repos `x/y` / `Acme/widget` (never a tracker slug), their run-id
+# shapes (one fixture filed its `heal-x-y-*` runs under a real repo, so the
+# run-id GLOB catches what a repo filter misses), and a park edge whose evidence
+# is a mktemp marker. A REAL `unpark … window reset` edge (run_id `limit-park`,
+# limit-lib.sh's sweep default) is deliberately NOT a fixture shape — it closes
+# a real park — so it is never matched here. GLOB, not LIKE: case-exact.
+FIXTURE_RUNS_WHERE = (
+    "repo IN ('x/y', 'Acme/widget')"
+    " OR run_id GLOB 'heal-x-y-*' OR run_id GLOB 'triage-x-y-*'"
+    " OR run_id GLOB 'Acme-widget-*'"
+)
+FIXTURE_EVENTS_WHERE = "kind = 'limit-pause' AND evidence GLOB '/tmp/tmp.*/limit-marker'"
+_RUN_CHILD_TABLES = ("events", "processes", "attempts", "spend")
+
+
+def cmd_prune_fixtures(a):
+    """Delete leaked test-fixture rows (#117) — DRY-RUN unless --apply. Prints
+    `<table> <n>` per table either way, then `applied` or `dry-run`. Deletes the
+    fixture runs AND their child rows (events/processes/attempts/spend), plus
+    the fixture park events, in ONE transaction. Idempotent: a second --apply
+    finds nothing. Never migrates — an absent db is an error, not a fresh one."""
+    if not os.path.exists(a.db):
+        print("prune-fixtures: no db at %s" % a.db, file=sys.stderr)
+        return 1
+    conn = connect(a.db)
+    runs_sel = "SELECT run_id FROM runs WHERE " + FIXTURE_RUNS_WHERE
+    counts = [("runs", conn.execute(
+        "SELECT COUNT(*) FROM runs WHERE " + FIXTURE_RUNS_WHERE).fetchone()[0])]
+    for t in _RUN_CHILD_TABLES:
+        where = "run_id IN (%s)" % runs_sel
+        if t == "events":
+            where = "(%s) OR (%s)" % (where, FIXTURE_EVENTS_WHERE)
+        counts.append((t, conn.execute(
+            "SELECT COUNT(*) FROM %s WHERE %s" % (t, where)).fetchone()[0]))
+    if a.apply:
+        with conn:
+            # children first (they select through the runs predicate)
+            conn.execute("DELETE FROM events WHERE run_id IN (%s) OR (%s)"
+                         % (runs_sel, FIXTURE_EVENTS_WHERE))
+            for t in _RUN_CHILD_TABLES[1:]:
+                conn.execute("DELETE FROM %s WHERE run_id IN (%s)" % (t, runs_sel))
+            conn.execute("DELETE FROM runs WHERE " + FIXTURE_RUNS_WHERE)
+    conn.close()
+    for t, n in counts:
+        print("%s %d" % (t, n))
+    print("applied" if a.apply else "dry-run")
+    return 0
+
+
 def cmd_spend(a):
     migrate(a.db)
     conn = connect(a.db)
@@ -886,6 +937,10 @@ def build_parser():
     s = sub.add_parser("sweep-orphans"); s.set_defaults(func=cmd_sweep_orphans)
     s.add_argument("--max-age", type=int, dest="max_age")  # override the run-lifetime floor
     s.add_argument("--at", type=int)                        # `now` override (tests)
+
+    # #117: one-way delete of leaked test-fixture rows — dry-run unless --apply.
+    s = sub.add_parser("prune-fixtures"); s.set_defaults(func=cmd_prune_fixtures)
+    s.add_argument("--apply", action="store_true")
 
     s = sub.add_parser("spend"); s.set_defaults(func=cmd_spend)
     s.add_argument("--run", required=True)
