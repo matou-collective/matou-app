@@ -2936,30 +2936,7 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID, act
 		}
 		m := &plan.Milestones[i]
 		before := *m
-		if req.Title != nil {
-			m.Title = *req.Title
-		}
-		if req.Description != nil {
-			m.Description = *req.Description
-		}
-		if req.Duration != nil {
-			m.Duration = *req.Duration
-		}
-		if req.StartDate != nil {
-			m.StartDate = *req.StartDate
-		}
-		if req.EndDate != nil {
-			m.EndDate = *req.EndDate
-		}
-		if req.BudgetAllocation != nil {
-			m.BudgetAllocation = *req.BudgetAllocation
-		}
-		if req.SuccessCriteria != nil {
-			m.SuccessCriteria = req.SuccessCriteria
-		}
-		if req.Status != nil {
-			m.Status = MilestoneStatus(*req.Status)
-		}
+		applyMilestonePatch(m, req)
 		changes = diffMilestoneUpdate(before, req)
 		updated = m
 		break
@@ -2986,7 +2963,50 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID, act
 	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
 		return nil, err
 	}
+
+	// Milestones are persisted twice: inline in the plan (edited above) and as
+	// a standalone "milestone" store object. AddContribution refreshes the
+	// plan's inline copy from the standalone object, so an edit saved only to
+	// the plan is silently reverted the next time a contribution is added.
+	// Apply the same patch to the standalone object (mirrors ArchiveMilestone)
+	// so the two copies never diverge. See #770.
+	if standalone, getErr := s.GetMilestone(ctx, spaceID, milestoneID); getErr == nil {
+		applyMilestonePatch(standalone, req)
+		_ = s.store.Save(spaceID, standalone.MilestoneID, "milestone", standalone)
+	}
+
 	return updated, nil
+}
+
+// applyMilestonePatch applies patch-style field updates to a milestone.
+// Pointer fields are applied only when non-nil (partial update semantics).
+// Used for both the plan's inline milestone copy and the standalone store
+// object so the two never diverge.
+func applyMilestonePatch(m *Milestone, req *UpdateMilestoneRequest) {
+	if req.Title != nil {
+		m.Title = *req.Title
+	}
+	if req.Description != nil {
+		m.Description = *req.Description
+	}
+	if req.Duration != nil {
+		m.Duration = *req.Duration
+	}
+	if req.StartDate != nil {
+		m.StartDate = *req.StartDate
+	}
+	if req.EndDate != nil {
+		m.EndDate = *req.EndDate
+	}
+	if req.BudgetAllocation != nil {
+		m.BudgetAllocation = *req.BudgetAllocation
+	}
+	if req.SuccessCriteria != nil {
+		m.SuccessCriteria = req.SuccessCriteria
+	}
+	if req.Status != nil {
+		m.Status = MilestoneStatus(*req.Status)
+	}
 }
 
 // SubmitProjectCompletion transitions an active project to pending_completion
