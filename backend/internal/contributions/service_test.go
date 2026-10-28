@@ -998,6 +998,103 @@ func TestUpdateMilestone_PatchesFields(t *testing.T) {
 	}
 }
 
+// TestUpdateMilestone_SurvivesAddContribution guards against #770: editing a
+// milestone and then adding a contribution to it must not revert the edit.
+// The plan's inline milestone copy and the standalone milestone object must
+// stay in sync across both paths.
+func TestUpdateMilestone_SurvivesAddContribution(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+	ms, _ := svc.AddMilestone(ctx, spaceID, "u", &CreateMilestoneRequest{
+		ImplementationPlanID: plan.ID, Title: "Phase 1. Oct - Dec", Duration: "3 months",
+	})
+
+	newTitle := "Phase 1 — Discovery"
+	newDesc := "Scoping and research"
+	newDur := "2 months"
+	newStart := "2026-10-01"
+	newEnd := "2026-11-30"
+	newBudget := 12345.0
+	newCriteria := []string{"research done", "plan drafted"}
+	if _, err := svc.UpdateMilestone(ctx, spaceID, ms.MilestoneID, "editor-1", &UpdateMilestoneRequest{
+		Title:            &newTitle,
+		Description:      &newDesc,
+		Duration:         &newDur,
+		StartDate:        &newStart,
+		EndDate:          &newEnd,
+		BudgetAllocation: &newBudget,
+		SuccessCriteria:  newCriteria,
+	}); err != nil {
+		t.Fatalf("UpdateMilestone: %v", err)
+	}
+
+	// The standalone object must reflect the edit immediately.
+	standalone, err := svc.GetMilestone(ctx, spaceID, ms.MilestoneID)
+	if err != nil {
+		t.Fatalf("GetMilestone after edit: %v", err)
+	}
+	if standalone.Title != newTitle || standalone.StartDate != newStart || standalone.EndDate != newEnd || standalone.Duration != newDur {
+		t.Errorf("standalone not patched: title=%q start=%q end=%q dur=%q", standalone.Title, standalone.StartDate, standalone.EndDate, standalone.Duration)
+	}
+
+	// Add a contribution to the edited milestone — this is where the revert used to happen.
+	if _, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, MilestoneID: ms.MilestoneID, Title: "C1", Description: "d",
+		ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	}); err != nil {
+		t.Fatalf("CreateContribution: %v", err)
+	}
+
+	// The plan's inline copy must still reflect the edit.
+	gotPlan, _ := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	var inline *Milestone
+	for i := range gotPlan.Milestones {
+		if gotPlan.Milestones[i].MilestoneID == ms.MilestoneID {
+			inline = &gotPlan.Milestones[i]
+			break
+		}
+	}
+	if inline == nil {
+		t.Fatalf("milestone %s not found in plan", ms.MilestoneID)
+	}
+	if inline.Title != newTitle {
+		t.Errorf("inline title = %q, want %q", inline.Title, newTitle)
+	}
+	if inline.Description != newDesc {
+		t.Errorf("inline description = %q, want %q", inline.Description, newDesc)
+	}
+	if inline.Duration != newDur {
+		t.Errorf("inline duration = %q, want %q", inline.Duration, newDur)
+	}
+	if inline.StartDate != newStart {
+		t.Errorf("inline start_date = %q, want %q", inline.StartDate, newStart)
+	}
+	if inline.EndDate != newEnd {
+		t.Errorf("inline end_date = %q, want %q", inline.EndDate, newEnd)
+	}
+	if inline.BudgetAllocation != newBudget {
+		t.Errorf("inline budget_allocation = %v, want %v", inline.BudgetAllocation, newBudget)
+	}
+	if len(inline.SuccessCriteria) != len(newCriteria) {
+		t.Errorf("inline success_criteria = %v, want %v", inline.SuccessCriteria, newCriteria)
+	}
+
+	// The contribution ID must have landed on both copies.
+	if len(inline.ContributionIDs) != 1 {
+		t.Errorf("inline contribution_ids = %v, want 1 entry", inline.ContributionIDs)
+	}
+	standalone2, _ := svc.GetMilestone(ctx, spaceID, ms.MilestoneID)
+	if standalone2.Title != newTitle || len(standalone2.ContributionIDs) != 1 {
+		t.Errorf("standalone after add: title=%q contribs=%v", standalone2.Title, standalone2.ContributionIDs)
+	}
+}
+
 func TestSubmitProjectCompletion_RequiresAllSignedOff(t *testing.T) {
 	ctx := context.Background()
 	store := NewMockStore()
