@@ -126,6 +126,7 @@ import { ChevronDown, CheckCircle, Lock, AlertCircle, AlertTriangle, Plus, GripV
 import type { Milestone, Contribution } from 'src/types/projects';
 import { parseBudget, formatCurrency } from 'src/lib/milestoneBudget';
 import { sortSiblings } from 'src/lib/contributions/ordering';
+import { topLevelContributions } from 'src/lib/contributions/nesting';
 import ContributionCardCompact from './ContributionCardCompact.vue';
 
 interface Props {
@@ -169,7 +170,12 @@ const isExpanded = ref(true);
 
 const contributions = computed<Contribution[]>(
   () => sortSiblings(
-    ((props.milestone.contributions ?? []) as Contribution[]).filter(c => c.status !== 'archived'),
+    // Skip subs drawn nested under their parent so a sub that also carries a
+    // milestone_id does not show (and count) twice — once nested, once as its
+    // own top-level card (#773).
+    topLevelContributions(
+      ((props.milestone.contributions ?? []) as Contribution[]).filter(c => c.status !== 'archived'),
+    ),
   ),
 );
 

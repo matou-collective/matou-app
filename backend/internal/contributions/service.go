@@ -1505,6 +1505,16 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 
 	deadline := ParseDeadline(req.Deadline)
 
+	// Sub-contributions carry no milestone_id — they resolve their milestone
+	// through their parent. A sub that also carries one is added to the
+	// milestone's contribution list and so shows twice on the plan page: once
+	// nested under its parent and once as its own top-level card (#773). Ignore
+	// milestone_id when a parent is given so that never happens.
+	milestoneID := req.MilestoneID
+	if req.ParentContributionID != "" {
+		milestoneID = ""
+	}
+
 	// For sub-contributions, inherit the parent's assignee when the request
 	// doesn't supply one. Mirrors the propagateOfferToChildren path that
 	// fires when the parent transitions to assigned, but applies at sub
@@ -1534,7 +1544,7 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 		Deliverables:          req.Deliverables,
 		AcceptanceCriteria:    req.AcceptanceCriteria,
 		SkillRequirements:     req.SkillRequirements,
-		MilestoneID:           req.MilestoneID,
+		MilestoneID:           milestoneID,
 		ParentContributionID:  req.ParentContributionID,
 		AssignedContributorID: assignedContributorID,
 		EstimatedDuration:     req.EstimatedDuration,

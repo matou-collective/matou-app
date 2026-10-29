@@ -649,6 +649,7 @@ import { useContributionWorkflow } from 'src/composables/useContributionWorkflow
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import ProjectForm from 'src/components/projects/ProjectForm.vue';
 import MilestoneCard from 'src/components/projects/MilestoneCard.vue';
+import { topLevelContributions } from 'src/lib/contributions/nesting';
 import MilestoneFormDialog from 'src/components/projects/MilestoneFormDialog.vue';
 import AssignRoleDialog from 'src/components/projects/AssignRoleDialog.vue';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
@@ -1019,19 +1020,26 @@ const planContributions = computed<Contribution[]>(() => {
   return list.filter((c) => c.status !== 'archived');
 });
 
+// Top-level contributions only: a sub shown nested under its parent must not
+// inflate the plan's contribution count, confirmation progress or sign-off
+// readiness, even when it wrongly carries a milestone_id (#773).
+const topLevelPlanContributions = computed(() =>
+  topLevelContributions(planContributions.value),
+);
+
 const confirmedCount = computed(
-  () => planContributions.value.filter((c) => c.status === 'confirmed').length,
+  () => topLevelPlanContributions.value.filter((c) => c.status === 'confirmed').length,
 );
 
 const confirmationProgress = computed(() => {
-  const total = planContributions.value.length;
+  const total = topLevelPlanContributions.value.length;
   return total > 0 ? confirmedCount.value / total : 0;
 });
 
 const allContributionsConfirmed = computed(
   () =>
-    planContributions.value.length > 0 &&
-    planContributions.value.every((c) => c.status === 'confirmed'),
+    topLevelPlanContributions.value.length > 0 &&
+    topLevelPlanContributions.value.every((c) => c.status === 'confirmed'),
 );
 
 const canSignOffPlan = computed(
@@ -1357,7 +1365,7 @@ async function handleAddMilestone(req: CreateMilestoneRequest | UpdateMilestoneR
 
 function handleSignOffPlan() {
   if (!project.value || !implementationPlan.value) return;
-  const unconfirmed = planContributions.value.filter((c) => c.status !== 'confirmed').length;
+  const unconfirmed = topLevelPlanContributions.value.filter((c) => c.status !== 'confirmed').length;
   if (unconfirmed > 0) {
     signOffUnconfirmedCount.value = unconfirmed;
     showSignOffConfirm.value = true;

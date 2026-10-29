@@ -534,6 +534,80 @@ func TestService_CreateContribution(t *testing.T) {
 	}
 }
 
+// A sub-contribution created with both a parent and a milestone_id must drop
+// the milestone_id: subs resolve their milestone through their parent, and a
+// sub left in the milestone's contribution list shows (and counts) twice on
+// the plan page — once nested, once as a top-level card (#773).
+func TestService_CreateContribution_SubDropsMilestoneID(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+
+	ip, _ := svc.CreateImplementationPlan(ctx, "space-1", &CreateImplementationPlanRequest{
+		ProjectID: "proj-1", TotalBudget: "$1",
+		ProjectLeadID: "lead-1", ProjectStewardID: "steward-1",
+	})
+	ms, _ := svc.AddMilestone(ctx, "space-1", "lead-1", &CreateMilestoneRequest{
+		ImplementationPlanID: ip.ID, Title: "Phase", Duration: "1 week",
+	})
+
+	parent, err := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Parent", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityMedium,
+		CreatedBy: "lead-1", Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		MilestoneID: ms.MilestoneID,
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	sub, err := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Sub", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityMedium,
+		CreatedBy: "lead-1", Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		// Both supplied — the milestone_id must be ignored.
+		ParentContributionID: parent.ID,
+		MilestoneID:          ms.MilestoneID,
+	})
+	if err != nil {
+		t.Fatalf("create sub: %v", err)
+	}
+
+	if sub.MilestoneID != "" {
+		t.Errorf("sub should carry no milestone_id, got %q", sub.MilestoneID)
+	}
+
+	// The milestone's top-level list holds only the parent, not the sub.
+	refreshed, err := svc.GetMilestone(ctx, "space-1", ms.MilestoneID)
+	if err != nil {
+		t.Fatalf("get milestone: %v", err)
+	}
+	for _, id := range refreshed.ContributionIDs {
+		if id == sub.ID {
+			t.Errorf("sub %s must not be in milestone.ContributionIDs %v", sub.ID, refreshed.ContributionIDs)
+		}
+	}
+	if len(refreshed.ContributionIDs) != 1 || refreshed.ContributionIDs[0] != parent.ID {
+		t.Errorf("milestone should list only the parent, got %v", refreshed.ContributionIDs)
+	}
+
+	// The sub is still nested under its parent.
+	refreshedParent, err := svc.GetContribution(ctx, "space-1", parent.ID)
+	if err != nil {
+		t.Fatalf("get parent: %v", err)
+	}
+	found := false
+	for _, id := range refreshedParent.ChildContributionIDs {
+		if id == sub.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("sub %s should be nested under parent, children %v", sub.ID, refreshedParent.ChildContributionIDs)
+	}
+}
+
 func TestService_ContributionLifecycle(t *testing.T) {
 	svc := NewService(NewMockStore())
 	ctx := context.Background()
