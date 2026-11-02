@@ -19,6 +19,7 @@ import {
   rewardContribution as apiReward,
   createChildContribution as apiCreateChild,
   approveSub as apiApproveSub,
+  promoteSubContribution as apiPromoteSub,
   archiveContribution as apiArchiveContrib,
   unassignContribution as apiUnassign,
   reorderContributions as apiReorder,
@@ -315,6 +316,37 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  /**
+   * Promote a sub-contribution to a top-level contribution in its parent
+   * chain's milestone. Patches the returned (now parent-less) contribution and
+   * drops it from its former parent's child list so views update immediately;
+   * the page also refetches the plan to pick up the milestone's new member.
+   */
+  async function promoteSub(id: string) {
+    error.value = null;
+    try {
+      const formerParentId = contributions.value.find(c => c.id === id)?.parent_contribution;
+      const updated = await apiPromoteSub(id);
+      if (formerParentId) {
+        const parentIdx = contributions.value.findIndex(c => c.id === formerParentId);
+        if (parentIdx >= 0) {
+          const parent = contributions.value[parentIdx];
+          if (parent?.child_contributions) {
+            contributions.value[parentIdx] = {
+              ...parent,
+              child_contributions: parent.child_contributions.filter(cid => cid !== id),
+            };
+          }
+        }
+      }
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Promote sub-contribution failed';
+      throw e;
+    }
+  }
+
   async function archive(id: string) {
     error.value = null;
     try {
@@ -438,6 +470,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     reward,
     createChild,
     approveSub,
+    promoteSub,
     archive,
     unassign,
     reorder,
