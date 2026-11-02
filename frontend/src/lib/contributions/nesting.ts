@@ -34,3 +34,26 @@ export function topLevelContributions<T extends NestableContribution>(all: T[]):
   }
   return all.filter((c) => !(c.parent_contribution && ids.has(c.parent_contribution)));
 }
+
+/** Minimal shape needed to decide whether a contribution sits in a milestone. */
+export interface AssignableContribution extends NestableContribution {
+  milestone_id?: string;
+  status?: string;
+}
+
+/**
+ * The plan draft's holding area (#777): top-level, non-archived contributions
+ * that carry no `milestone_id` — captured while drafting but not yet placed in
+ * a milestone.
+ *
+ * Sub-contributions carry no `milestone_id` of their own (they resolve their
+ * milestone through their parent), so they would otherwise look "unassigned".
+ * topLevelContributions drops any sub whose parent is present in the list —
+ * and the plan page feeds the whole project's contributions in, so a parent is
+ * always present — keeping subs out of the holding area and shown only nested
+ * under their parent.
+ */
+export function unassignedContributions<T extends AssignableContribution>(all: T[]): T[] {
+  const live = all.filter((c) => c.status !== 'archived');
+  return topLevelContributions(live).filter((c) => !c.milestone_id);
+}
