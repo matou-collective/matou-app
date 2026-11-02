@@ -216,6 +216,15 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "move":
+				if r.Method == http.MethodPost {
+					h.withProjectRBAC(contributions.ActionReorderContribution, id, func(w http.ResponseWriter, r *http.Request) {
+						h.HandleMove(w, r, id)
+					})(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			case "comments":
 				switch r.Method {
 				case http.MethodGet:
@@ -1244,6 +1253,44 @@ func (h *ContributionsHandler) HandleReorder(w http.ResponseWriter, r *http.Requ
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"contributions": reordered, "total": len(reordered)})
+}
+
+// HandleMove handles POST /api/v1/contributions/{id}/move.
+// It relocates a top-level contribution to a different milestone within the
+// same implementation plan. The request body carries the target milestone id.
+// RBAC: ActionReorderContribution (lead/steward, project-scoped) — the same
+// scope as reorder, since a move is a structural plan edit.
+func (h *ContributionsHandler) HandleMove(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		MilestoneID string `json:"milestone_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if body.MilestoneID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "milestone_id is required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	actorID := GetUserAID(r)
+	if actorID == "" {
+		actorID = r.Header.Get("X-User-AID")
+	}
+	moved, err := h.service.MoveContributionToMilestone(r.Context(), spaceID, id, body.MilestoneID, actorID)
+	if err != nil {
+		log.Printf("[Contributions] move failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] moved %s to milestone %s", id, body.MilestoneID)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:moved",
+			Data: map[string]string{"contribution_id": id, "milestone_id": body.MilestoneID},
+		})
+	}
+	writeJSON(w, http.StatusOK, moved)
 }
 
 // transitionGuardAction returns the stricter Action required to move a

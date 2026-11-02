@@ -2895,6 +2895,124 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, a
 	return firstErr
 }
 
+// MoveContributionToMilestone relocates a top-level contribution from its
+// current milestone to targetMilestoneID within the same implementation plan.
+//
+// A contribution's milestone membership lives in three places that must stay
+// consistent: the contribution's MilestoneID, each milestone's standalone
+// ContributionIDs list, and the plan's inline milestone copies. This updates
+// all three — the contribution is removed from the source milestone and
+// appended to the end of the target milestone, its SortOrder is reset to the
+// end of the target group, and the source group's remaining siblings are
+// renumbered so their order stays contiguous. A move is a structural change,
+// so it invalidates the plan's sign-off (mirroring the contribution-edit path)
+// and records a contribution_moved change-log entry.
+//
+// Sub-contributions have no milestone of their own (they resolve it through
+// their parent) and are rejected. A move to the contribution's current
+// milestone is a no-op. Moving between milestones of different plans is
+// rejected.
+func (s *Service) MoveContributionToMilestone(ctx context.Context, spaceID, contribID, targetMilestoneID, actorID string) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contribID)
+	if err != nil {
+		return nil, fmt.Errorf("load contribution: %w", err)
+	}
+	if c.ParentContributionID != "" {
+		return nil, fmt.Errorf("cannot move a sub-contribution between milestones")
+	}
+	if targetMilestoneID == "" {
+		return nil, fmt.Errorf("target milestone id required")
+	}
+	if c.MilestoneID == targetMilestoneID {
+		return c, nil // already there — no-op
+	}
+
+	target, err := s.GetMilestone(ctx, spaceID, targetMilestoneID)
+	if err != nil {
+		return nil, fmt.Errorf("load target milestone: %w", err)
+	}
+
+	var source *Milestone
+	sourceTitle := ""
+	if c.MilestoneID != "" {
+		source, err = s.GetMilestone(ctx, spaceID, c.MilestoneID)
+		if err != nil {
+			return nil, fmt.Errorf("load source milestone: %w", err)
+		}
+		if source.ImplementationPlanID != target.ImplementationPlanID {
+			return nil, fmt.Errorf("cannot move a contribution between milestones of different plans")
+		}
+		sourceTitle = source.Title
+	}
+
+	// Remove from the source milestone's membership list, then renumber its
+	// remaining siblings so their order stays contiguous.
+	if source != nil {
+		filtered := make([]string, 0, len(source.ContributionIDs))
+		for _, id := range source.ContributionIDs {
+			if id != c.ID {
+				filtered = append(filtered, id)
+			}
+		}
+		source.ContributionIDs = filtered
+		if err := s.store.Save(spaceID, source.MilestoneID, "milestone", source); err != nil {
+			return nil, fmt.Errorf("save source milestone: %w", err)
+		}
+		s.renumberSiblings(ctx, spaceID, source.ContributionIDs)
+	}
+
+	// Append to the target milestone and give the contribution its new milestone
+	// plus an end-of-group sort order.
+	next := s.nextSortOrder(ctx, spaceID, target.ContributionIDs)
+	target.ContributionIDs = append(target.ContributionIDs, c.ID)
+	if err := s.store.Save(spaceID, target.MilestoneID, "milestone", target); err != nil {
+		return nil, fmt.Errorf("save target milestone: %w", err)
+	}
+
+	c.MilestoneID = targetMilestoneID
+	c.SortOrder = &next
+	if err := s.SaveContribution(ctx, spaceID, c); err != nil {
+		return nil, fmt.Errorf("save contribution: %w", err)
+	}
+
+	// Refresh both inline plan milestone copies from the standalone objects so
+	// the plan view and a fresh read agree (mirrors CreateContribution), then
+	// invalidate sign-off and record the move on the change log.
+	if plan, planErr := s.GetImplementationPlan(ctx, spaceID, target.ImplementationPlanID); planErr == nil {
+		for i := range plan.Milestones {
+			if source != nil && plan.Milestones[i].MilestoneID == source.MilestoneID {
+				plan.Milestones[i] = *source
+			}
+			if plan.Milestones[i].MilestoneID == target.MilestoneID {
+				plan.Milestones[i] = *target
+			}
+		}
+		if plan.SignedOff {
+			plan.SignedOff = false
+			plan.Proof = nil // invalidated sign-off must not keep a live-looking proof
+		}
+		appendPlanChange(plan, PlanChangeEntry{
+			Kind:              "contribution_moved",
+			MilestoneID:       target.MilestoneID,
+			MilestoneTitle:    target.Title,
+			ContributionID:    c.ID,
+			ContributionTitle: c.Title,
+			Changes: []FieldChange{{
+				Field:    "milestone",
+				OldValue: sourceTitle,
+				NewValue: target.Title,
+			}},
+			ChangedBy: actorID,
+		})
+		plan.UpdatedAt = time.Now()
+		if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
+			return nil, fmt.Errorf("save plan: %w", err)
+		}
+	}
+
+	return c, nil
+}
+
 // UnassignContribution clears the assignee and reverts the contribution status to
 // confirmed. Only allowed when the current status is "assigned".
 func (s *Service) UnassignContribution(ctx context.Context, spaceID, contribID string) (*Contribution, error) {

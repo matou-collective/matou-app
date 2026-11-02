@@ -22,6 +22,7 @@ import {
   archiveContribution as apiArchiveContrib,
   unassignContribution as apiUnassign,
   reorderContributions as apiReorder,
+  moveContribution as apiMove,
   addContributionComment as apiAddComment,
   listContributionComments as apiListComments,
   type Contribution,
@@ -360,6 +361,18 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  async function move(id: string, milestoneId: string) {
+    error.value = null;
+    try {
+      const updated = await apiMove(id, milestoneId);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Move failed';
+      throw e;
+    }
+  }
+
   const commentsByContribution = ref<Record<string, ContributionComment[]>>({});
 
   async function fetchComments(contributionId: string) {
@@ -441,6 +454,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     archive,
     unassign,
     reorder,
+    move,
     commentsByContribution,
     fetchComments,
     addComment,
