@@ -26,8 +26,35 @@
 _forgejo_get() { curl -sf --max-time 30 -H "Authorization: token ${FORGEJO_TOKEN:-}" "$@"; }
 _forgejo_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 30 -H "Authorization: token ${FORGEJO_TOKEN:-}" "$@"; }
 
-forgejo_get() { # forgejo_get <path-suffix> -> body on stdout | rc = curl's
-  _forgejo_get "$FORGEJO_API$1"
+# Bounded retry for the GET path (idss #2048 — the API half of #1411, which gave
+# every GIT-transport surface retry-with-backoff but left this one bare). The
+# app-report triage stage makes ~11 sequential GETs (labels + issue pages +
+# per-report comments), so a sub-minute Forgejo latency spike or 5xx reddened a
+# whole tick with near-certainty — each un-retried call died under `set -e` on
+# curl's non-zero rc. A GET is idempotent, so riding out a blip is safe; each
+# attempt is still bounded by _forgejo_get's `--max-time`, and a SUSTAINED outage
+# still exhausts the attempts and dies loud (the caller's verdict then names the
+# stage), exactly as before — just not on the first spike.
+#
+# The retry lives HERE, on the public GET, NEVER in _forgejo_get: forgejo_post
+# and forgejo_attach_issue_asset_url route a POST through the same _forgejo_get
+# helper, and a retried POST would double-post a comment or an asset. POSTs are
+# never retried.
+FORGEJO_GET_RETRIES="${FORGEJO_GET_RETRIES:-3}"
+FORGEJO_GET_BACKOFF="${FORGEJO_GET_BACKOFF:-2}"
+
+forgejo_get() { # forgejo_get <path-suffix> -> body on stdout | rc = curl's (transient GETs retried — #2048)
+  local attempt=1 delay="$FORGEJO_GET_BACKOFF" out rc=0
+  while :; do
+    # Capture-then-emit so the loop sees curl's rc without aborting under the
+    # caller's errexit. $(...) strips a trailing newline, but every consumer
+    # pipes the body through jq (newline-insensitive), matching how callers
+    # already wrap this in their own $(...).
+    out="$(_forgejo_get "$FORGEJO_API$1")" && { printf '%s' "$out"; return 0; }
+    rc=$?
+    [ "$attempt" -ge "$FORGEJO_GET_RETRIES" ] && return "$rc"
+    sleep "$delay"; delay=$((delay * 2)); attempt=$((attempt + 1))
+  done
 }
 
 forgejo_post() { # forgejo_post <path-suffix> <json-body> -> body on stdout | rc = curl's
@@ -275,6 +302,11 @@ forgejo_repo_default_merge_style() { # forgejo_repo_default_merge_style -> the r
 # backoff, each attempt bounded by _forgejo_get's `--max-time`. A sustained
 # outage still exhausts the attempts and reds, but names TRANSPORT, never a
 # permission verdict it never actually read.
+#
+# This loop keeps its OWN retry (and its own knobs/accounting) and so calls the
+# low-level _forgejo_get directly, NOT forgejo_get — forgejo_get now retries too
+# (idss #2048), and nesting the two would multiply the attempts and the
+# worst-case preflight latency. One retry locus per call path.
 FORGEJO_PROBE_RETRIES="${FORGEJO_PROBE_RETRIES:-3}"
 FORGEJO_PROBE_BACKOFF="${FORGEJO_PROBE_BACKOFF:-2}"
 
@@ -291,7 +323,7 @@ forgejo_issue_write_probe() { # forgejo_issue_write_probe -> rc 0 if the bot has
   # permission gap as a clean close.
   local resp push attempt=1 delay="$FORGEJO_PROBE_BACKOFF"
   while :; do
-    resp="$(forgejo_get "")" && break
+    resp="$(_forgejo_get "$FORGEJO_API")" && break
     if [ "$attempt" -ge "$FORGEJO_PROBE_RETRIES" ]; then
       echo "forgejo: repo probe GET failed after $attempt attempt(s) — $(forgejo_repo_slug) is unreachable or 5xx-ing; this is TRANSPORT, not a permission verdict (the bot's write access was never read)"
       return 1

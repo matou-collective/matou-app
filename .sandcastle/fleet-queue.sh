@@ -66,14 +66,24 @@ if [ "$mode" = tick ]; then
     echo "fleet-queue: a rehearsal drive has reserved host capacity — not dispatching while it waits"
     exit 0
   fi
-  fleet_queue_slot_free || exit 0     # both pooled slots busy: silent, the slot's own run re-arms
+  fleet_queue_slot_free || exit 0     # both pooled slots busy (or no disk headroom): silent, the slot's own run re-arms
   if stamp="$(fleet_queue_stamp_fresh)"; then
     set -- $stamp
     echo "fleet-queue: dispatched $1#$2 ${3}s ago — waiting for that leg to claim before picking again"
     exit 0
   fi
+  # A sick host whose dispatches die before they claim stands itself down with a
+  # decaying backoff (#315) rather than re-dispatching the same ticket forever.
+  if standdown="$(fleet_queue_standdown)"; then
+    set -- $standdown
+    echo "fleet-queue: $host has $1 consecutive unclaimed dispatch(es) — backing off ${2}s before probing the fleet again"
+    exit 0
+  fi
 fi
 
+# A finishing run (after-close / rearm) on THIS host is proof it can start and
+# claim: clear any accumulated unclaimed-dispatch strikes so it rejoins at once.
+case "$mode" in after-close|rearm) fleet_queue_strike_reset ;; esac
 [ "$mode" = after-close ] && fleet_queue_recent_close_record "$closed_slug" "$closed_n"
 
 # ── the fleet order ────────────────────────────────────────────────────────
@@ -111,6 +121,26 @@ fi
 why="fleet head"
 if jq -e --arg s "$head_slug" --argjson n "$head_n" 'any(.[]; .repo == $s and .number == $n)' <<<"$deps" >/dev/null; then
   why="dependant of $promoted_for"
+fi
+
+# Strike accounting (#315, tick only): if the ticket we last dispatched to this
+# host is STILL the fleet head, that dispatch never claimed — a healthy claim
+# would have moved the head. Count a strike (the stand-down gate above reads the
+# running total next tick); any other head resets the streak.
+if [ "$mode" = tick ]; then
+  if last_dispatch="$(fleet_queue_stamp_ticket)" && [ "$last_dispatch" = "$head_slug $head_n" ]; then
+    n="$(fleet_queue_strike_bump)"
+    echo "fleet-queue: $host's last dispatch of $head_slug#$head_n never claimed (strike $n)" >&2
+    # The strike just counted may have reached the threshold: stand down now
+    # rather than firing one more dispatch this host cannot claim (#315).
+    if standdown="$(fleet_queue_standdown)"; then
+      set -- $standdown
+      echo "fleet-queue: $host has $1 consecutive unclaimed dispatch(es) — backing off ${2}s before probing the fleet again"
+      exit 0
+    fi
+  else
+    fleet_queue_strike_reset
+  fi
 fi
 
 if [ "$mode" = pick ]; then

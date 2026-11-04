@@ -14,6 +14,10 @@ body_outside_fences() { # body_outside_fences <issue-body> -> the body minus eve
   jq -Rrs -L "$__body_marker_lib_here" 'include "body-marker"; outside_fences' <<<"${1:-}"
 }
 
+body_marker_text() { # body_marker_text <issue-body> -> the text a marker may be read from (outside fences AND inline code spans)
+  jq -Rrs -L "$__body_marker_lib_here" 'include "body-marker"; outside_markup' <<<"${1:-}"
+}
+
 body_marker() { # body_marker <issue-body> <key> -> the first `<!-- key: value -->` outside fences, trimmed; empty when absent
   jq -Rrs -L "$__body_marker_lib_here" --arg k "$2" 'include "body-marker"; marker($k)' <<<"${1:-}"
 }

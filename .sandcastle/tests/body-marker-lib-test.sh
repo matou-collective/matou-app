@@ -73,4 +73,33 @@ pass=$((pass+1))
 [ -z "$(origin_marker $'````\n<!-- origin: app-report #5 -->\n````')" ] || fail "origin: inside a fence is no marker"
 pass=$((pass+1))
 
+# 9: an inline code span is literal text, not a comment — a marker QUOTED in
+#    backticks (an agent reporting on another ticket's marker) is no marker.
+#    Seen live 2026-11-03: idss #2036's body said "#1819 carries
+#    `<!-- origin: app-report -->`", and the landing tripwire's leg 2 read it as
+#    #2036's own origin and red every push to main.
+[ -z "$(origin_marker 'x carries `<!-- origin: app-report -->` but no label')" ] \
+  || fail "code span: a marker quoted in single backticks must NOT be honoured"
+[ -z "$(body_marker 'a ``x ` <!-- session-host: evil --> y`` b' session-host)" ] \
+  || fail "code span: a double-backtick span holding a lone backtick still hides its marker"
+[ "$(body_marker 'see `x` then <!-- session-host: real -->' session-host)" = "real" ] \
+  || fail "code span: a bare marker after an unrelated code span on the same line must still parse"
+[ "$(body_marker $'quoted `<!-- session-host: evil -->`\n<!-- session-host: real -->' session-host)" = "real" ] \
+  || fail "code span: the first marker OUTSIDE a code span must win over a quoted one"
+[ "$(body_marker 'an `unclosed span <!-- session-host: real -->' session-host)" = "real" ] \
+  || fail "code span: an unmatched backtick opens no span (CommonMark), so the marker stands"
+# session_host_marker reads through body_marker_text, not marker() — it
+# must inherit the same rule (sourced in a subshell: it is its own lib).
+[ -z "$(. "$here/../session-host-lib.sh"; session_host_marker 'q `<!-- session-host: evil -->`')" ] \
+  || fail "code span: session_host_marker must not honour a quoted marker either"
+[ "$(origin_marker '<!-- origin: app-report -->')" = "report" ] || fail "code span: a bare marker still parses"
+# A stripped span must not SPLICE a marker out of the text on either side.
+[ -z "$(body_marker '<!-- `x` session-host: evil -->' session-host)" ] \
+  || fail "code span: removing a span must not join its neighbours into a marker"
+# ...but body_outside_fences (the reference scan's text) KEEPS code spans: a
+# descendant citing its root as `#1701` must still be found and inherit.
+[ "$(body_outside_fences 'from `#1701` here')" = 'from `#1701` here' ] \
+  || fail "code span: body_outside_fences must keep inline code (reference scans over-include by design)"
+pass=$((pass+1))
+
 echo "body-marker-lib-test: $pass groups passed"

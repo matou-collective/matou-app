@@ -32,6 +32,13 @@ git init -q "$work/wd"
 # own SWARM_POLICY_FILE via "$@", which env honours over this default.
 printf 'LANDING=push\n' > "$work/policy-push-default.sh"
 export SWARM_POLICY_FILE="$work/policy-push-default.sh"
+# #2048: pin the runner-journal unit + the per-repo workdir lock to hermetic,
+# absent paths so the DEFAULT scenarios never read matou-workstation's real
+# forgejo-runner-swarm journal or a stray /tmp workdir lock. The AC3/AC4
+# scenarios at the end override these deliberately. Exported once so every
+# `env ... bash heal.sh` block inherits them (none of them -u these).
+export HEAL_RUNNER_UNIT="heal-test-no-such-runner.service"
+export HEAL_WORKDIR_LOCK="$work/absent-workdir-lock"
 echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
 
 run_heal() {
@@ -847,7 +854,7 @@ cat > "$work/capture-agent.sh" <<'EOF'
 #!/usr/bin/env bash
 ev="$(printf '%s' "$1" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
 mkdir -p "${CAPDIR:?}"
-cp "$ev/worker-logs.txt" "$ev/run-verdict.txt" "$ev/healer-host.txt" "$CAPDIR/" 2>/dev/null || true
+cp "$ev/worker-logs.txt" "$ev/run-verdict.txt" "$ev/healer-host.txt" "$ev/runner-journal.txt" "$CAPDIR/" 2>/dev/null || true
 cat > "$ev/diagnosis.md" <<'D'
 CLASS: harness-infra
 CONFIDENCE: high
@@ -1254,4 +1261,60 @@ PY
   rm -f "$dbd"
 fi
 
-echo "heal.sh: 30 scenarios passed"
+# --- #2048 AC3: the healer reads the runner's REAL systemd unit ---------------
+# The unit varies by pool host; this one is `forgejo-runner-swarm.service`, not
+# the bare `forgejo-runner` the healer hardcoded — so runner-journal.txt came
+# back EMPTY on every incident, and that journal is exactly what named the host
+# and the degraded window in the 2026-10-16 latency incident. Shim systemd so
+# detection resolves the swarm unit and journals it; the bare name yields
+# nothing (the old bug).
+shimdir="$(mktemp -d)"
+cat > "$shimdir/systemctl" <<'EOF'
+#!/usr/bin/env bash
+# list-units for the forgejo-runner glob → the swarm unit (real-ish output shape)
+printf '  forgejo-runner-swarm.service loaded active running Forgejo Actions runner (swarm)\n'
+EOF
+cat > "$shimdir/journalctl" <<'EOF'
+#!/usr/bin/env bash
+# emit a journal line ONLY for the swarm unit; the bare `forgejo-runner` the
+# healer used to query yields nothing — exactly the EMPTY bundle this fixes.
+unit=""; prev=""
+for a in "$@"; do [ "$prev" = -u ] && unit="$a"; prev="$a"; done
+case "$unit" in
+  forgejo-runner-swarm*) echo 'Oct 16 12:36:39 pool-host forgejo-runner[2547855]: level=error msg="failed to fetch task: deadline exceeded"' ;;
+  *) : ;;
+esac
+EOF
+chmod +x "$shimdir/systemctl" "$shimdir/journalctl"
+rm -rf "$work/state"; mkdir -p "$work/state"
+rm -f "$work/wd/.sandcastle/logs/"*.log
+capdir="$work/ev-runner-journal"; rm -rf "$capdir"
+# HEAL_RUNNER_UNIT= (empty) re-enables detection; PATH shims systemd.
+run_heal HEAL_RUNNER_UNIT= PATH="$shimdir:$PATH" \
+  HEAL_AGENT_CMD="bash $work/capture-agent.sh" CAPDIR="$capdir" SWARM_HOST=box9 >/dev/null 2>&1 || true
+grep -q "failed to fetch task: deadline exceeded" "$capdir/runner-journal.txt" 2>/dev/null \
+  || fail "#2048 AC3: runner-journal.txt must carry the forgejo-runner-swarm journal (got: $(cat "$capdir/runner-journal.txt" 2>/dev/null))"
+grep -q "runner unit: forgejo-runner-swarm" "$capdir/runner-journal.txt" 2>/dev/null \
+  || fail "#2048 AC3: the healer must resolve the forgejo-runner-swarm unit, not the bare forgejo-runner (got: $(cat "$capdir/runner-journal.txt" 2>/dev/null))"
+rm -rf "$shimdir"
+
+# --- #2048 AC4: a fault that ran HERE is not blamed on another pool host ------
+# "no fresh worker log + no fresh verdict" alone used to print "ran on another
+# swarm pool host (healer-host: <this box>)" — the 2026-10-16 incident filed
+# exactly that for a leg that provably ran on the SAME box. A fresh workdir lock
+# is local evidence the job ran here, so the healer must name a pre-Sandcastle
+# fault this host owns instead.
+rm -rf "$work/state"; mkdir -p "$work/state"
+rm -f "$work/wd/.sandcastle/logs/"*.log          # no local worker log
+lockfresh="$work/workdir-lock-fresh"; : > "$lockfresh"   # fresh mtime == a local checkout this window
+capdir="$work/ev-ran-here"; rm -rf "$capdir"
+run_heal HEAL_WORKDIR_LOCK="$lockfresh" \
+  HEAL_AGENT_CMD="bash $work/capture-agent.sh" CAPDIR="$capdir" SWARM_HOST=box9 >/dev/null 2>&1 || true
+grep -q "ran on another swarm pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  && fail "#2048 AC4: a job that ran HERE (fresh workdir lock) must NOT be blamed on another pool host (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
+grep -q "THIS repo's job ran on this host" "$capdir/worker-logs.txt" 2>/dev/null \
+  || fail "#2048 AC4: the healer must name the pre-Sandcastle local fault instead (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
+grep -q "ran on another swarm pool host" "$capdir/no-local-evidence.txt" 2>/dev/null \
+  && fail "#2048 AC4: the pool-host line must not leak into no-local-evidence.txt either"
+
+echo "heal.sh: 32 scenarios passed"

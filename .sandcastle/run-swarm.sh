@@ -193,7 +193,7 @@ on_exit() {
   verify_watch_stop
   [ -n "$worker_births" ] && rm -f "$worker_births" 2>/dev/null || true
   [ -n "${sandcastle_attempts:-}" ] && rm -f "$sandcastle_attempts" 2>/dev/null || true   # #283 attempt capture
-  rm -rf "${VERIFY_PP_BEFORE:-}" "${VERIFY_PP_AFTER:-}" 2>/dev/null || true   # #445 snapshots
+  rm -rf "${VERIFY_PP_RUNDIR:-}" "${VERIFY_PP_BEFORE:-}" "${VERIFY_PP_AFTER:-}" 2>/dev/null || true   # #445 snapshots (#761: one per-run dir holds both)
   verdict_write "$ec"
   # Stamp the executing host onto the on-failure verdict (#135). verdict_write
   # only wrote a file on a NON-zero exit, so a clean run leaves none and this is
@@ -341,10 +341,12 @@ ready="$(cat "$pick_file")"; rm -f "$pick_file"
 ready_nums="$(schedule_ready_nums "$ready")"; n="$(schedule_ready_count "$ready")"
 swarmdb_event "$run_db_id" "" ready-set "$n ready task(s)" "[$ready_nums]"
 # Label the host-capacity slot the workflow won for this run (slot-aware
-# fleet). The workflow holds the flock inline and exports the path; the issue
-# is not known here (claims happen in the sandbox), so ref=run and the fleet
-# monitor reads the issue from this run's swarm.db attempts.
-host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket run "$repo_slug" swarm-worker "$run_db_id"
+# fleet). The workflow holds the flock inline and exports the path. A fleet
+# pick (#301) IS the ticket this run works, so ref names it and the Floor shows
+# the ticket on its slot from claim time — swarm.db attempts land only at run
+# END. With no pick (no fleet view) the claim happens in the sandbox, so
+# ref=run and the monitor resolves the issue from the run's ready-set/attempts.
+host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket "${SCHEDULE_FLEET_PICK:-run}" "$repo_slug" swarm-worker "$run_db_id"
 
 stamp="$(schedule_stamp_path "$repo_tag")"
 # #213: fold origin/main's head SHA into the debounce digest so a landed fix on

@@ -153,13 +153,14 @@ pass=$((pass+1))
 
 # A non-executable .sandcastle/go-gate.sh is NOT honoured: with no GATE_GO_CMD
 # and no nix it still fails closed (an un-lintable Go change never ships).
-if ! command -v nix >/dev/null 2>&1; then
-  chmod -x "$gateroot/.sandcastle/go-gate.sh"
-  rc=0
-  gate_go_stage "$gateroot" 2>/dev/null || rc=$?
-  [ "$rc" -ne 0 ] || fail "a non-executable .sandcastle/go-gate.sh must not satisfy the gate — fail closed"
-  pass=$((pass+1))
-fi
+# GATE_NO_NIX=1 forces the no-toolchain path so this runs on a nix host too — the
+# `command -v nix` skip it replaces made the fail-closed arms green locally and
+# red on CI (#314).
+chmod -x "$gateroot/.sandcastle/go-gate.sh"
+rc=0
+GATE_NO_NIX=1 gate_go_stage "$gateroot" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a non-executable .sandcastle/go-gate.sh must not satisfy the gate — fail closed"
+pass=$((pass+1))
 rm -rf "$gateroot"
 
 # --- per-repo override: an executable .sandcastle/ts-gate.sh runs (#1252) -----
@@ -203,27 +204,33 @@ pass=$((pass+1))
 
 # Fail-closed: a TS change with no GATE_TS_CMD, no ts-gate.sh and no nix blocks
 # the push — a TS change that cannot be linted never ships un-linted (#1252).
-if ! command -v nix >/dev/null 2>&1; then
-  rm -f "$tsroot/.sandcastle/ts-gate.sh"
-  rc=0
-  gate_ts_stage "$tsroot" 2>/dev/null || rc=$?
-  [ "$rc" -ne 0 ] || fail "a TS change with no toolchain must fail closed, not ship un-linted"
-  pass=$((pass+1))
-  rc=0
-  printf 'dashboard/src/x.ts\n' | gate_run "$PWD" 2>/dev/null || rc=$?
-  [ "$rc" -ne 0 ] || fail "gate_run must fail closed on an un-lintable TS change"
-  pass=$((pass+1))
-fi
+# GATE_NO_NIX=1 forces the no-toolchain path so this runs on a nix host too, and
+# the root is the override-free $tsroot — NOT $PWD, which carries this repo's own
+# self-consumer .sandcastle/ts-gate.sh (#312): that override resolves tier 2, so
+# `gate_run "$PWD"` did NOT fail closed, and the `command -v nix` skip hid it on
+# every nix host while CI went red (#314). Both arms must fail closed.
+rm -f "$tsroot/.sandcastle/ts-gate.sh"
+rc=0
+GATE_NO_NIX=1 gate_ts_stage "$tsroot" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a TS change with no toolchain must fail closed, not ship un-linted"
+pass=$((pass+1))
+rc=0
+printf 'dashboard/src/x.ts\n' | GATE_NO_NIX=1 gate_run "$tsroot" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "gate_run must fail closed on an un-lintable TS change"
+pass=$((pass+1))
 rm -rf "$tsroot"
 
 # --- fail-closed: a Go change with no GATE_GO_CMD and no nix blocks the push -
-# (no executable .sandcastle/go-gate.sh here either — none of the three resolve.)
-if ! command -v nix >/dev/null 2>&1; then
-  rc=0
-  printf 'internal/x.go\n' | gate_run "$PWD" 2>/dev/null || rc=$?
-  [ "$rc" -ne 0 ] || fail "a Go change with no toolchain must fail closed, not ship un-linted"
-  pass=$((pass+1))
-fi
+# Over an override-free root (a fresh tmp dir, NOT $PWD — a self-consumer
+# .sandcastle/go-gate.sh would resolve tier 2, the Go twin of #312/#314), with
+# GATE_NO_NIX=1 forcing the no-toolchain path so this runs on a nix host too:
+# none of the three resolve.
+goroot="$(mktemp -d)"
+rc=0
+printf 'internal/x.go\n' | GATE_NO_NIX=1 gate_run "$goroot" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a Go change with no toolchain must fail closed, not ship un-linted"
+pass=$((pass+1))
+rm -rf "$goroot"
 
 # --- Gate 3b: the gofmt-only host gate (#1458) ------------------------------
 # gofmt debt reaches main through the HOST push, not the sandbox (f291b547/#1429

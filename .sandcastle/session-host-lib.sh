@@ -42,7 +42,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/body-marker-lib.sh"
 session_host_marker() {
   local raw
-  raw="$(sed -n -E 's/.*<!--[[:space:]]*session-host:[[:space:]]*([^>]*)-->.*/\1/p' <<<"$(body_outside_fences "${1:-}")" | head -1)"
+  raw="$(sed -n -E 's/.*<!--[[:space:]]*session-host:[[:space:]]*([^>]*)-->.*/\1/p' <<<"$(body_marker_text "${1:-}")" | head -1)"
   raw="${raw#"${raw%%[![:space:]]*}"}"   # ltrim
   raw="${raw%"${raw##*[![:space:]]}"}"   # rtrim
   printf '%s\n' "$raw"

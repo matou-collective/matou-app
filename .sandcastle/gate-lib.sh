@@ -105,6 +105,19 @@ gate_scrub_git_env() {
         GIT_OBJECT_DIRECTORY GIT_QUARANTINE_PATH GIT_INTERNAL_GITDIR 2>/dev/null || true
 }
 
+# gate_nix_available — true when a usable `nix` is on PATH to run the pinned dev
+# shells. Factored out of the stage functions so the offline test can force the
+# no-toolchain path deterministically with GATE_NO_NIX=1 — proving the fail-closed
+# arms on EVERY host, not only CI's nix-less runners. The arms used to be gated
+# behind a `command -v nix` skip in the test, so a fail-closed assertion that
+# resolved a per-repo override (this repo's own .sandcastle/ts-gate.sh, #312) was
+# green on the nix-having author/pool hosts and red on CI (#314). Default
+# behaviour is unchanged: with GATE_NO_NIX unset it is exactly `command -v nix`.
+gate_nix_available() {
+  [ "${GATE_NO_NIX:-}" = 1 ] && return 1
+  command -v nix >/dev/null 2>&1
+}
+
 # gate_go_stage <root> — run the Go gate for a Go-touching change. Resolves the
 # Go command by a first-match-wins precedence so a consumer whose layout/toolchain
 # differs from the nix default can satisfy the gate without editing the vendored
@@ -129,7 +142,7 @@ gate_go_stage() {
     ( cd "$root" && gate_scrub_git_env && ./.sandcastle/go-gate.sh )
     return $?
   fi
-  if ! command -v nix >/dev/null 2>&1; then
+  if ! gate_nix_available; then
     echo "gate: Go change detected but no supported Go gate resolved in this sandbox." >&2
     echo "gate: refusing to push un-linted Go (issue #198). Cause is either a missing" >&2
     echo "gate: Go toolchain (no \`nix\`) OR a layout that differs from the nix default." >&2
@@ -165,7 +178,7 @@ gate_ts_stage() {
     ( cd "$root" && gate_scrub_git_env && ./.sandcastle/ts-gate.sh )
     return $?
   fi
-  if ! command -v nix >/dev/null 2>&1; then
+  if ! gate_nix_available; then
     echo "gate: TypeScript change detected but no supported TS gate resolved in this workdir." >&2
     echo "gate: refusing to push un-linted TypeScript (#1252). Cause is either a missing" >&2
     echo "gate: toolchain (no \`nix\`) OR a layout that differs from the nix default." >&2

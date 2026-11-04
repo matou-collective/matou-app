@@ -24,6 +24,9 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 pass=0
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
+# Sandbox the protected-path snapshot tmproot under $tmp so the suite never
+# writes into the real /tmp tmpfs (and so the reaper group below is isolated) — #761.
+export VERIFY_PP_TMPROOT="$tmp/pp-snapshots"
 
 . "$sc/runlog-lib.sh"
 . "$sc/fence-lib.sh"
@@ -221,6 +224,64 @@ grep -q 'push origin HEAD:refs/heads/sandcastle/rescue-' "$GIT_LOG" \
   || fail "the commits must be PARKED on a rescue branch, never pushed to main: $(cat "$GIT_LOG")"
 grep -q 'push origin HEAD:main' "$GIT_LOG" && fail "a breach must NEVER reach main"
 grep -q 'protected-path-violation' "$tmp/db.log" || fail "the violation must be traced in swarm.db"
+pass=$((pass+1))
+
+# #321: a truncated before-snapshot DEGRADES the boundary to unenforced (loud),
+# never a false RED or a false rollback. A /tmp wall makes the before-snapshot's
+# blob copies fail; trusting that truncated baseline would read untouched
+# machinery as `appeared` and delete it. Instead the boundary no-ops this run.
+rm -f "$tmp/db.log" "$NOTIFY_LOG"; : > "$GIT_LOG"; SWARM_EXIT_REASON=""
+printf 'harness\n' > "$ws/.sandcastle/run-swarm.sh"   # restore the baseline
+failbin="$tmp/failbin"; mkdir -p "$failbin"
+realcp="$(command -v cp)"
+cat > "$failbin/cp" <<SH
+#!/usr/bin/env bash
+case "\$*" in *"/blobs/"*) exit 1 ;; esac
+exec "$realcp" "\$@"
+SH
+chmod +x "$failbin/cp"
+# the before-snapshot is taken under the failing cp → it is detectably truncated
+PATH="$failbin:$PATH" PP_ENFORCE=1 verify_pp_snapshot "$ws"
+[ -n "$VERIFY_PP_BEFORE_TRUNCATED" ] \
+  || fail "verify_pp_snapshot must flag a truncated before-snapshot (#321)"
+# a worker then edits the machinery; a sound run would RED + roll back, but the
+# baseline is untrustworthy, so the boundary degrades instead of false-attributing
+printf 'worker edited the harness\n' > "$ws/.sandcastle/run-swarm.sh"
+RC=0
+PATH="$tmp/bin:$PATH" PP_ENFORCE=1 verify_protected_paths "$ws" run-1 Acme/widget >"$tmp/pp.out" 2>"$tmp/pp.err" || RC=$?
+[ "$RC" = 0 ] || fail "a truncated before-snapshot must DEGRADE (return 0), not red the run (#321), got $RC"
+[ -z "$VERIFY_PP_VIOLATION" ] || fail "a degraded boundary must NOT raise VERIFY_PP_VIOLATION (#321)"
+[ "$(cat "$ws/.sandcastle/run-swarm.sh")" = "worker edited the harness" ] \
+  || fail "a degraded boundary must NOT roll back against a truncated baseline (#321)"
+grep -q 'DEGRADED' "$tmp/pp.err" || fail "the degrade must log loud to stderr (#321): $(cat "$tmp/pp.err")"
+grep -q 'DEGRADED' "$NOTIFY_LOG" || fail "the degrade must alarm (#321): $(cat "$NOTIFY_LOG")"
+grep -q 'protected-path-degraded' "$tmp/db.log" || fail "the degrade must be traced in swarm.db (#321)"
+[ ! -s "$GIT_LOG" ] || fail "a degraded boundary must not park a rescue branch (#321): $(cat "$GIT_LOG")"
+VERIFY_PP_BEFORE_TRUNCATED=""   # clear for the groups below
+printf 'harness\n' > "$ws/.sandcastle/run-swarm.sh"
+pass=$((pass+1))
+
+# ── 3. snapshot dirs are rooted in one reapable per-run tree (#761) ──────────
+# A run SIGKILLed between the before- and after-snapshot leaks its snapshot dir —
+# no EXIT trap catches SIGKILL. Two of those (2.7G + 2.4G of cp'd cache blobs)
+# survived two days and walled the /tmp tmpfs user quota, redding an unrelated
+# post-step. The snapshots now live under one tmproot in a `run-<pid>-*` dir that
+# the NEXT run's reaper removes once that owning PID is dead.
+rm -rf "$VERIFY_PP_TMPROOT"
+PP_ENFORCE=1 verify_pp_snapshot "$ws"
+case "$VERIFY_PP_BEFORE" in
+  "$VERIFY_PP_TMPROOT"/run-$$-*/before) : ;;
+  *) fail "the before-snapshot must live under the reapable per-run tree, got $VERIFY_PP_BEFORE" ;;
+esac
+[ -d "$VERIFY_PP_BEFORE" ] || fail "the before-snapshot dir must exist under the per-run tree"
+pass=$((pass+1))
+
+# the reaper removes an orphan left by a DEAD run while sparing a live peer.
+dead=999999; while kill -0 "$dead" 2>/dev/null; do dead=$((dead+1)); done
+mkdir -p "$VERIFY_PP_TMPROOT/run-$dead-orphan/blobs" "$VERIFY_PP_TMPROOT/run-$$-live/blobs"
+PP_ENFORCE=1 verify_pp_snapshot "$ws"   # calls the reaper on entry
+[ ! -d "$VERIFY_PP_TMPROOT/run-$dead-orphan" ] || fail "a dead run's orphaned snapshot must be reaped (#761)"
+[ -d "$VERIFY_PP_TMPROOT/run-$$-live" ] || fail "a live run's snapshot must NOT be reaped (PID still alive)"
 pass=$((pass+1))
 
 echo "verify-lib: $pass groups passed"

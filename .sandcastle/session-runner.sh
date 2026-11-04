@@ -206,6 +206,63 @@ if ! flock -n "$sr_owner_fd"; then
   exit 0
 fi
 
+# ── self-refresh BEFORE the pick (#319) ──────────────────────────────────────
+# The dedicated checkout's fetch/reset used to run only AFTER a ticket was picked
+# (the clone+reset block was down by the session). A script version that SKIPS
+# every queued ticket therefore never picked, never reset, and so never replaced
+# itself: a behaviour change to the pick/skip rules could not reach a host whose
+# queue was all skip-tickets — exactly the case #302 was built for, and hosts ran
+# a week-old runner because of it. Refresh the checkout to origin/main HERE, on
+# EVERY tick that holds the owner lock, not only a picking one. If THIS entrypoint
+# changed, re-exec the fresh copy so the new rules apply THIS tick, not next cron.
+#
+# Held under the per-checkout owner lock taken just above, so no live session's
+# tree is reset mid-flight (GOTCHAS 25 / #78 — an owned-checkout tick absorbed
+# above and never reaches here). The whole refresh is a FUNCTION so bash parses
+# its body — the reset and the re-exec decision — into memory BEFORE `git reset
+# --hard` can rewrite this very file on disk: were these lines read from the file
+# after the reset, a changed entrypoint would corrupt what bash reads next. If
+# the file is unchanged the reset leaves its bytes identical and the rest of the
+# script reads safely; if it changed we exec the fresh copy and never read more
+# of the rewritten file. (A ROOT change still reaches the factory's own vendored
+# self-copy only on a human re-vendor — GOTCHAS 4 — but a dedicated SESSION
+# checkout tracking origin/main is meant to refresh, which is the whole point.)
+sr_entry="${BASH_SOURCE[0]}"
+sr_entry_hash="$( { sha1sum "$sr_entry" 2>/dev/null || true; } | awk '{print $1}')"
+sr_self_refresh() { # "$@" — forwarded to the re-exec'd fresh runner
+  if [ ! -d "$SESSION_RUNNER_CHECKOUT/.git" ]; then
+    git clone -q "$SESSION_RUNNER_REPO" "$SESSION_RUNNER_CHECKOUT" \
+      || { echo "session-runner: clone failed — quiet tick"; return 0; }
+  fi
+  git -C "$SESSION_RUNNER_CHECKOUT" fetch -q origin || true
+  git -C "$SESSION_RUNNER_CHECKOUT" reset -q --hard origin/main || true
+  git -C "$SESSION_RUNNER_CHECKOUT" clean -qfd || true
+  # Wire the factory pre-push drift gate into this real (non-sandbox) checkout so
+  # a session that edits a factory-vendored file (FACTORY_MANIFEST, ADR 0180) is
+  # blocked BEFORE the push, not by a red seam on main (idss #932, GOTCHAS 79).
+  # Same knob the sandbox sets in main.mts. Best-effort: a config hiccup must not
+  # fail the tick.
+  git -C "$SESSION_RUNNER_CHECKOUT" config core.hooksPath .sandcastle/git-hooks || true
+  [ -z "${SESSION_RUNNER_REEXECED:-}" ] || return 0   # already a re-exec — never loop
+  local canon="$SESSION_RUNNER_CHECKOUT/.sandcastle/session-runner.sh" fresh
+  [ -f "$canon" ] || return 0                         # no vendored copy to re-exec (test/odd layout)
+  fresh="$( { sha1sum "$canon" 2>/dev/null || true; } | awk '{print $1}')"
+  [ -n "$fresh" ] && [ "$fresh" != "$sr_entry_hash" ] || return 0   # unchanged → keep running this process
+  echo "session-runner: the entrypoint changed on refresh — re-execing the fresh runner before the pick (#319)"
+  export SESSION_RUNNER_REEXECED=1
+  # Drop the locks THIS process holds so the fresh exec re-acquires them cleanly.
+  # exec inherits these fds AND their flocks; the fresh runner opens a NEW fd for
+  # the owner lock, and flock conflicts across two open descriptions of one file
+  # in the same process — so without closing them first the re-exec would
+  # self-block on its own inherited owner lock and absorb the tick. The locks are
+  # non-blocking, so the microsecond gap is harmless (a racing peer just absorbs
+  # its own tick).
+  exec 9>&- || true
+  eval "exec ${sr_owner_fd}>&-" || true
+  exec bash "$canon" "$@"
+}
+sr_self_refresh "$@"
+
 # ── join the host capacity pool: a live session-runner session runs a
 #    headless claude call exactly like a swarm/triage worker, so it now
 #    counts against the SAME 2-slot host-wide pool instead of being
@@ -537,18 +594,11 @@ else
 fi
 
 # ── dedicated checkout (NEVER the shared swarm checkout — peers work there) ──
-if [ ! -d "$SESSION_RUNNER_CHECKOUT/.git" ]; then
-  git clone -q "$SESSION_RUNNER_REPO" "$SESSION_RUNNER_CHECKOUT" \
-    || { echo "session-runner: clone failed — releasing claim, quiet tick"; exit 0; }
-fi
-git -C "$SESSION_RUNNER_CHECKOUT" fetch -q origin || true
-git -C "$SESSION_RUNNER_CHECKOUT" reset -q --hard origin/main || true
-git -C "$SESSION_RUNNER_CHECKOUT" clean -qfd || true
-# Wire the factory pre-push drift gate into this real (non-sandbox) checkout so a
-# session that edits a factory-vendored file (FACTORY_MANIFEST, ADR 0180) is
-# blocked BEFORE the push, not by a red seam on main (idss #932). Same knob the
-# sandbox sets in main.mts. Best-effort: a config hiccup must not fail the tick.
-git -C "$SESSION_RUNNER_CHECKOUT" config core.hooksPath .sandcastle/git-hooks || true
+# The clone + fetch + reset --hard origin/main + clean + core.hooksPath wiring now
+# runs in sr_self_refresh at the TOP of the tick (#319), under the same per-
+# checkout owner lock, so the checkout is already at origin/main here — whether or
+# not this tick picked a ticket. A tick that reaches this point won the claim and
+# is about to run the session against that already-refreshed tree.
 
 # ── the session: one headless claude, riding the #510 failover ───────────────
 # Stamp the factory git identity (#19) so the session's commits carry

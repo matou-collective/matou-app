@@ -72,7 +72,10 @@ PP_PROTECTED_DIRS_DEFAULT=".sandcastle .forgejo"
 # The benign host-side CACHE trees under `.sandcastle/` are exempt too (#284(a),
 # the deferred half of #272): `.sandcastle/pnpm-store/*`, `.sandcastle/nix-store/*`
 # and the regenerated Python bytecode `.sandcastle/__pycache__/*` plus the
-# per-subpackage `.sandcastle/*/__pycache__/*` (swarm-db.py and the TUI). All are
+# per-subpackage `.sandcastle/*/__pycache__/*` (swarm-db.py and the TUI), and the
+# `.sandcastle/go-cache/*` (gomobile/go-build) and `.sandcastle/npm-cache/*`
+# host-side caches (#761 — originally missed here, so pp_snapshot cp'd ~2.8G of
+# cache blobs into /tmp twice per run and exhausted the tmpfs user quota). All are
 # gitignored by `.sandcastle/.gitignore`, mounted or regenerated under the
 # protected tree exactly like logs/.state/worktrees — the same low-risk runtime
 # class, not machinery. They stay ANCHORED under `.sandcastle/` (never a bare
@@ -81,7 +84,7 @@ PP_PROTECTED_DIRS_DEFAULT=".sandcastle .forgejo"
 # are #272's OTHER deferred half — they were NOT folded in here: exempting them
 # is a protected-boundary POSTURE change (it removes host secrets from what the
 # boundary rolls back), a one-way door ADR 0174 reserves for a human (#284(b)).
-PP_EXEMPT_GLOBS_DEFAULT="*matou-heal-* */matou-heal-* .sandcastle/logs/* .sandcastle/.state/* .sandcastle/worktrees/* .sandcastle/pnpm-store/* .sandcastle/nix-store/* .sandcastle/__pycache__/* .sandcastle/*/__pycache__/*"
+PP_EXEMPT_GLOBS_DEFAULT="*matou-heal-* */matou-heal-* .sandcastle/logs/* .sandcastle/.state/* .sandcastle/worktrees/* .sandcastle/pnpm-store/* .sandcastle/nix-store/* .sandcastle/go-cache/* .sandcastle/npm-cache/* .sandcastle/__pycache__/* .sandcastle/*/__pycache__/*"
 
 # The escape path, spelled out verbatim so every enforcement failure routes a
 # worker that was RIGHT the machinery needs changing instead of letting it
@@ -169,8 +172,24 @@ _pp_digest() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 # and a `blobs/<key>` copy of each file's bytes (so a rollback can restore the
 # pre-run content, not merely detect the change). Exempt paths are skipped.
 # Idempotent: the snapdir is (re)initialised each call.
+#
+# Soundness exposure (#321): a blob `cp` can fail (a `/tmp` space/quota wall) and
+# must NOT silently truncate the snapshot into a baseline the boundary then
+# trusts. Two things make a truncated snapshot DETECTABLE by the caller:
+#   - every blob-copy failure is COUNTED, and the count is written to the marker
+#     file `blob_failures` as the LAST action — so a non-zero count means
+#     reduced rollback fidelity (a missing blob cannot be restored) AND is the
+#     canary for the same disk pressure that can abort the `index` write;
+#   - because the marker is written LAST, an ABORTED snapshot (e.g. a failed
+#     `index` append under the caller's `set -e`, which leaves the index
+#     partial — the genuine `appeared`-false-attribution hazard) leaves the
+#     marker ABSENT. `pp_snapshot_sound` reads both signals; `verify-lib.sh`
+#     degrades the boundary to unenforced (loud, never a false RED or rollback)
+#     when a snapshot is not sound.
+# Returns non-zero when any blob copy failed (callers that `|| true` the call
+# still see the signal via the marker file).
 pp_snapshot() {
-  local root="$1" snap="$2" d rel f digest key
+  local root="$1" snap="$2" d rel f digest key failures=0
   rm -rf "$snap"; mkdir -p "$snap/blobs"; : > "$snap/index"
   while IFS= read -r d; do
     [ -n "$d" ] || continue
@@ -180,10 +199,37 @@ pp_snapshot() {
       pp_is_protected "$rel" || continue
       digest="$(_pp_digest "$f")"
       key="$(_pp_key "$rel")"
-      cp "$f" "$snap/blobs/$key" 2>/dev/null || true
+      # Keep the index line even on a cp failure: dropping it would itself make
+      # the path read as `appeared` next run. The failure is surfaced by count.
+      cp "$f" "$snap/blobs/$key" 2>/dev/null || failures=$((failures + 1))
       printf '%s\t%s\t%s\n' "$digest" "$key" "$rel" >> "$snap/index"
     done < <(find "$root/$d" -type f -print0 2>/dev/null)
   done < <(pp_protected_dirs)
+  # Written LAST so it doubles as the completion marker (absent ⇒ aborted).
+  printf '%s\n' "$failures" > "$snap/blob_failures"
+  [ "$failures" -eq 0 ]
+}
+
+# pp_blob_failures <snapdir> — echo the blob-copy failure count pp_snapshot
+# recorded (0 when the marker is absent — callers distinguish absence via
+# pp_snapshot_sound). Always numeric.
+pp_blob_failures() {
+  local snap="$1" n
+  n="$(cat "$snap/blob_failures" 2>/dev/null)" || n=0
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# pp_snapshot_sound <snapdir> — rc 0 iff the snapshot completed cleanly: its
+# completion marker exists AND records zero blob-copy failures. A MISSING marker
+# (pp_snapshot aborted mid-fingerprint — e.g. a disk-full `index` append under
+# the caller's set -e, leaving a partial index) OR a non-zero failure count both
+# mean the fingerprint may be TRUNCATED and must not be trusted as a boundary
+# baseline (#321).
+pp_snapshot_sound() {
+  local snap="$1"
+  [ -f "$snap/blob_failures" ] || return 1
+  [ "$(pp_blob_failures "$snap")" -eq 0 ]
 }
 
 # _pp_load <snapdir> <assoc-name-digest> <assoc-name-key> — read a snapshot's

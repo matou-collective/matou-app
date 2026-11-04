@@ -290,6 +290,31 @@ collect_job_logs() { # <run-url>
   return 0
 }
 
+# The per-repo workdir lock heal.sh reads to tell a local run from a remote leg
+# (#2048). triage.yml / swarm.yml take `exec 8>"$lock"` each tick, which
+# TRUNCATES it, so a fresh mtime means a checkout happened HERE this window. A
+# test seam; the default is the path triage.yml/swarm.yml compute from REPO_TAG.
+HEAL_WORKDIR_LOCK="${HEAL_WORKDIR_LOCK:-/tmp/matou-workdir-$REPO_TAG.lock}"
+
+# job_ran_here — did THIS repo's job actually execute on THIS host? (#2048)
+# The pool-locality claim in gather_evidence used to fire on "no fresh worker
+# log + no fresh verdict" ALONE, but a fault in the SAME job BEFORE Sandcastle
+# spins and OUTSIDE the verdict seam looks identical to a genuine remote leg —
+# and the 2026-10-16 incident filed "ran on another pool host (healer-host:
+# bens-mac-04)" for a leg that provably ran ON bens-mac-04. Two LOCAL signals,
+# either of which proves the job ran here, gate that claim off:
+#   - the per-repo workdir lock's mtime inside the run window (a local checkout)
+#   - the runner journal naming this repo's task (`repo is <owner/repo>`)
+# (The `git reflog` reset-to-origin/main entry is the third signal the human and
+# the diagnosis agent still have in the bundle; these two are the ones cheap and
+# reliable to read in code.)
+job_ran_here() {
+  [ -n "$(find "$HEAL_WORKDIR_LOCK" -newermt "-$RUN_WINDOW" 2>/dev/null)" ] && return 0
+  local slug="${FORGEJO_API##*/repos/}"
+  [ -f "$EVIDENCE/runner-journal.txt" ] && [ -n "$slug" ]     && grep -qiE "repo is ($slug|$REPO_TAG)\b" "$EVIDENCE/runner-journal.txt" 2>/dev/null && return 0
+  return 1
+}
+
 gather_evidence() {
   # Probe the endpoint the automation actually depends on, paged: Forgejo
   # ignores limit without page and dumps the whole task table (~30s+ at
@@ -324,8 +349,23 @@ gather_evidence() {
       nolder=$((nolder + 1))
     fi
   done
-  journalctl -u forgejo-runner --since "-2 hours" --no-pager -q 2>/dev/null | tail -100 \
-    > "$EVIDENCE/runner-journal.txt" || true
+  # The Forgejo Actions runner's systemd unit varies by pool host (#2048): this
+  # host's is `forgejo-runner-swarm.service`, not the bare `forgejo-runner` the
+  # healer used to hardcode — so runner-journal.txt came back EMPTY on every
+  # incident, and the runner journal is exactly what named the host and the
+  # degraded window in the 2026-10-16 latency incident. Resolve the REAL unit off
+  # systemd instead of guessing; HEAL_RUNNER_UNIT overrides (an odd host / the
+  # offline test); fall back to the known swarm unit so a box where detection
+  # finds nothing still reads a real unit, never the empty bare name.
+  local runner_unit="${HEAL_RUNNER_UNIT:-}"
+  if [ -z "$runner_unit" ]; then
+    runner_unit="$(systemctl list-units --all --no-legend --type=service 'forgejo-runner*' 2>/dev/null \
+      | awk '{print $1}' | grep -m1 -E '^forgejo-runner' || true)"
+    [ -n "$runner_unit" ] || runner_unit="forgejo-runner-swarm.service"
+  fi
+  { echo "# runner unit: $runner_unit"
+    journalctl -u "$runner_unit" --since "-2 hours" --no-pager -q 2>/dev/null | tail -100
+  } > "$EVIDENCE/runner-journal.txt" || true
   {
     git -C "$WORKDIR" status --short 2>&1 | head -20
     git -C "$WORKDIR" log --oneline -5 2>&1
@@ -354,7 +394,19 @@ gather_evidence() {
   if [ "$nfresh" -eq 0 ] && [ -z "$have_local_verdict" ]; then
     local runid="${RUN_URL:-}"; runid="${runid##*/}"
     { [ -n "$runid" ] && [ "$runid" != "${RUN_URL:-}" ]; } || runid="${SWARM_RUN_ID:-watchdog}"
-    local msg="no local evidence for run ${runid} in the last ${RUN_WINDOW}: the failing leg ran on another swarm pool host (healer-host: ${HEAL_EVIDENCE_HOST})"
+    local msg
+    if job_ran_here; then
+      # #2048: a fault in the SAME job BEFORE Sandcastle span (the un-sealed
+      # app-report lines, a git-setup blip) and OUTSIDE the verdict seam leaves
+      # no worker log and no verdict — indistinguishable, by that absence ALONE,
+      # from a leg that ran elsewhere. But local evidence (the workdir lock mtime
+      # / the runner journal naming this repo's task) says the job ran HERE, so
+      # do NOT blame another pool host — name the real shape: a pre-Sandcastle
+      # fault this host must own. (The 2026-10-16 incident is exactly this.)
+      msg="no worker log or fresh verdict for run ${runid} in the last ${RUN_WINDOW}, but local evidence (workdir lock / runner journal) shows THIS repo's job ran on this host — the fault was in the job BEFORE Sandcastle span, outside the verdict seam, NOT a leg on another pool host (healer-host: ${HEAL_EVIDENCE_HOST})"
+    else
+      msg="no local evidence for run ${runid} in the last ${RUN_WINDOW}: the failing leg ran on another swarm pool host (healer-host: ${HEAL_EVIDENCE_HOST})"
+    fi
     printf '%s\n' "$msg" > "$EVIDENCE/worker-logs.txt"
     printf '%s\n' "$msg" > "$EVIDENCE/run-verdict.txt"
     printf '%s\n' "$msg" > "$EVIDENCE/no-local-evidence.txt"

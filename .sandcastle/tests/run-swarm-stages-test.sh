@@ -239,6 +239,10 @@ pass=$((pass+1))
 hp="$(stage_line host_capacity_holder_write)"; fp="$(stage_line schedule_fleet_pick)"
 [ -n "$hp" ] && [ -n "$fp" ] && [ "$hp" -gt "$fp" ] \
   || fail "host_capacity_holder_write must come after schedule_fleet_pick (holder line $hp, pick line $fp)"
+# The holder NAMES the fleet pick (ref = the ticket number) so the Floor shows
+# the ticket on its slot from claim time, not "ticket —" until the run ends.
+grep -q 'host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket "${SCHEDULE_FLEET_PICK:-run}"' "$rs" \
+  || fail "the ticket holder's ref must be the fleet pick (SCHEDULE_FLEET_PICK), falling back to run"
 grep -q 'report_self_rearm "\$worker_ran" "\$repo_slug" "\$sandcastle_attempts"' "$rs" \
   || fail "report_self_rearm must be handed the repo slug and the attempts file (#301)"
 pass=$((pass+1))

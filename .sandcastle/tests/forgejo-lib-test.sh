@@ -101,6 +101,18 @@ case "$url" in
     fi
     echo "{\"permissions\":{\"push\":${PROBE_PUSH:-true}},\"default_merge_style\":\"${MERGE_STYLE:-merge}\"}"
     ;;
+  */retrytest*)
+    # #2048: fail GET_FAILS_N times (a transient 5xx), then succeed. The counter
+    # is a file so it survives forgejo_get's retry subshells, like the probe's.
+    if [ -n "${GET_FAIL_COUNTER:-}" ]; then
+      n="$(cat "$GET_FAIL_COUNTER" 2>/dev/null || echo 0)"
+      if [ "$n" -lt "${GET_FAILS_N:-0}" ]; then
+        echo $((n + 1)) > "$GET_FAIL_COUNTER"
+        exit 22
+      fi
+    fi
+    echo '{"ok":"yes"}'
+    ;;
   *)
     echo "fake curl: unhandled url $url" >&2
     exit 22
@@ -330,7 +342,31 @@ check "label_applied_at is empty on an empty timeline" \
   '[ -z "$(TIMELINE_JSON=/dev/null forgejo_label_applied_at 42 ready-for-agent)" ]'
 
 # curl -f semantics: forgejo_get dies loud (rc != 0) on a real failure, never a silent empty success
-if forgejo_get "/fail/x" >/dev/null 2>&1; then fail=$((fail+1)); echo "FAIL: forgejo_get propagates curl's failure rc"; else pass=$((pass+1)); fi
+if FORGEJO_GET_BACKOFF=0 forgejo_get "/fail/x" >/dev/null 2>&1; then fail=$((fail+1)); echo "FAIL: forgejo_get propagates curl's failure rc"; else pass=$((pass+1)); fi
+
+# --- #2048: forgejo_get retries a transient GET; forgejo_post is NEVER retried --
+# The API half of #1411: the app-report triage stage makes ~11 sequential GETs, so
+# a sub-minute Forgejo blip used to red the tick with near-certainty. A GET is
+# idempotent and now rides out a blip with bounded backoff; a POST must NOT retry
+# (a retried comment/asset double-posts). FORGEJO_GET_BACKOFF=0 keeps this instant.
+export GET_FAIL_COUNTER="$tmp/get-fails"
+: > "$CALLS_LOG"; echo 0 > "$GET_FAIL_COUNTER"
+body="$(FORGEJO_GET_BACKOFF=0 GET_FAILS_N=2 forgejo_get "/retrytest")"
+check "forgejo_get rides out a transient GET (2 blips) and returns the body" '[ "$(jq -r .ok <<<"$body")" = yes ]'
+check "forgejo_get actually retried — 3 GET attempts logged for one call" \
+  '[ "$(grep -c "GET .*/retrytest" "$CALLS_LOG")" -eq 3 ]'
+: > "$CALLS_LOG"; echo 0 > "$GET_FAIL_COUNTER"
+if FORGEJO_GET_BACKOFF=0 GET_FAILS_N=99 forgejo_get "/retrytest" >/dev/null 2>&1; then
+  fail=$((fail+1)); echo "FAIL: forgejo_get must die loud on a SUSTAINED GET outage"
+else pass=$((pass+1)); fi
+check "forgejo_get stops after FORGEJO_GET_RETRIES (3) attempts on a sustained outage" \
+  '[ "$(grep -c "GET .*/retrytest" "$CALLS_LOG")" -eq 3 ]'
+unset GET_FAIL_COUNTER
+: > "$CALLS_LOG"
+if forgejo_post "/fail/x" "{}" >/dev/null 2>&1; then fail=$((fail+1)); echo "FAIL: forgejo_post should propagate the failure rc"; else pass=$((pass+1)); fi
+check "forgejo_post is attempted EXACTLY ONCE — a retried POST would double-post (#2048)" \
+  '[ "$(grep -c "POST .*/fail/x" "$CALLS_LOG")" -eq 1 ]'
+
 
 echo "forgejo-lib: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
