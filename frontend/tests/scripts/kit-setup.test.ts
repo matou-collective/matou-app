@@ -36,6 +36,7 @@ vi.mock('src/lib/api/client', () => ({
 }));
 
 import OrgSetupScreen from 'src/components/setup/OrgSetupScreen.vue';
+import { createI18nInstance } from 'src/i18n';
 
 // Lightweight stand-ins for the Quasar-backed base components. MInput exposes a
 // v-model'd <input>; MBtn a <button :disabled> so fall-through class/type land
@@ -51,8 +52,13 @@ const MBtnStub = defineComponent({
 });
 
 function mountScreen() {
+  // OrgSetupScreen reads its strings through vue-i18n (#783), so the mount
+  // needs the i18n plugin installed. `en` is the default locale.
   return mount(OrgSetupScreen, {
-    global: { stubs: { MInput: MInputStub, MBtn: MBtnStub } },
+    global: {
+      plugins: [createI18nInstance()],
+      stubs: { MInput: MInputStub, MBtn: MBtnStub },
+    },
   });
 }
 

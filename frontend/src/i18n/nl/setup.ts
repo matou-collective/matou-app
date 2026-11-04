@@ -1,0 +1,43 @@
+// MACHINE DRAFT (#783) — English (src/i18n/en) is authoritative. These strings
+// are unreviewed machine translations and may be wrong until a human confirms.
+export default {
+  logoAlt: '{brand}-logo',
+  title: '{brand} instellen',
+  firstAdminNotice:
+    'Je bent de eerste beheerder. Maak je beheerdersprofiel aan om {brand} online te brengen.',
+  adminNameLabel: 'Weergavenaam beheerder',
+  adminNamePlaceholder: 'bijv. Jan Jansen',
+  adminEmailLabel: 'E-mail beheerder',
+  adminEmailPlaceholder: "beheerder{'@'}voorbeeld.com",
+  adminAvatarLabel: 'Avatar beheerder',
+  avatarPreviewAlt: 'Avatarvoorbeeld',
+  changeAvatar: 'Wijzigen',
+  uploadAvatar: 'Uploaden',
+  removeAvatar: 'Verwijderen',
+  errorTitle: 'Instellen mislukt',
+  launchApp: 'App starten',
+  settingUp: 'Je organisatie wordt ingesteld...',
+  steps: {
+    connecting: 'Verbinden met KERIA',
+    admin: 'Beheerdersidentiteit aanmaken',
+    organization: 'Organisatie aanmaken',
+    registry: 'Credentialregister aanmaken',
+    credential: 'Beheerderscredential uitgeven',
+    space: 'Ruimtes aanmaken',
+    saving: 'Configuratie opslaan',
+  },
+  progress: {
+    generating: 'Beheerdersreferenties genereren...',
+    connecting: 'Verbinden met KERIA...',
+    admin: 'Beheerdersidentiteit aanmaken...',
+    organization: 'Organisatie-identiteit aanmaken...',
+    registry: 'Credentialregister aanmaken...',
+    schema: 'Credentialschema laden...',
+    credential: 'Beheerderscredential uitgeven...',
+    oobi: 'Organisatie-OOBI genereren...',
+    backend: 'Backend-identiteit configureren...',
+    space: 'Communityruimte aanmaken...',
+    saving: 'Configuratie opslaan...',
+    complete: 'Instellen voltooid!',
+  },
+};

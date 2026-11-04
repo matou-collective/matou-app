@@ -1,0 +1,7 @@
+// MACHINE DRAFT (#783) — English (src/i18n/en) is authoritative. These strings
+// are unreviewed machine translations and may be wrong until a human confirms.
+export default {
+  selectLanguage: 'Selecionar idioma',
+  draftLabel: 'rascunho automático',
+  draftTooltip: 'Tradução automática — o inglês é a versão oficial',
+};

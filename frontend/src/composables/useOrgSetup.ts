@@ -24,6 +24,27 @@ export interface OrgSetupConfig {
   adminAvatarMimeType?: string; // MIME type for base64 avatar
 }
 
+/**
+ * Progress step keys (#783). The composable emits a language-independent step
+ * key, not finished English; the UI resolves it through i18n
+ * (`setup.progress.<key>`) so the live status line reads in the chosen
+ * language. `''` means "not started / reset".
+ */
+export type OrgSetupStep =
+  | ''
+  | 'generating'
+  | 'connecting'
+  | 'admin'
+  | 'organization'
+  | 'registry'
+  | 'schema'
+  | 'credential'
+  | 'oobi'
+  | 'backend'
+  | 'space'
+  | 'saving'
+  | 'complete';
+
 export interface OrgSetupResult {
   adminAid: string;
   orgAid: string;
@@ -48,7 +69,7 @@ export function useOrgSetup() {
   // State
   const isSubmitting = ref(false);
   const error = ref<string | null>(null);
-  const progress = ref<string>('');
+  const progress = ref<OrgSetupStep>('');
   const result = ref<OrgSetupResult | null>(null);
 
   /**
@@ -65,19 +86,19 @@ export function useOrgSetup() {
 
     try {
       // Step 1: Generate mnemonic and derive passcode
-      progress.value = 'Generating admin credentials...';
+      progress.value = 'generating';
       const mnemonic = generateMnemonic(wordlist, 128); // 12 words
       const mnemonicWords = mnemonic.split(' ');
       const adminPasscode = KERIClient.passcodeFromMnemonic(mnemonic);
       console.log('[OrgSetup] Generated mnemonic and derived passcode');
 
       // Step 2: Initialize KERIA connection (boots agent if new)
-      progress.value = 'Connecting to KERIA...';
+      progress.value = 'connecting';
       await keriClient.initialize(adminPasscode);
       console.log('[OrgSetup] Connected to KERIA');
 
       // Step 3: Create admin AID (personal identity)
-      progress.value = 'Creating admin identity...';
+      progress.value = 'admin';
       const adminAidName = toKeriAlias(config.adminName, { lowercase: true, fallback: 'admin' });
       const adminAid = await keriClient.createAID(adminAidName, { useWitnesses: true });
       console.log('[OrgSetup] Created admin AID:', adminAid.prefix);
@@ -86,25 +107,25 @@ export function useOrgSetup() {
       await identityStore.setCurrentAID(adminAid);
 
       // Step 4: Create org AID as group with admin as master
-      progress.value = 'Creating organization identity...';
+      progress.value = 'organization';
       const orgAidName = toKeriAlias(config.orgName, { lowercase: true, fallback: 'org' });
       const orgAid = await keriClient.createGroupAID(orgAidName, adminAidName);
       console.log('[OrgSetup] Created org group AID:', orgAid.prefix);
 
       // Step 5: Create credential registry for the org
-      progress.value = 'Creating credential registry...';
+      progress.value = 'registry';
       const registryName = `${orgAidName}-registry`;
       const registryId = await keriClient.createRegistry(orgAidName, registryName);
       console.log('[OrgSetup] Created registry:', registryId);
 
       // Step 6: Resolve schema OOBI
-      progress.value = 'Loading credential schema...';
+      progress.value = 'schema';
       console.log('[OrgSetup] Resolving schema OOBI:', SCHEMA_OOBI_URL);
       await keriClient.resolveOOBI(SCHEMA_OOBI_URL, MEMBERSHIP_SCHEMA_SAID);
       console.log('[OrgSetup] Schema OOBI resolved');
 
       // Step 7: Issue membership credential to admin (as Founding Member)
-      progress.value = 'Issuing admin credential...';
+      progress.value = 'credential';
       const credentialData = {
         communityName: 'MATOU',
         role: 'Founding Member',
@@ -121,7 +142,7 @@ export function useOrgSetup() {
       console.log('[OrgSetup] Issued credential:', credential.said);
 
       // Step 8: Get org OOBI
-      progress.value = 'Generating organization OOBI...';
+      progress.value = 'oobi';
       let orgOobi: string;
       try {
         orgOobi = await keriClient.getOOBI(orgAidName);
@@ -147,7 +168,7 @@ export function useOrgSetup() {
       // Step 9: Set backend identity (derives peer key from mnemonic, restarts SDK, auto-creates private space)
       // This MUST happen before community space creation so the mnemonic-derived
       // peer key is active and the backend can derive community space keys from it.
-      progress.value = 'Configuring backend identity...';
+      progress.value = 'backend';
       let adminPrivateSpaceId: string | undefined;
 
       // Clear any stale identity from a previous org setup run. RBAC (#17):
@@ -179,7 +200,7 @@ export function useOrgSetup() {
       // Step 10: Create community space in any-sync
       // Now that identity is set, the backend derives community space keys from the
       // stored mnemonic (DeriveSpaceKeySet index 1), making the admin the recoverable owner.
-      progress.value = 'Creating community space...';
+      progress.value = 'space';
       let communitySpaceId: string | undefined;
 
       let readOnlySpaceId: string | undefined;
@@ -238,7 +259,7 @@ export function useOrgSetup() {
       }
 
       // Step 11: Save config to server (single save with space IDs included)
-      progress.value = 'Saving configuration...';
+      progress.value = 'saving';
       const orgConfig: OrgConfig = {
         organization: {
           aid: orgAid.prefix,
@@ -309,7 +330,7 @@ export function useOrgSetup() {
         privateSpaceId: adminPrivateSpaceId,
       };
 
-      progress.value = 'Setup complete!';
+      progress.value = 'complete';
       console.log('[OrgSetup] Organization setup complete');
 
       return true;

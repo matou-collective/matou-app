@@ -49,4 +49,24 @@ module.exports = [
     plugins: { '@typescript-eslint': tsPlugin },
     rules: tsRules,
   },
+
+  {
+    // i18n bare-literal guard (#783). A user-facing literal in a component
+    // template must go through vue-i18n (`t('...')`) instead of being hard-coded
+    // in English — this is the local equivalent of IDSS's `oc-i18n/no-bare-literal`.
+    //
+    // CI contract: a repo-wide *error* can't be green until every string is
+    // migrated, so this is deliberately SCOPED to the areas already migrated to
+    // i18n (the #783 pilot). Each per-area follow-up ticket adds its files here;
+    // the FINAL area ticket deletes this block's `files` scoping and moves the
+    // rule into the `**/*.vue` block above as a repo-wide error.
+    files: [
+      'src/components/setup/OrgSetupScreen.vue',
+      'src/pages/SetupPage.vue',
+      'src/components/base/LanguagePicker.vue',
+    ],
+    rules: {
+      'vue/no-bare-strings-in-template': 'error',
+    },
+  },
 ];

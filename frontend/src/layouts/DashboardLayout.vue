@@ -52,8 +52,11 @@
         </div>
       </nav>
 
-      <!-- Footer: user profile -->
+      <!-- Footer: language picker + user profile -->
       <div class="sidebar-footer">
+        <div class="sidebar-lang-picker">
+          <LanguagePicker />
+        </div>
         <div class="user-profile" @click="router.push({ name: 'account-settings' })" style="cursor: pointer;">
           <div class="user-avatar">
             <img v-if="userAvatarUrl" :src="userAvatarUrl" class="w-full h-full rounded-full object-cover" alt="Avatar" />
@@ -208,6 +211,7 @@ import { fetchOrgConfig } from 'src/api/config';
 import { getFileUrl } from 'src/lib/api/client';
 import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
+import LanguagePicker from 'src/components/base/LanguagePicker.vue';
 import type { IssueType } from 'src/lib/issueReport';
 import { useProfileViewer } from 'stores/profileViewer';
 import { KIT } from 'src/generated/kit';
@@ -614,6 +618,11 @@ onBeforeUnmount(() => {
 .sidebar-footer {
   padding: 1rem;
   border-top: 1px solid var(--matou-sidebar-border);
+}
+
+.sidebar-lang-picker {
+  margin-bottom: 0.75rem;
+  color: var(--matou-sidebar-foreground);
 }
 
 // The bottom cluster (Community Settings + the two report doors) is pushed to the

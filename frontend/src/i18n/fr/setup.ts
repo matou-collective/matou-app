@@ -1,0 +1,43 @@
+// MACHINE DRAFT (#783) — English (src/i18n/en) is authoritative. These strings
+// are unreviewed machine translations and may be wrong until a human confirms.
+export default {
+  logoAlt: 'Logo {brand}',
+  title: 'Configurer {brand}',
+  firstAdminNotice:
+    'Vous êtes le premier administrateur. Créez votre profil d’administrateur pour mettre {brand} en ligne.',
+  adminNameLabel: 'Nom d’affichage de l’administrateur',
+  adminNamePlaceholder: 'p. ex. Jean Dupont',
+  adminEmailLabel: 'E-mail de l’administrateur',
+  adminEmailPlaceholder: "admin{'@'}exemple.com",
+  adminAvatarLabel: 'Avatar de l’administrateur',
+  avatarPreviewAlt: 'Aperçu de l’avatar',
+  changeAvatar: 'Modifier',
+  uploadAvatar: 'Téléverser',
+  removeAvatar: 'Supprimer',
+  errorTitle: 'Échec de la configuration',
+  launchApp: 'Lancer l’application',
+  settingUp: 'Configuration de votre organisation...',
+  steps: {
+    connecting: 'Se connecter à KERIA',
+    admin: 'Créer l’identité administrateur',
+    organization: 'Créer l’organisation',
+    registry: 'Créer le registre de justificatifs',
+    credential: 'Émettre le justificatif administrateur',
+    space: 'Créer les espaces',
+    saving: 'Enregistrer la configuration',
+  },
+  progress: {
+    generating: 'Génération des identifiants administrateur...',
+    connecting: 'Connexion à KERIA...',
+    admin: 'Création de l’identité administrateur...',
+    organization: 'Création de l’identité de l’organisation...',
+    registry: 'Création du registre de justificatifs...',
+    schema: 'Chargement du schéma de justificatif...',
+    credential: 'Émission du justificatif administrateur...',
+    oobi: 'Génération de l’OOBI de l’organisation...',
+    backend: 'Configuration de l’identité du backend...',
+    space: 'Création de l’espace communautaire...',
+    saving: 'Enregistrement de la configuration...',
+    complete: 'Configuration terminée !',
+  },
+};

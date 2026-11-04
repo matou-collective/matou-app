@@ -3,12 +3,12 @@
     <div class="flex flex-col items-center gap-8 max-w-md w-full">
       <!-- Kit logo -->
       <div class="icon-container bg-white/20 backdrop-blur-sm p-6 rounded-2xl">
-        <img :src="kitLogo" :alt="`${KIT.brand.name} Logo`" class="w-16 h-16 object-contain" />
+        <img :src="kitLogo" :alt="t('setup.logoAlt', { brand: KIT.brand.name })" class="w-16 h-16 object-contain" />
       </div>
 
       <!-- Title -->
       <div class="text-center">
-        <h1 class="text-white text-2xl md:text-3xl font-semibold mb-2">Set up {{ KIT.brand.name }}</h1>
+        <h1 class="text-white text-2xl md:text-3xl font-semibold mb-2">{{ t('setup.title', { brand: KIT.brand.name }) }}</h1>
       </div>
 
       <!-- Info Notice -->
@@ -16,7 +16,7 @@
         <div class="flex items-start gap-3">
           <Info class="w-5 h-5 text-white/80 flex-shrink-0 mt-0.5" />
           <p class="text-white/80 text-sm">
-            You're the first admin. Create your admin profile to bring {{ KIT.brand.name }} online.
+            {{ t('setup.firstAdminNotice', { brand: KIT.brand.name }) }}
           </p>
         </div>
       </div>
@@ -26,11 +26,11 @@
         <!-- Admin Name -->
         <div class="form-group">
           <label class="text-white/90 text-sm font-medium mb-2 block">
-            Admin Display Name
+            {{ t('setup.adminNameLabel') }}
           </label>
           <MInput
             v-model="adminName"
-            placeholder="e.g., John Smith"
+            :placeholder="t('setup.adminNamePlaceholder')"
             :disabled="isSubmitting"
             class="setup-input"
           />
@@ -39,13 +39,13 @@
         <!-- Admin Email -->
         <div class="form-group">
           <label class="text-white/90 text-sm font-medium mb-2 block">
-            Admin Email
-            <span class="text-white/50 font-normal">(optional)</span>
+            {{ t('setup.adminEmailLabel') }}
+            <span class="text-white/50 font-normal">{{ t('common.optional') }}</span>
           </label>
           <MInput
             v-model="adminEmail"
             type="email"
-            placeholder="admin@example.com"
+            :placeholder="t('setup.adminEmailPlaceholder')"
             :disabled="isSubmitting"
             class="setup-input"
           />
@@ -54,15 +54,15 @@
         <!-- Admin Avatar -->
         <div class="form-group">
           <label class="text-white/90 text-sm font-medium mb-2 block">
-            Admin Avatar
-            <span class="text-white/50 font-normal">(optional)</span>
+            {{ t('setup.adminAvatarLabel') }}
+            <span class="text-white/50 font-normal">{{ t('common.optional') }}</span>
           </label>
           <div class="flex items-center gap-4">
             <div class="w-14 h-14 rounded-full overflow-hidden border-2 border-white/30 bg-white/10 flex items-center justify-center shrink-0">
               <img
                 v-if="avatarPreview"
                 :src="avatarPreview"
-                alt="Avatar preview"
+                :alt="t('setup.avatarPreviewAlt')"
                 class="w-full h-full object-cover"
               />
               <User v-else class="w-6 h-6 text-white/50" />
@@ -84,7 +84,7 @@
               >
                 <Upload v-if="!isUploadingAvatar" class="w-4 h-4 mr-2" />
                 <Loader2 v-else class="w-4 h-4 mr-2 animate-spin" />
-                {{ avatarPreview ? 'Change' : 'Upload' }}
+                {{ avatarPreview ? t('setup.changeAvatar') : t('setup.uploadAvatar') }}
               </MBtn>
               <MBtn
                 v-if="avatarPreview"
@@ -92,7 +92,7 @@
                 class="ml-2 text-white/60 hover:text-white text-xs"
                 @click="removeAvatar"
               >
-                Remove
+                {{ t('setup.removeAvatar') }}
             </MBtn>
             </div>
           </div>
@@ -103,7 +103,7 @@
           <div class="flex items-start gap-3">
             <AlertCircle class="w-5 h-5 text-red-300 flex-shrink-0 mt-0.5" />
             <div>
-              <p class="text-white font-medium mb-1">Setup Failed</p>
+              <p class="text-white font-medium mb-1">{{ t('setup.errorTitle') }}</p>
               <p class="text-white/70 text-sm">{{ error }}</p>
             </div>
           </div>
@@ -117,7 +117,7 @@
           :disabled="!isFormValid || isSubmitting || isUploadingAvatar"
         >
           <Rocket class="w-5 h-5 mr-2" />
-          Launch App
+          {{ t('setup.launchApp') }}
         </MBtn>
       </form>
 
@@ -127,54 +127,54 @@
           <Loader2 class="w-12 h-12 text-white animate-spin mx-auto" />
         </div>
         <div class="space-y-2">
-          <p class="text-white text-lg font-medium">Setting up your organization...</p>
-          <p class="text-white/70 text-sm">{{ progress }}</p>
+          <p class="text-white text-lg font-medium">{{ t('setup.settingUp') }}</p>
+          <p class="text-white/70 text-sm">{{ progress ? t(`setup.progress.${progress}`) : '' }}</p>
         </div>
 
         <!-- Progress Steps -->
         <div class="progress-steps bg-white/10 rounded-xl p-4 text-left">
           <div class="space-y-2">
             <div class="flex items-center gap-2">
-              <CheckCircle2 v-if="isStepComplete('Connecting')" class="w-4 h-4 text-green-400" />
-              <Loader2 v-else-if="isStepActive('Connecting')" class="w-4 h-4 text-white animate-spin" />
+              <CheckCircle2 v-if="isStepComplete('connecting')" class="w-4 h-4 text-green-400" />
+              <Loader2 v-else-if="isStepActive('connecting')" class="w-4 h-4 text-white animate-spin" />
               <Circle v-else class="w-4 h-4 text-white/40" />
-              <span class="text-sm" :class="stepClass('Connecting')">Connect to KERIA</span>
+              <span class="text-sm" :class="stepClass('connecting')">{{ t('setup.steps.connecting') }}</span>
             </div>
             <div class="flex items-center gap-2">
               <CheckCircle2 v-if="isStepComplete('admin')" class="w-4 h-4 text-green-400" />
               <Loader2 v-else-if="isStepActive('admin')" class="w-4 h-4 text-white animate-spin" />
               <Circle v-else class="w-4 h-4 text-white/40" />
-              <span class="text-sm" :class="stepClass('admin')">Create admin identity</span>
+              <span class="text-sm" :class="stepClass('admin')">{{ t('setup.steps.admin') }}</span>
             </div>
             <div class="flex items-center gap-2">
               <CheckCircle2 v-if="isStepComplete('organization')" class="w-4 h-4 text-green-400" />
               <Loader2 v-else-if="isStepActive('organization')" class="w-4 h-4 text-white animate-spin" />
               <Circle v-else class="w-4 h-4 text-white/40" />
-              <span class="text-sm" :class="stepClass('organization')">Create organization</span>
+              <span class="text-sm" :class="stepClass('organization')">{{ t('setup.steps.organization') }}</span>
             </div>
             <div class="flex items-center gap-2">
               <CheckCircle2 v-if="isStepComplete('registry')" class="w-4 h-4 text-green-400" />
               <Loader2 v-else-if="isStepActive('registry')" class="w-4 h-4 text-white animate-spin" />
               <Circle v-else class="w-4 h-4 text-white/40" />
-              <span class="text-sm" :class="stepClass('registry')">Create credential registry</span>
+              <span class="text-sm" :class="stepClass('registry')">{{ t('setup.steps.registry') }}</span>
             </div>
             <div class="flex items-center gap-2">
               <CheckCircle2 v-if="isStepComplete('credential')" class="w-4 h-4 text-green-400" />
               <Loader2 v-else-if="isStepActive('credential')" class="w-4 h-4 text-white animate-spin" />
               <Circle v-else class="w-4 h-4 text-white/40" />
-              <span class="text-sm" :class="stepClass('credential')">Issue admin credential</span>
+              <span class="text-sm" :class="stepClass('credential')">{{ t('setup.steps.credential') }}</span>
             </div>
             <div class="flex items-center gap-2">
               <CheckCircle2 v-if="isStepComplete('space')" class="w-4 h-4 text-green-400" />
               <Loader2 v-else-if="isStepActive('space')" class="w-4 h-4 text-white animate-spin" />
               <Circle v-else class="w-4 h-4 text-white/40" />
-              <span class="text-sm" :class="stepClass('space')">Create spaces</span>
+              <span class="text-sm" :class="stepClass('space')">{{ t('setup.steps.space') }}</span>
             </div>
             <div class="flex items-center gap-2">
-              <CheckCircle2 v-if="isStepComplete('complete')" class="w-4 h-4 text-green-400" />
-              <Loader2 v-else-if="isStepActive('Saving')" class="w-4 h-4 text-white animate-spin" />
+              <CheckCircle2 v-if="isStepComplete('saving')" class="w-4 h-4 text-green-400" />
+              <Loader2 v-else-if="isStepActive('saving')" class="w-4 h-4 text-white animate-spin" />
               <Circle v-else class="w-4 h-4 text-white/40" />
-              <span class="text-sm" :class="stepClass('Saving')">Save configuration</span>
+              <span class="text-sm" :class="stepClass('saving')">{{ t('setup.steps.saving') }}</span>
             </div>
           </div>
         </div>
@@ -185,13 +185,16 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { Info, AlertCircle, Rocket, Loader2, CheckCircle2, Circle, User, Upload } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
 import MInput from '../base/MInput.vue';
-import { useOrgSetup } from 'src/composables/useOrgSetup';
+import { useOrgSetup, type OrgSetupStep } from 'src/composables/useOrgSetup';
 import { uploadFile } from 'src/lib/api/client';
 import { KIT } from 'src/generated/kit';
 import kitLogo from 'src/assets/kit/logo.png';
+
+const { t } = useI18n();
 
 const emit = defineEmits<{
   (e: 'setup-complete'): void;
@@ -218,27 +221,61 @@ const isFormValid = computed(() => {
   return adminName.value.trim().length >= 2;
 });
 
-// Progress step helpers
-function isStepComplete(keyword: string): boolean {
-  if (keyword === 'complete') {
-    return progress.value.includes('complete');
-  }
-  const progressLower = progress.value.toLowerCase();
-  const steps = ['connecting', 'admin', 'organization', 'registry', 'credential', 'space', 'saving'];
-  const stepIndex = steps.indexOf(keyword.toLowerCase());
-  const currentStepIndex = steps.findIndex(s => progressLower.includes(s));
-  return stepIndex >= 0 && currentStepIndex >= 0 && stepIndex < currentStepIndex;
+// Progress step helpers. The composable emits a language-independent step key
+// (#783); map each to a position in the sequence, and each of the seven
+// displayed steps to the position it represents, so the checklist advances
+// off the key rather than matching English substrings.
+type VisualStep =
+  | 'connecting'
+  | 'admin'
+  | 'organization'
+  | 'registry'
+  | 'credential'
+  | 'space'
+  | 'saving';
+
+const STEP_ORDER: Record<Exclude<OrgSetupStep, ''>, number> = {
+  generating: 0,
+  connecting: 0,
+  admin: 1,
+  organization: 2,
+  registry: 3,
+  schema: 3,
+  credential: 4,
+  oobi: 4,
+  backend: 4,
+  space: 5,
+  saving: 6,
+  complete: 7,
+};
+
+const VISUAL_ORDER: Record<VisualStep, number> = {
+  connecting: 0,
+  admin: 1,
+  organization: 2,
+  registry: 3,
+  credential: 4,
+  space: 5,
+  saving: 6,
+};
+
+function currentOrder(): number {
+  return progress.value ? STEP_ORDER[progress.value] : -1;
 }
 
-function isStepActive(keyword: string): boolean {
-  return progress.value.toLowerCase().includes(keyword.toLowerCase());
+function isStepComplete(step: VisualStep): boolean {
+  return currentOrder() > VISUAL_ORDER[step];
 }
 
-function stepClass(keyword: string): string {
-  if (isStepComplete(keyword) || isStepComplete('complete')) {
+function isStepActive(step: VisualStep): boolean {
+  return currentOrder() === VISUAL_ORDER[step];
+}
+
+function stepClass(step: VisualStep): string {
+  if (isStepComplete(step)) {
     return 'text-green-400';
   }
-  if (isStepActive(keyword)) {
+  if (isStepActive(step)) {
     return 'text-white';
   }
   return 'text-white/40';

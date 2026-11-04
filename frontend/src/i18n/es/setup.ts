@@ -1,0 +1,43 @@
+// MACHINE DRAFT (#783) — English (src/i18n/en) is authoritative. These strings
+// are unreviewed machine translations and may be wrong until a human confirms.
+export default {
+  logoAlt: 'Logo de {brand}',
+  title: 'Configurar {brand}',
+  firstAdminNotice:
+    'Eres el primer administrador. Crea tu perfil de administrador para poner {brand} en línea.',
+  adminNameLabel: 'Nombre para mostrar del administrador',
+  adminNamePlaceholder: 'p. ej., Juan Pérez',
+  adminEmailLabel: 'Correo del administrador',
+  adminEmailPlaceholder: "admin{'@'}ejemplo.com",
+  adminAvatarLabel: 'Avatar del administrador',
+  avatarPreviewAlt: 'Vista previa del avatar',
+  changeAvatar: 'Cambiar',
+  uploadAvatar: 'Subir',
+  removeAvatar: 'Quitar',
+  errorTitle: 'Error de configuración',
+  launchApp: 'Iniciar aplicación',
+  settingUp: 'Configurando tu organización...',
+  steps: {
+    connecting: 'Conectar a KERIA',
+    admin: 'Crear identidad de administrador',
+    organization: 'Crear organización',
+    registry: 'Crear registro de credenciales',
+    credential: 'Emitir credencial de administrador',
+    space: 'Crear espacios',
+    saving: 'Guardar configuración',
+  },
+  progress: {
+    generating: 'Generando credenciales de administrador...',
+    connecting: 'Conectando a KERIA...',
+    admin: 'Creando identidad de administrador...',
+    organization: 'Creando identidad de la organización...',
+    registry: 'Creando registro de credenciales...',
+    schema: 'Cargando esquema de credenciales...',
+    credential: 'Emitiendo credencial de administrador...',
+    oobi: 'Generando OOBI de la organización...',
+    backend: 'Configurando identidad del backend...',
+    space: 'Creando espacio comunitario...',
+    saving: 'Guardando configuración...',
+    complete: '¡Configuración completada!',
+  },
+};
