@@ -1773,9 +1773,12 @@ func (s *Service) ListRegistrations(_ context.Context, spaceID, contribID string
 // already offered, or in any later lifecycle stage are left untouched.
 //
 // Children in ContribCreated are confirmed first so they satisfy OfferContribution's
-// status guard. Load failures are logged and skipped (best-effort); save and offer
-// failures abort.
-func (s *Service) propagateOfferToChildren(ctx context.Context, spaceID string, parent *Contribution) error {
+// status guard. Propagation is entirely best-effort: load, save and offer failures
+// for any one child are logged and skipped so a propagation hiccup never fails the
+// parent's own transition (accept/assign/re-confirm). The parent's committed state
+// is the authoritative result; children that could not be reached are simply left
+// for a later confirm/offer to pick up. See issue #803.
+func (s *Service) propagateOfferToChildren(ctx context.Context, spaceID string, parent *Contribution) {
 	for _, childID := range parent.ChildContributionIDs {
 		child, err := s.GetContribution(ctx, spaceID, childID)
 		if err != nil {
@@ -1791,14 +1794,15 @@ func (s *Service) propagateOfferToChildren(ctx context.Context, spaceID string, 
 		if child.Status == ContribCreated {
 			child.Status = ContribConfirmed
 			if err := s.store.Save(spaceID, child.ID, "contribution", child); err != nil {
-				return fmt.Errorf("propagateOfferToChildren: confirming child %s: %w", child.ID, err)
+				log.Printf("propagateOfferToChildren: confirming child %s (skipped): %v", child.ID, err)
+				continue
 			}
 		}
 		if _, err := s.OfferContribution(ctx, spaceID, child.ID, parent.AssignedContributorID, parent.AssignedContributorName); err != nil {
-			return fmt.Errorf("propagateOfferToChildren: offering child %s: %w", child.ID, err)
+			log.Printf("propagateOfferToChildren: offering child %s (skipped): %v", child.ID, err)
+			continue
 		}
 	}
-	return nil
 }
 
 // AssignContributor assigns a contributor to a contribution.
@@ -1816,9 +1820,7 @@ func (s *Service) AssignContributor(ctx context.Context, spaceID, contribID, use
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, err
 	}
-	if err := s.propagateOfferToChildren(ctx, spaceID, c); err != nil {
-		return nil, err
-	}
+	s.propagateOfferToChildren(ctx, spaceID, c)
 	return c, nil
 }
 
@@ -1872,9 +1874,7 @@ func (s *Service) ConfirmContribution(ctx context.Context, spaceID, contribution
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
 	if propagateChildren {
-		if err := s.propagateOfferToChildren(ctx, spaceID, c); err != nil {
-			return nil, err
-		}
+		s.propagateOfferToChildren(ctx, spaceID, c)
 	}
 	return c, nil
 }
@@ -1909,6 +1909,16 @@ func (s *Service) OfferContribution(ctx context.Context, spaceID, contributionID
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
 	}
+	// Idempotent: re-offering a contribution that is already assigned to the
+	// very user it would be offered to is a benign no-op (issue #803). Without
+	// this, a lead re-offer — or the child-propagation step — that targets an
+	// already-assigned-to-same-user contribution would hard-error with
+	// "must be confirmed, shared, or offered to (re-)offer, current: assigned",
+	// the exact failure the reporter hit. The contribution is already in the
+	// intended end state for that user, so return it unchanged.
+	if c.Status == ContribAssigned && c.AssignedContributorID == offeredTo && offeredTo != "" {
+		return c, nil
+	}
 	if c.Status != ContribConfirmed && c.Status != ContribShared && c.Status != ContribOffered {
 		return nil, fmt.Errorf("contribution must be confirmed, shared, or offered to (re-)offer, current: %s", c.Status)
 	}
@@ -1935,6 +1945,19 @@ func (s *Service) AcceptOffer(ctx context.Context, spaceID, contributionID, user
 		return nil, fmt.Errorf("contribution not found: %w", err)
 	}
 	switch c.Status {
+	case ContribAssigned:
+		// Idempotent: re-accepting a contribution already assigned to the
+		// accepting user is a benign no-op that returns the current record.
+		// This is the recovery path for issue #803: a prior accept committed
+		// the assignment but (before the propagation fix above) surfaced a
+		// best-effort child-propagation error to the client, leaving its local
+		// copy stale on "offered" and the "Accept Offer" button showing. The
+		// re-accept must succeed rather than hard-erroring on the now-assigned
+		// status, so the client can refresh to the committed assigned state.
+		if c.AssignedContributorID == userID {
+			return c, nil
+		}
+		return nil, fmt.Errorf("contribution is already assigned to %s, not %s", c.AssignedContributorID, userID)
 	case ContribOffered:
 		if c.OfferedTo != userID {
 			return nil, fmt.Errorf("contribution is offered to %s, not %s", c.OfferedTo, userID)
@@ -1957,9 +1980,7 @@ func (s *Service) AcceptOffer(ctx context.Context, spaceID, contributionID, user
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
-	if err := s.propagateOfferToChildren(ctx, spaceID, c); err != nil {
-		return nil, err
-	}
+	s.propagateOfferToChildren(ctx, spaceID, c)
 	return c, nil
 }
 
