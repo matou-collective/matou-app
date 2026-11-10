@@ -11,7 +11,7 @@ import (
 // survive validation, so the reconstructed version is 0.
 type rejectAllValidator struct{}
 
-func (rejectAllValidator) ValidateChange(_, _, _, _, _ string, _ int64, _ []ChangeOp, _ map[string]json.RawMessage) bool {
+func (rejectAllValidator) ValidateChange(_, _, _, _, _ string, _ int64, _ []ChangeOp, _ map[string]json.RawMessage, _ bool) bool {
 	return false
 }
 
