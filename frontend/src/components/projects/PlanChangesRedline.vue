@@ -136,6 +136,7 @@ function changedByLabel(aid: string): string {
 function contributionTagLabel(kind: ContributionChangeItem['kind']): string {
   if (kind === 'contribution_added') return 'Added';
   if (kind === 'contribution_removed') return 'Removed';
+  if (kind === 'contribution_moved') return 'Moved';
   return 'Edited';
 }
 

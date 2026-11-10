@@ -575,3 +575,70 @@ func TestContributionsHandler_Reorder(t *testing.T) {
 		t.Errorf("expected 400 for bad reorder list, got %d", w.Code)
 	}
 }
+
+func TestContributionsHandler_Move(t *testing.T) {
+	handler := setupTestContributionsHandler()
+	ctx := context.Background()
+	spaceID := resolveCommunitySpaceID(httptest.NewRequest(http.MethodGet, "/", nil), handler.spaceManager)
+
+	proj, err := handler.service.CreateProject(ctx, spaceID, &contributions.CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	plan, err := handler.service.CreateImplementationPlan(ctx, spaceID, &contributions.CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+	if err != nil {
+		t.Fatalf("CreateImplementationPlan: %v", err)
+	}
+	ms1, err := handler.service.AddMilestone(ctx, spaceID, "u", &contributions.CreateMilestoneRequest{ImplementationPlanID: plan.ID, Title: "M1", Duration: "1w"})
+	if err != nil {
+		t.Fatalf("AddMilestone M1: %v", err)
+	}
+	ms2, err := handler.service.AddMilestone(ctx, spaceID, "u", &contributions.CreateMilestoneRequest{ImplementationPlanID: plan.ID, Title: "M2", Duration: "1w"})
+	if err != nil {
+		t.Fatalf("AddMilestone M2: %v", err)
+	}
+	mk := func(title, milestoneID, parentID string) *contributions.Contribution {
+		c, err := handler.service.CreateContribution(ctx, spaceID, &contributions.CreateContributionRequest{
+			ProjectID: proj.ID, MilestoneID: milestoneID, ParentContributionID: parentID, Title: title, Description: "d",
+			ContributionType: contributions.ProposalTypeTechnical, Priority: contributions.PriorityMedium,
+			CreatedBy: "u", Objectives: []string{"o"}, Deliverables: []string{"d"},
+			AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		})
+		if err != nil {
+			t.Fatalf("CreateContribution: %v", err)
+		}
+		return c
+	}
+	top := mk("Top", ms1.MilestoneID, "")
+	sub := mk("Sub", "", top.ID)
+
+	// A top-level contribution moves to the target milestone (200).
+	body, _ := json.Marshal(map[string]interface{}{"milestone_id": ms2.MilestoneID})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+top.ID+"/move", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.HandleMove(w, req, top.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	got, _ := handler.service.GetContribution(ctx, spaceID, top.ID)
+	if got.MilestoneID != ms2.MilestoneID {
+		t.Errorf("contribution milestone = %q, want %q", got.MilestoneID, ms2.MilestoneID)
+	}
+
+	// Moving a sub-contribution is rejected at the API (400).
+	body, _ = json.Marshal(map[string]interface{}{"milestone_id": ms2.MilestoneID})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+sub.ID+"/move", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	handler.HandleMove(w, req, sub.ID)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 moving a sub-contribution, got %d", w.Code)
+	}
+
+	// A missing milestone_id is a 400.
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+top.ID+"/move", bytes.NewReader([]byte(`{}`)))
+	w = httptest.NewRecorder()
+	handler.HandleMove(w, req, top.ID)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing milestone_id, got %d", w.Code)
+	}
+}

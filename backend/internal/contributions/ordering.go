@@ -133,6 +133,28 @@ func (s *Service) nextSortOrder(ctx context.Context, spaceID string, siblingIDs 
 	return maxOrder + 1
 }
 
+// renumberSiblings assigns contiguous SortOrder positions (0..n-1) to the given
+// sibling ids in their current canonical order, so a group stays gap-free after
+// a member leaves it (e.g. a cross-milestone move). Missing or archived
+// siblings are skipped. Best-effort: a per-contribution save failure is
+// ignored, mirroring the change-log handling elsewhere.
+func (s *Service) renumberSiblings(ctx context.Context, spaceID string, siblingIDs []string) {
+	sibs := make([]*Contribution, 0, len(siblingIDs))
+	for _, id := range siblingIDs {
+		c, err := s.GetContribution(ctx, spaceID, id)
+		if err != nil || c.Status == ContribArchived {
+			continue
+		}
+		sibs = append(sibs, c)
+	}
+	SortSiblings(sibs)
+	for i := range sibs {
+		pos := i
+		sibs[i].SortOrder = &pos
+		_ = s.SaveContribution(ctx, spaceID, sibs[i])
+	}
+}
+
 // ReorderContributions assigns contiguous SortOrder positions to a sibling
 // group according to orderedIDs. representativeID is any contribution in the
 // target group (its path-resolved project is already RBAC-checked by the

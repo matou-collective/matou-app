@@ -581,6 +581,8 @@
       v-model="showContribForm"
       :project-id="editingContribution?.project_id ?? project?.id ?? ''"
       :milestone-id="editingContribution?.milestone_id"
+      :milestones="milestones"
+      :can-move-milestone="perms.canReorderContributions.value"
       :editing="true"
       :contribution="(editingContribution as any)"
       :can-offer="perms.isLead.value || perms.isSteward.value"
@@ -967,12 +969,24 @@ async function doArchiveContribution() {
 
 async function onContributionSave(payload: Record<string, unknown>) {
   if (!editingContribution.value || !project.value) return;
-  // contribution_type isn't in UpdateContributionRequest — strip it before sending.
+  // contribution_type isn't in UpdateContributionRequest; milestone_id is not a
+  // plain-update field (it routes through the dedicated move endpoint). Strip
+  // both before sending the update.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { contribution_type, ...rest } = payload as { contribution_type?: string } & UpdateContributionRequest;
+  const { contribution_type, milestone_id, ...rest } = payload as {
+    contribution_type?: string;
+    milestone_id?: string;
+  } & UpdateContributionRequest;
   const req = rest as UpdateContributionRequest;
+  const targetMilestoneId =
+    typeof milestone_id === 'string' && milestone_id !== editingContribution.value.milestone_id
+      ? milestone_id
+      : undefined;
   try {
     await contributionsStore.update(editingContribution.value.id, req);
+    if (targetMilestoneId) {
+      await contributionsStore.move(editingContribution.value.id, targetMilestoneId);
+    }
     // Refresh the plan AND the flat project-contributions list (+ any open
     // detail dialog) so the edit shows immediately — the plan alone does not
     // hydrate sub-contributions, so the sub-list would stay stale (#751).

@@ -73,7 +73,8 @@ export type PlanChangeKind =
   | 'milestone_archived'
   | 'contribution_added'
   | 'contribution_edited'
-  | 'contribution_removed';
+  | 'contribution_removed'
+  | 'contribution_moved';
 
 export interface PlanChangeEntry {
   id: string;

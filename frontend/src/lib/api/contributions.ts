@@ -426,6 +426,27 @@ export async function reorderContributions(orderedIds: string[]): Promise<{ cont
   return response.json();
 }
 
+/**
+ * Move a top-level contribution to a different milestone within the same
+ * implementation plan. The backend keeps milestone membership consistent across
+ * its three stores, appends the contribution to the end of the target
+ * milestone, invalidates plan sign-off, and records a move change-log entry.
+ * Sub-contributions are rejected. Lead/steward only (project-scoped RBAC).
+ */
+export async function moveContribution(id: string, milestoneId: string): Promise<Contribution> {
+  log.info('Moving contribution %s to milestone %s', id, milestoneId);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/move`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ milestone_id: milestoneId }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to move contribution');
+  }
+  return response.json();
+}
+
 export interface ContributionComment {
   id: string;
   contribution_id: string;
