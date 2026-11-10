@@ -122,6 +122,7 @@
 import { computed, ref } from 'vue';
 import type { Contribution } from 'src/lib/api/contributions';
 import { startOfWeek, addWeeks, weekKey, sameWeek } from 'src/lib/weekRange';
+import { isOverdueContribution } from 'src/lib/contributionsView';
 import ContributionSlimCard from 'src/components/contributions/ContributionSlimCard.vue';
 
 interface Props {
@@ -135,31 +136,14 @@ defineEmits<{ (e: 'view-contribution', c: Contribution): void }>();
 const overdueExpanded = ref(false);
 const tbcExpanded = ref(false);
 
-const COMPLETED_STATUSES = new Set([
-  'signed_off',
-  'rewarded',
-  'completed',
-  'archived',
-]);
-
-const startOfToday = (): Date => {
-  const t = new Date();
-  return new Date(t.getFullYear(), t.getMonth(), t.getDate(), 0, 0, 0, 0);
-};
-
 // Overdue = active work with a past deadline. Signed-off / rewarded /
-// archived items aren't "overdue" even if their deadline has passed, so
-// keep the status filter here.
-const overdue = computed(() => {
-  const today = startOfToday().getTime();
-  return [...props.contributions]
-    .filter((c) => {
-      if (!c.deadline) return false;
-      if (COMPLETED_STATUSES.has(c.status)) return false;
-      return new Date(c.deadline).getTime() < today;
-    })
-    .sort((a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime());
-});
+// archived items aren't "overdue" even if their deadline has passed. Shared
+// with the list view's Overdue filter (isOverdueContribution).
+const overdue = computed(() =>
+  [...props.contributions]
+    .filter((c) => isOverdueContribution(c))
+    .sort((a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime()),
+);
 
 // Strip: trust the parent's scope filter. The only thing we route out is
 // active past-deadline items, which land in the Overdue section above.
@@ -168,9 +152,7 @@ const overdue = computed(() => {
 const onTimelineContributions = computed(() =>
   props.contributions.filter((c) => {
     if (!c.deadline) return false;
-    const past = new Date(c.deadline).getTime() < startOfToday().getTime();
-    const stillActive = !COMPLETED_STATUSES.has(c.status);
-    if (past && stillActive) return false;
+    if (isOverdueContribution(c)) return false;
     return true;
   }),
 );
