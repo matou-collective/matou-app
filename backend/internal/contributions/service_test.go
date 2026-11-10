@@ -4,6 +4,7 @@ package contributions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -2000,6 +2001,166 @@ func TestAcceptOffer_PropagatesAssigneeToCreatedChildren(t *testing.T) {
 	}
 	if reloaded.Status != ContribOffered {
 		t.Errorf("expected status offered, got %s", reloaded.Status)
+	}
+}
+
+// failingChildSaveStore fails Save for one specific objectID, used to simulate
+// a child-propagation failure that must not fail the parent's own accept.
+type failingChildSaveStore struct {
+	*MockObjectStore
+	failObjectID string
+}
+
+func (f *failingChildSaveStore) Save(spaceID, objectID, objectType string, data interface{}) error {
+	if objectID == f.failObjectID {
+		return fmt.Errorf("simulated save failure for %s", objectID)
+	}
+	return f.MockObjectStore.Save(spaceID, objectID, objectType, data)
+}
+
+// Issue #803: accepting an offered contribution whose child-propagation step
+// fails must still succeed and leave the parent assigned — the assignment is
+// already committed, so a best-effort propagation hiccup must not be reported
+// to the caller as an accept failure.
+func TestAcceptOffer_ChildPropagationFailureStillSucceeds(t *testing.T) {
+	store := &failingChildSaveStore{MockObjectStore: NewMockStore()}
+	svc := NewService(store)
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "parent task",
+		Description:        "parent description",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
+		Deadline:           "2026-12-31",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("confirm parent: %v", err)
+	}
+
+	child := createUnassignedChild(ctx, t, svc, spaceID, parent.ID)
+	// Make the child's propagation save fail, reproducing the original defect.
+	store.failObjectID = child.ID
+
+	if _, err := svc.OfferContribution(ctx, spaceID, parent.ID, "user-A", "User A"); err != nil {
+		t.Fatalf("OfferContribution: %v", err)
+	}
+	accepted, err := svc.AcceptOffer(ctx, spaceID, parent.ID, "user-A")
+	if err != nil {
+		t.Fatalf("AcceptOffer must succeed despite child propagation failure, got: %v", err)
+	}
+	if accepted.Status != ContribAssigned {
+		t.Errorf("accepted status = %s, want assigned", accepted.Status)
+	}
+	if accepted.AssignedContributorID != "user-A" {
+		t.Errorf("assigned contributor = %q, want user-A", accepted.AssignedContributorID)
+	}
+
+	// The committed state must also be assigned on reload.
+	reloaded, err := svc.GetContribution(ctx, spaceID, parent.ID)
+	if err != nil {
+		t.Fatalf("reload parent: %v", err)
+	}
+	if reloaded.Status != ContribAssigned {
+		t.Errorf("reloaded status = %s, want assigned", reloaded.Status)
+	}
+}
+
+// Issue #803: re-accepting a contribution already assigned to the accepting
+// user is an idempotent no-op that returns the current record, not an error.
+// This is the recovery path for a client whose first accept appeared to fail.
+func TestAcceptOffer_IdempotentWhenAlreadyAssignedToSameUser(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	c, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "task",
+		Description:        "desc",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
+		Deadline:           "2026-12-31",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, c.ID); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := svc.OfferContribution(ctx, spaceID, c.ID, "user-A", "User A"); err != nil {
+		t.Fatalf("offer: %v", err)
+	}
+	if _, err := svc.AcceptOffer(ctx, spaceID, c.ID, "user-A"); err != nil {
+		t.Fatalf("first accept: %v", err)
+	}
+
+	// Second accept by the same user must be a benign no-op, not an error.
+	second, err := svc.AcceptOffer(ctx, spaceID, c.ID, "user-A")
+	if err != nil {
+		t.Fatalf("re-accept must be idempotent, got: %v", err)
+	}
+	if second.Status != ContribAssigned || second.AssignedContributorID != "user-A" {
+		t.Errorf("re-accept returned status=%s assignee=%q, want assigned/user-A", second.Status, second.AssignedContributorID)
+	}
+
+	// A different user may not steal an already-assigned contribution.
+	if _, err := svc.AcceptOffer(ctx, spaceID, c.ID, "user-B"); err == nil {
+		t.Error("accept by a different user on an assigned contribution should error")
+	}
+}
+
+// Issue #803: re-offering a contribution already assigned to the very user it
+// would be offered to is a benign no-op, not the "current: assigned" hard error.
+func TestOfferContribution_IdempotentWhenAlreadyAssignedToSameUser(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	c, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "task",
+		Description:        "desc",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
+		Deadline:           "2026-12-31",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, c.ID); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := svc.OfferContribution(ctx, spaceID, c.ID, "user-A", "User A"); err != nil {
+		t.Fatalf("offer: %v", err)
+	}
+	if _, err := svc.AcceptOffer(ctx, spaceID, c.ID, "user-A"); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+
+	reoffered, err := svc.OfferContribution(ctx, spaceID, c.ID, "user-A", "User A")
+	if err != nil {
+		t.Fatalf("re-offer to the assigned user must be a no-op, got: %v", err)
+	}
+	if reoffered.Status != ContribAssigned {
+		t.Errorf("re-offer status = %s, want assigned (unchanged)", reoffered.Status)
 	}
 }
 
