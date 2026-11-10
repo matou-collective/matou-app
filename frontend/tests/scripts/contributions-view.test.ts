@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
-  filterByScope,
+  filterByOwnership,
+  filterByStatus,
   filterByType,
+  isOfferedToMe,
+  isOverdueContribution,
   searchContributions,
   sortContributions,
   applyContributionsView,
@@ -52,35 +55,66 @@ describe('filterByType', () => {
   });
 });
 
-describe('filterByScope', () => {
-  it('"all" hides archived, rewarded, confirmed, and offers to others', () => {
+describe('filterByOwnership', () => {
+  it('"all" keeps everything but hides offers made privately to other users', () => {
+    const list = [
+      make({ id: 'ok', status: 'shared' }),
+      make({ id: 'my-offer', status: 'offered', offered_to: ME }),
+      make({ id: 'other-offer', status: 'offered', offered_to: 'did:someone-else' }),
+    ];
+    const r = filterByOwnership(list, 'all', ME).map((c) => c.id);
+    expect(r).toEqual(['ok', 'my-offer']);
+  });
+
+  it('"all" keeps offers to other users visible for admins', () => {
+    const list = [
+      make({ id: 'other-offer', status: 'offered', offered_to: 'did:someone-else' }),
+      make({ id: 'ok', status: 'shared' }),
+    ];
+    const r = filterByOwnership(list, 'all', ME, { viewerIsAdmin: true }).map((c) => c.id);
+    expect(r).toEqual(['other-offer', 'ok']);
+  });
+
+  it('"mine" matches assigned or offered to me, regardless of status', () => {
+    const list = [
+      make({ id: 'assigned', status: 'in_progress', assigned_contributor_id: ME }),
+      make({ id: 'offered', status: 'offered', offered_to: ME }),
+      make({ id: 'archived-mine', status: 'archived', assigned_contributor_id: ME }),
+      make({ id: 'not-mine', status: 'shared' }),
+    ];
+    const r = filterByOwnership(list, 'mine', ME).map((c) => c.id);
+    // Ownership no longer hides terminal statuses — the status axis does that.
+    expect(r).toEqual(['assigned', 'offered', 'archived-mine']);
+  });
+
+  it('"offered_to_me" shows only pending offers addressed to me', () => {
+    const list = [
+      make({ id: 'to-me', status: 'offered', offered_to: ME }),
+      make({ id: 'to-other', status: 'offered', offered_to: 'did:someone-else' }),
+      make({ id: 'assigned-me', status: 'in_progress', assigned_contributor_id: ME }),
+    ];
+    expect(filterByOwnership(list, 'offered_to_me', ME).map((c) => c.id)).toEqual(['to-me']);
+  });
+});
+
+describe('isOfferedToMe', () => {
+  it('is true only for status "offered" addressed to me', () => {
+    expect(isOfferedToMe(make({ status: 'offered', offered_to: ME }), ME)).toBe(true);
+    expect(isOfferedToMe(make({ status: 'offered', offered_to: 'other' }), ME)).toBe(false);
+    expect(isOfferedToMe(make({ status: 'assigned', offered_to: ME }), ME)).toBe(false);
+    expect(isOfferedToMe(make({ status: 'offered', offered_to: ME }), '')).toBe(false);
+  });
+});
+
+describe('filterByStatus', () => {
+  it('"all" hides archived, rewarded, and confirmed (planning)', () => {
     const list = [
       make({ id: 'ok', status: 'shared' }),
       make({ id: 'arch', status: 'archived' }),
       make({ id: 'rew', status: 'rewarded' }),
       make({ id: 'plan', status: 'confirmed' }),
-      make({ id: 'other-offer', status: 'offered', offered_to: 'did:someone-else' }),
-      make({ id: 'my-offer', status: 'offered', offered_to: ME }),
     ];
-    const r = filterByScope(list, 'all', ME).map((c) => c.id);
-    expect(r).toContain('ok');
-    expect(r).toContain('my-offer');
-    expect(r).not.toContain('arch');
-    expect(r).not.toContain('rew');
-    expect(r).not.toContain('plan');
-    expect(r).not.toContain('other-offer');
-  });
-
-  it('"mine" matches assigned or offered to me, excluding archived and rewarded', () => {
-    const list = [
-      make({ id: 'assigned', status: 'in_progress', assigned_contributor_id: ME }),
-      make({ id: 'offered', status: 'offered', offered_to: ME }),
-      make({ id: 'archived-mine', status: 'archived', assigned_contributor_id: ME }),
-      make({ id: 'rewarded-mine', status: 'rewarded', assigned_contributor_id: ME }),
-      make({ id: 'not-mine', status: 'shared' }),
-    ];
-    const r = filterByScope(list, 'mine', ME).map((c) => c.id);
-    expect(r).toEqual(['assigned', 'offered']);
+    expect(filterByStatus(list, 'all').map((c) => c.id)).toEqual(['ok']);
   });
 
   it('"open" only shows shared', () => {
@@ -88,7 +122,7 @@ describe('filterByScope', () => {
       make({ id: 'a', status: 'shared' }),
       make({ id: 'b', status: 'in_progress' }),
     ];
-    expect(filterByScope(list, 'open', ME).map((c) => c.id)).toEqual(['a']);
+    expect(filterByStatus(list, 'open').map((c) => c.id)).toEqual(['a']);
   });
 
   it('"assigned" covers assigned/changed/in_progress', () => {
@@ -98,17 +132,18 @@ describe('filterByScope', () => {
       make({ id: 'c', status: 'in_progress' }),
       make({ id: 'd', status: 'shared' }),
     ];
-    expect(filterByScope(list, 'assigned', ME).map((c) => c.id)).toEqual(['a', 'b', 'c']);
+    expect(filterByStatus(list, 'assigned').map((c) => c.id)).toEqual(['a', 'b', 'c']);
   });
 
-  it('"signed_off" only shows signed_off; rewarded has its own chip', () => {
+  it('"signed_off" and "rewarded" each match only their own status', () => {
     const list = [
       make({ id: 'a', status: 'signed_off' }),
       make({ id: 'b', status: 'rewarded' }),
       make({ id: 'c', status: 'needs_review' }),
     ];
-    expect(filterByScope(list, 'signed_off', ME).map((c) => c.id)).toEqual(['a']);
-    expect(filterByScope(list, 'rewarded', ME).map((c) => c.id)).toEqual(['b']);
+    expect(filterByStatus(list, 'signed_off').map((c) => c.id)).toEqual(['a']);
+    expect(filterByStatus(list, 'rewarded').map((c) => c.id)).toEqual(['b']);
+    expect(filterByStatus(list, 'in_review').map((c) => c.id)).toEqual(['c']);
   });
 
   it('"archived" only shows archived', () => {
@@ -116,7 +151,45 @@ describe('filterByScope', () => {
       make({ id: 'a', status: 'archived' }),
       make({ id: 'b', status: 'shared' }),
     ];
-    expect(filterByScope(list, 'archived', ME).map((c) => c.id)).toEqual(['a']);
+    expect(filterByStatus(list, 'archived').map((c) => c.id)).toEqual(['a']);
+  });
+
+  it('"overdue" shows non-terminal items with a past deadline', () => {
+    const past = '2000-01-01T00:00:00Z';
+    const future = '2999-01-01T00:00:00Z';
+    const list = [
+      make({ id: 'late-active', status: 'in_progress', deadline: past }),
+      make({ id: 'late-done', status: 'signed_off', deadline: past }),
+      make({ id: 'late-archived', status: 'archived', deadline: past }),
+      make({ id: 'future', status: 'in_progress', deadline: future }),
+      make({ id: 'no-deadline', status: 'in_progress' }),
+    ];
+    expect(filterByStatus(list, 'overdue').map((c) => c.id)).toEqual(['late-active']);
+  });
+});
+
+describe('isOverdueContribution', () => {
+  const now = new Date('2026-06-15T12:00:00Z');
+
+  it('is true for a non-terminal item whose deadline is before today', () => {
+    expect(
+      isOverdueContribution(make({ status: 'in_progress', deadline: '2026-06-10T00:00:00Z' }), now),
+    ).toBe(true);
+  });
+
+  it('is false for terminal statuses even with a past deadline', () => {
+    for (const status of ['signed_off', 'rewarded', 'completed', 'archived']) {
+      expect(
+        isOverdueContribution(make({ status, deadline: '2026-06-10T00:00:00Z' }), now),
+      ).toBe(false);
+    }
+  });
+
+  it('is false with no deadline or a future deadline', () => {
+    expect(isOverdueContribution(make({ status: 'in_progress' }), now)).toBe(false);
+    expect(
+      isOverdueContribution(make({ status: 'in_progress', deadline: '2026-07-01T00:00:00Z' }), now),
+    ).toBe(false);
   });
 });
 
@@ -239,7 +312,7 @@ describe('sortContributions', () => {
 });
 
 describe('applyContributionsView', () => {
-  it('composes scope → type → search → sort', () => {
+  it('composes ownership → status → type → search → sort', () => {
     const list = [
       make({
         id: 'match',
@@ -263,7 +336,8 @@ describe('applyContributionsView', () => {
       }),
     ];
     const r = applyContributionsView(list, {
-      scope: 'all',
+      ownership: 'all',
+      status: 'all',
       type: 'technical',
       search: 'fix',
       sortField: 'deadline',
@@ -272,27 +346,52 @@ describe('applyContributionsView', () => {
     });
     expect(r.map((c) => c.id)).toEqual(['match']);
   });
-});
 
-describe('admin visibility', () => {
-  it('"all" keeps offers to other users visible for admins', () => {
+  it('ANDs the ownership and status axes: "Mine" + "Assigned" (issue #809)', () => {
     const list = [
-      make({ id: 'other-offer', status: 'offered', offered_to: 'did:someone-else' }),
-      make({ id: 'my-offer', status: 'offered', offered_to: ME }),
-      make({ id: 'plain', status: 'shared' }),
+      make({ id: 'mine-assigned', status: 'in_progress', assigned_contributor_id: ME }),
+      make({ id: 'mine-signed-off', status: 'signed_off', assigned_contributor_id: ME }),
+      make({ id: 'mine-offered', status: 'offered', offered_to: ME }),
+      make({ id: 'other-assigned', status: 'in_progress', assigned_contributor_id: 'did:other' }),
     ];
-    const r = filterByScope(list, 'all', ME, { viewerIsAdmin: true }).map((c) => c.id);
-    expect(r).toContain('other-offer');
-    expect(r).toContain('my-offer');
-    expect(r).toContain('plain');
+    const r = applyContributionsView(list, {
+      ownership: 'mine',
+      status: 'assigned',
+      type: 'all',
+      search: '',
+      sortField: 'created',
+      sortDirection: 'asc',
+      currentUserId: ME,
+    });
+    // Only my in-progress/assigned work — signed-off and offered dropped.
+    expect(r.map((c) => c.id)).toEqual(['mine-assigned']);
   });
 
-  it('applyContributionsView passes viewerIsAdmin through to the scope filter', () => {
+  it('"Offered to me" isolates pending offers addressed to me', () => {
+    const list = [
+      make({ id: 'to-me', status: 'offered', offered_to: ME }),
+      make({ id: 'to-other', status: 'offered', offered_to: 'did:other' }),
+      make({ id: 'assigned-me', status: 'in_progress', assigned_contributor_id: ME }),
+    ];
+    const r = applyContributionsView(list, {
+      ownership: 'offered_to_me',
+      status: 'all',
+      type: 'all',
+      search: '',
+      sortField: 'created',
+      sortDirection: 'asc',
+      currentUserId: ME,
+    });
+    expect(r.map((c) => c.id)).toEqual(['to-me']);
+  });
+
+  it('passes viewerIsAdmin through to the ownership filter', () => {
     const list = [
       make({ id: 'other-offer', status: 'offered', offered_to: 'did:someone-else' }),
     ];
     const opts = {
-      scope: 'all' as const,
+      ownership: 'all' as const,
+      status: 'all' as const,
       type: 'all',
       search: '',
       sortField: 'created' as const,
