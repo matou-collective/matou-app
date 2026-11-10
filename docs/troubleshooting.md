@@ -106,3 +106,34 @@ The test Postfix relay container runs on port 3525, not the default 2525.
 **Fix:**
 Ensure `MATOU_SMTP_PORT=3525` is set when running the backend in test mode. The BackendManager and Makefile `run-test` target both set this automatically.
 
+---
+
+## macOS desktop signing fails on CI (`SecKeychainUnlock`)
+
+**Symptoms:**
+- The `Matou App Build` workflow (`build.yml`, `v*` tags) fails the mac-arm64 /
+  mac-x64 desktop jobs during electron-builder's certificate import:
+  ```
+  Error: /usr/bin/security process failed 1
+  /usr/bin/security set-key-partition-list -S apple-tool:,apple: -s -k *** <tmp>.keychain
+  security: SecKeychainUnlock: The user name or passphrase you entered is not correct.
+  ```
+- Started when `macos-latest` began resolving to macOS 26 runners.
+
+**Root cause:**
+electron-builder 26.x (`app-builder-lib` `macCodeSign.js`) creates a temp
+keychain with a random password but then runs
+`security set-key-partition-list ... -k <password>` using the **.p12** password
+(`CSC_KEY_PASSWORD`) in place of the **keychain** password. That only works when
+macOS doesn't enforce the keychain password; macOS 26 enforces it, so the
+import fails.
+
+**Fix:**
+We manage the signing keychain ourselves in
+`.github/actions/build-desktop/action.yml` ("Set up macOS signing"), the same
+way the iOS job does: create a throwaway keychain with a known password, import
+the Developer ID `.p12`, run `set-key-partition-list` with the *keychain*
+password, then hand electron-builder `CSC_KEYCHAIN` + `CSC_NAME` and clear
+`CSC_LINK`/`CSC_KEY_PASSWORD` so it never runs its own import. The keychain is
+deleted in an `if: always()` teardown step. See #811.
+
