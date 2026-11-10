@@ -137,3 +137,17 @@ password, then hand electron-builder `CSC_KEYCHAIN` + `CSC_NAME` and clear
 `CSC_LINK`/`CSC_KEY_PASSWORD` so it never runs its own import. The keychain is
 deleted in an `if: always()` teardown step. See #811.
 
+---
+
+## Release fails on Apple agreements
+
+**Symptoms:**
+- The `Matou App Build` workflow fails at the `apple-preflight` job within the first minute with: "Apple has new terms to accept…".
+- (Pre-#813, before the preflight existed:) the mac notarisation or iOS TestFlight step failed only at the very end of a long build.
+
+**Root cause:**
+Apple published new terms. The account holder must accept them before notarisation or TestFlight upload will work.
+
+**Fix:**
+Release fails on Apple agreements: accept at developer.apple.com (sign in as the account holder) and in App Store Connect, then re-run the workflow.
+
