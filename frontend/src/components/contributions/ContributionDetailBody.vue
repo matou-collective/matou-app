@@ -1882,7 +1882,13 @@ async function handleApproveSub(subId: string) {
   actionLoading.value = `approve-sub-${subId}`;
   try {
     const updated = await store.approveSub(subId);
-    $q.notify({ type: 'positive', message: 'Sub-contribution approved and assigned!' });
+    // An unassigned sub lands in 'confirmed', not 'assigned' (see #800) — the
+    // message must not claim it was assigned when nobody is on it.
+    const message =
+      updated.status === 'assigned'
+        ? 'Sub-contribution approved and assigned!'
+        : 'Sub-contribution approved!';
+    $q.notify({ type: 'positive', message });
     updateLocalChild(updated as unknown as Contribution);
     emit('update', updated as unknown as Contribution);
   } catch (e) {

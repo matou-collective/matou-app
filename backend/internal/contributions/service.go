@@ -2374,10 +2374,13 @@ func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionI
 	return c, nil
 }
 
-// ApproveSubContribution transitions a sub-contribution from created/changed to assigned.
-// An assigned contributor is not required; the sub may be approved while unassigned and
-// later inherit the parent's assignee (via propagateOfferToChildren) or be assigned
-// directly via the contribution update endpoint.
+// ApproveSubContribution transitions a sub-contribution from created/changed to
+// assigned when it has an assignee, or to confirmed when it does not. An assigned
+// contributor is not required; an unassigned sub lands in confirmed — the state
+// machine's "approved but unassigned" rung — rather than assigned, so its status no
+// longer implies a person is on it (see #800). It can later inherit the parent's
+// assignee (via propagateOfferToChildren, which picks up confirmed children) or be
+// assigned directly via the contribution update endpoint.
 func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contributionID string) (*Contribution, error) {
 	child, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
@@ -2389,10 +2392,14 @@ func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contribut
 	if child.Status != ContribCreated && child.Status != ContribChanged {
 		return nil, fmt.Errorf("sub-contribution must be in created or changed status to approve, current: %s", child.Status)
 	}
-	if err := ValidateContributionTransition(child.Status, ContribAssigned); err != nil {
+	target := ContribAssigned
+	if child.AssignedContributorID == "" {
+		target = ContribConfirmed
+	}
+	if err := ValidateContributionTransition(child.Status, target); err != nil {
 		return nil, err
 	}
-	child.Status = ContribAssigned
+	child.Status = target
 	child.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, child.ID, "contribution", child); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
