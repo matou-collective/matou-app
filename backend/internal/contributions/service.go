@@ -2393,6 +2393,107 @@ func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contribut
 	return child, nil
 }
 
+// PromoteSubContribution detaches a sub-contribution from its parent and makes
+// it a top-level contribution in the parent chain's milestone. The contribution
+// is removed from its parent's child list, its parent link is cleared, and it is
+// appended to the milestone's top-level list at the end of the sibling order.
+// Like the other structural plan mutations (lead/steward scoped) it invalidates
+// plan sign-off, since a new top-level contribution in a signed-off milestone
+// requires re-signoff — mirroring CreateContribution's handling of an added
+// top-level contribution. See #778.
+func (s *Service) PromoteSubContribution(ctx context.Context, spaceID, contributionID, actorID string) (*Contribution, error) {
+	child, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if child.ParentContributionID == "" {
+		return nil, fmt.Errorf("contribution %s is not a sub-contribution (no parent)", contributionID)
+	}
+
+	// Resolve the milestone the promoted contribution should live under: the
+	// first ancestor in the parent chain that carries a milestone_id.
+	msID, _, _, _ := s.ResolvePlanChangeRefs(ctx, spaceID, child)
+	if msID == "" {
+		return nil, fmt.Errorf("cannot promote %s: no milestone found in its parent chain", contributionID)
+	}
+
+	parentID := child.ParentContributionID
+
+	// Detach from the parent's child list.
+	if parent, perr := s.GetContribution(ctx, spaceID, parentID); perr == nil {
+		filtered := make([]string, 0, len(parent.ChildContributionIDs))
+		for _, id := range parent.ChildContributionIDs {
+			if id != child.ID {
+				filtered = append(filtered, id)
+			}
+		}
+		parent.ChildContributionIDs = filtered
+		parent.UpdatedAt = time.Now()
+		if err := s.store.Save(spaceID, parent.ID, "contribution", parent); err != nil {
+			return nil, fmt.Errorf("saving parent: %w", err)
+		}
+	}
+
+	ms, err := s.GetMilestone(ctx, spaceID, msID)
+	if err != nil {
+		return nil, fmt.Errorf("load milestone: %w", err)
+	}
+
+	// Re-parent the child to the milestone as a top-level contribution. Its
+	// SortOrder lands it at the end of the milestone's existing top-level group,
+	// computed before it is appended to that group.
+	next := s.nextSortOrder(ctx, spaceID, ms.ContributionIDs)
+	child.ParentContributionID = ""
+	child.MilestoneID = msID
+	child.SortOrder = &next
+
+	alreadyListed := false
+	for _, id := range ms.ContributionIDs {
+		if id == child.ID {
+			alreadyListed = true
+			break
+		}
+	}
+	if !alreadyListed {
+		ms.ContributionIDs = append(ms.ContributionIDs, child.ID)
+	}
+
+	if err := s.SaveContribution(ctx, spaceID, child); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	if err := s.store.Save(spaceID, ms.MilestoneID, "milestone", ms); err != nil {
+		return nil, fmt.Errorf("saving milestone: %w", err)
+	}
+
+	// Refresh the plan's inline milestone copy, invalidate sign-off (a new
+	// top-level contribution requires re-signoff, as on create), and record the
+	// promotion on the change log for plan history.
+	if plan, _, perr := s.findMilestone(ctx, spaceID, msID); perr == nil {
+		for i := range plan.Milestones {
+			if plan.Milestones[i].MilestoneID == ms.MilestoneID {
+				plan.Milestones[i] = *ms
+				break
+			}
+		}
+		if plan.SignedOff {
+			plan.SignedOff = false
+			plan.Proof = nil // invalidated sign-off must not keep a live-looking proof
+		}
+		appendPlanChange(plan, PlanChangeEntry{
+			Kind:              "contribution_promoted",
+			MilestoneID:       ms.MilestoneID,
+			MilestoneTitle:    ms.Title,
+			ContributionID:    child.ID,
+			ContributionTitle: child.Title,
+			ChangedBy:         actorID,
+		})
+		plan.UpdatedAt = time.Now()
+		_ = s.SaveImplementationPlan(ctx, spaceID, plan)
+	}
+
+	return child, nil
+}
+
 // SignOffPlan marks an implementation plan as signed off after validating all milestones and contributions.
 func (s *Service) SignOffPlan(ctx context.Context, spaceID, planID, userID string, proof *Proof) (*ImplementationPlan, error) {
 	plan, err := s.GetImplementationPlan(ctx, spaceID, planID)

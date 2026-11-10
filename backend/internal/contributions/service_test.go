@@ -609,6 +609,135 @@ func TestService_CreateContribution_SubDropsMilestoneID(t *testing.T) {
 	}
 }
 
+// Promoting a sub-contribution detaches it from its parent and makes it a
+// top-level contribution in the parent chain's milestone: it leaves the
+// parent's child list, gains the milestone_id, joins the milestone's top-level
+// list, and (because a new top-level contribution appears in a signed-off plan)
+// invalidates sign-off. See #778.
+func TestService_PromoteSubContribution(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+
+	ip, _ := svc.CreateImplementationPlan(ctx, "space-1", &CreateImplementationPlanRequest{
+		ProjectID: "proj-1", TotalBudget: "$1",
+		ProjectLeadID: "lead-1", ProjectStewardID: "steward-1",
+	})
+	ms, _ := svc.AddMilestone(ctx, "space-1", "lead-1", &CreateMilestoneRequest{
+		ImplementationPlanID: ip.ID, Title: "Phase", Duration: "1 week",
+	})
+
+	parent, err := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Parent", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityMedium,
+		CreatedBy: "lead-1", Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		MilestoneID: ms.MilestoneID,
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	sub, err := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Sub", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityMedium,
+		CreatedBy: "lead-1", Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		ParentContributionID: parent.ID,
+	})
+	if err != nil {
+		t.Fatalf("create sub: %v", err)
+	}
+
+	// Mark the plan signed off so we can assert promotion invalidates it.
+	signed, _ := svc.GetImplementationPlan(ctx, "space-1", ip.ID)
+	signed.SignedOff = true
+	if err := svc.SaveImplementationPlan(ctx, "space-1", signed); err != nil {
+		t.Fatalf("mark signed off: %v", err)
+	}
+
+	promoted, err := svc.PromoteSubContribution(ctx, "space-1", sub.ID, "lead-1")
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if promoted.ParentContributionID != "" {
+		t.Errorf("promoted sub should have no parent, got %q", promoted.ParentContributionID)
+	}
+	if promoted.MilestoneID != ms.MilestoneID {
+		t.Errorf("promoted sub should carry milestone %q, got %q", ms.MilestoneID, promoted.MilestoneID)
+	}
+
+	// Milestone now lists both the parent and the promoted contribution.
+	refreshedMs, _ := svc.GetMilestone(ctx, "space-1", ms.MilestoneID)
+	foundInMs := false
+	for _, id := range refreshedMs.ContributionIDs {
+		if id == sub.ID {
+			foundInMs = true
+		}
+	}
+	if !foundInMs {
+		t.Errorf("promoted sub %s should be in milestone list %v", sub.ID, refreshedMs.ContributionIDs)
+	}
+
+	// The parent no longer lists the promoted sub as a child.
+	refreshedParent, _ := svc.GetContribution(ctx, "space-1", parent.ID)
+	for _, id := range refreshedParent.ChildContributionIDs {
+		if id == sub.ID {
+			t.Errorf("promoted sub %s should not remain a child of %s: %v", sub.ID, parent.ID, refreshedParent.ChildContributionIDs)
+		}
+	}
+
+	// Sign-off is invalidated: a new top-level contribution needs re-signoff.
+	refreshedPlan, _ := svc.GetImplementationPlan(ctx, "space-1", ip.ID)
+	if refreshedPlan.SignedOff {
+		t.Errorf("promoting a sub into a signed-off plan should invalidate sign-off")
+	}
+}
+
+// Promoting a contribution that has no parent is an error.
+func TestService_PromoteSubContribution_RejectsTopLevel(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+
+	ip, _ := svc.CreateImplementationPlan(ctx, "space-1", &CreateImplementationPlanRequest{
+		ProjectID: "proj-1", TotalBudget: "$1",
+		ProjectLeadID: "lead-1", ProjectStewardID: "steward-1",
+	})
+	ms, _ := svc.AddMilestone(ctx, "space-1", "lead-1", &CreateMilestoneRequest{
+		ImplementationPlanID: ip.ID, Title: "Phase", Duration: "1 week",
+	})
+	top, err := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Top", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityMedium,
+		CreatedBy: "lead-1", Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		MilestoneID: ms.MilestoneID,
+	})
+	if err != nil {
+		t.Fatalf("create top-level: %v", err)
+	}
+	if _, err := svc.PromoteSubContribution(ctx, "space-1", top.ID, "lead-1"); err == nil {
+		t.Errorf("promoting a top-level contribution should fail")
+	}
+}
+
+func TestActionPromoteSubContribution_LeadStewardOnly(t *testing.T) {
+	cases := []struct {
+		role    Role
+		allowed bool
+	}{
+		{RoleProjectLead, true},
+		{RoleProjectSteward, true},
+		{RoleFoundingMember, true},
+		{RoleOperationsSteward, true},
+		{RoleMember, false},
+		{RoleContributor, false},
+	}
+	for _, c := range cases {
+		if got := CanPerformAction([]Role{c.role}, ActionPromoteSubContribution); got != c.allowed {
+			t.Errorf("ActionPromoteSubContribution for %s: got %v, want %v", c.role, got, c.allowed)
+		}
+	}
+}
+
 func TestService_ContributionLifecycle(t *testing.T) {
 	svc := NewService(NewMockStore())
 	ctx := context.Background()

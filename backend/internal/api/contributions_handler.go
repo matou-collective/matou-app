@@ -216,6 +216,15 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "promote":
+				if r.Method == http.MethodPost {
+					h.withProjectRBAC(contributions.ActionPromoteSubContribution, id, func(w http.ResponseWriter, r *http.Request) {
+						h.HandlePromoteSub(w, r, id)
+					})(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			case "comments":
 				switch r.Method {
 				case http.MethodGet:
@@ -1207,6 +1216,35 @@ func (h *ContributionsHandler) HandleUnassign(w http.ResponseWriter, r *http.Req
 	if h.broker != nil {
 		h.broker.Broadcast(SSEEvent{
 			Type: "contribution:unassigned",
+			Data: map[string]string{"contribution_id": id},
+		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandlePromoteSub handles POST /api/v1/contributions/{id}/promote.
+// Promotes a sub-contribution to a top-level contribution in its parent chain's
+// milestone. RBAC: ActionPromoteSubContribution (lead/steward, project-scoped).
+func (h *ContributionsHandler) HandlePromoteSub(w http.ResponseWriter, r *http.Request, id string) {
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	actorID := GetUserAID(r)
+	if actorID == "" {
+		actorID = r.Header.Get("X-User-AID")
+	}
+	contrib, err := h.service.PromoteSubContribution(r.Context(), spaceID, id, actorID)
+	if err != nil {
+		log.Printf("[Contributions] promote failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] sub-contribution %s promoted to top-level", id)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:promoted",
 			Data: map[string]string{"contribution_id": id},
 		})
 	}

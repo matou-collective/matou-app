@@ -1531,13 +1531,10 @@ async function handleContributionUpdate(updated: Contribution & { _action?: stri
 
   // Refresh both the implementation plan AND project contributions so the
   // milestone view (top-level) and collapsible sub-contributions list both
-  // pick up the new status.
-  if (project.value) {
-    await Promise.all([
-      projectsStore.fetchImplementationPlan(project.value.id),
-      projectsStore.fetchProjectContributions(project.value.id),
-    ]);
-  }
+  // pick up the new status, and re-point the open dialog at the fresh data so
+  // a structural change (e.g. promoting a sub-contribution, #778) is reflected
+  // in the viewed parent's sub-list immediately.
+  await refreshPlanAndContributions();
 }
 
 async function handleReorderContributions(orderedIds: string[]) {
