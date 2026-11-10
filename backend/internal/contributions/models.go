@@ -348,12 +348,17 @@ type Vote struct {
 
 // ContributionComment is a user comment on a contribution.
 type ContributionComment struct {
-	ID             string    `json:"id"`
-	ContributionID string    `json:"contribution_id"`
-	UserID         string    `json:"user_id"`
-	UserName       string    `json:"user_name"`
-	Text           string    `json:"text"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             string `json:"id"`
+	ContributionID string `json:"contribution_id"`
+	UserID         string `json:"user_id"`
+	UserName       string `json:"user_name"`
+	Text           string `json:"text"`
+	// MentionedAIDs are the AIDs of people @-mentioned in Text, resolved by the
+	// client from the mention tokens (the `@[person:AID|Name]` token already
+	// carries the canonical AID) so the server need not re-parse display names.
+	// Each is notified when the comment is posted.
+	MentionedAIDs []string  `json:"mentioned_aids,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // --- Project Comments ---
