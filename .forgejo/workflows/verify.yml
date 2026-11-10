@@ -20,10 +20,27 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
         run: |
           set -euo pipefail
-          exec 9>/tmp/matou-swarm.lock
+          # Host-capacity slot 1, resolved from the host's generated
+          # host-capacity.env so this guard flocks the SAME inode swarm.yml/
+          # triage.yml do — the state-dir path (#205/#218), not the stale
+          # /tmp/matou-swarm.lock the cutover left behind. A guard left on /tmp
+          # while the libs and swarm/triage moved to the state dir no longer
+          # shares an inode with them, so it stopped excluding swarm/triage at
+          # all and silently doubled the two-slot host semaphore (#817). Fall
+          # back to the harness-default state dir if a host predates the file.
+          cap_env="$HOME/factory-cron/host-capacity.env"
+          [ -f "$cap_env" ] && . "$cap_env"
+          state_dir="${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}"
+          mkdir -p "$state_dir"
+          set -- ${HOST_CAPACITY_SLOTS:-$state_dir/matou-swarm.lock $state_dir/matou-host-slot-2.lock}
+          slot1="$1"
+          exec 9>"$slot1"
           # Non-blocking: a long swarm run can hold the lock for hours — a
           # poller should skip quietly and let the next cron tick retry, not
-          # go red every 10 minutes.
+          # go red every 10 minutes. This only excludes slot 1; a swarm/triage
+          # run on slot 2 can still git-mutate the shared workdir concurrently,
+          # so run-verify.sh takes the per-repo workdir lock (#638/#817) around
+          # its own fetch/checkout/reset.
           flock -n 9 || { echo "verify: swarm lock busy — skipping this tick"; exit 0; }
           workdir="$HOME/swarm/$REPO_SLUG"
           mkdir -p "$workdir"

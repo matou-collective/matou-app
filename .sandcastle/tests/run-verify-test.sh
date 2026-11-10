@@ -34,6 +34,9 @@ workdir="$work/workdir"
 git clone -q "$origin" "$workdir"
 
 verdict="$work/verdict.txt"
+# A throwaway workdir-lock path so the test never touches the real
+# /tmp/matou-workdir-x-y.lock (#817) and never contends with a parallel run.
+wlock="$work/workdir.lock"
 run_verify() { # run_verify <git-remote-url> <mattermost-url>
   ( cd "$workdir" && \
     REPO_SLUG="x/y" FORGEJO_TOKEN=dummy \
@@ -41,6 +44,7 @@ run_verify() { # run_verify <git-remote-url> <mattermost-url>
     SERVER_URL="https://example.invalid" \
     MATTERMOST_URL="$2" MATTERMOST_BOT_TOKEN=x MATTERMOST_CHANNEL_ID=c \
     VERIFY_VERDICT_PATH="$verdict" GIT_VERIFY_REMOTE_URL="$1" \
+    VERIFY_WORKDIR_LOCK="$wlock" \
     bash "$sc/run-verify.sh" )
 }
 
@@ -71,4 +75,19 @@ sig_checkverif="$(compute_signature verify "$(seam_verdict_signal "$verdict")")"
 
 [ "$sig_gitsync" != "$sig_checkverif" ] || fail "two distinct verify faults (git-sync vs check-verifications) must yield DIFFERENT signatures — the whole point of #228"
 
-echo "run-verify: 3 scenarios passed"
+# --- 4) a held workdir lock makes the poll yield cleanly (no verdict) ---------
+# #817: a swarm/triage tick holding the per-repo workdir lock must make verify
+# skip this tick quietly (exit 0, no git mutation, no verdict) rather than race
+# it into .git/index.lock. Hold the lock in a background subshell, then poll.
+rm -f "$verdict"
+exec 7>"$wlock"
+flock -n 7 || fail "test setup: could not take the workdir lock"
+if ! run_verify "$origin" "" >/dev/null 2>&1; then fail "a held workdir lock must make verify yield cleanly (exit 0)"; fi
+[ -f "$verdict" ] && fail "a workdir-lock yield must leave no verdict — a lost race is not a fault"
+exec 7>&-
+
+# After the lock is released the next poll runs normally (clean, green offline).
+if ! run_verify "$origin" "" >/dev/null 2>&1; then fail "once the workdir lock is free the poll must run and exit 0"; fi
+[ -f "$verdict" ] && fail "a clean verify run must leave no verdict"
+
+echo "run-verify: 4 scenarios passed"

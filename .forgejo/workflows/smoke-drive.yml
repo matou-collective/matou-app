@@ -35,13 +35,26 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
         run: |
           set -euo pipefail
-          exec 9>/tmp/matou-swarm.lock
+          # Host-capacity slot 1, resolved from the host's generated
+          # host-capacity.env so this guard flocks the SAME inode swarm.yml/
+          # triage.yml do — the state-dir path (#205/#218), not the stale
+          # /tmp/matou-swarm.lock the cutover left behind, which no longer
+          # shared an inode with them and so stopped excluding swarm/triage at
+          # all (#817). Fall back to the harness-default state dir if a host
+          # predates the file.
+          cap_env="$HOME/factory-cron/host-capacity.env"
+          [ -f "$cap_env" ] && . "$cap_env"
+          state_dir="${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}"
+          mkdir -p "$state_dir"
+          set -- ${HOST_CAPACITY_SLOTS:-$state_dir/matou-swarm.lock $state_dir/matou-host-slot-2.lock}
+          slot1="$1"
+          exec 9>"$slot1"
           # A lap that never ran must not show as a green run (matou-app#51:
           # a lock-skipped dispatch read as "success" with no run dir and was
           # mistaken for a lap). Fail the job, but flag it so the healer step
           # does not treat "the swarm held the lock" as a red journey.
           if ! flock -w 1800 9; then
-            echo "smoke-drive: lock busy for 30min — NOT driven (re-dispatch when /tmp/matou-swarm.lock is free)"
+            echo "smoke-drive: lock busy for 30min — NOT driven (re-dispatch when host capacity slot 1 is free)"
             echo "lock_skipped=1" >> "$GITHUB_OUTPUT"
             exit 1
           fi
