@@ -19,6 +19,8 @@ env-allowlist-lib.sh
 evidence-lib.sh
 execute-lib.sh
 fence-lib.sh
+fleet-queue-lib.sh
+fleet-queue.sh
 forgejo-lib.sh
 gate-lib.sh
 gate.sh
@@ -107,12 +109,15 @@ tests/fixtures/secret-empty.txt
 tests/fixtures/secret-nonempty.txt
 tests/fixtures/stub-agent.sh
 tests/fixtures/swarm-verdict-fail.txt
+tests/fleet-queue-lib-test.sh
+tests/fleet-queue-test.sh
 tests/fleet-tui-test.sh
 tests/floor-server-test.sh
 tests/forgejo-lib-test.sh
 tests/gate-lib-test.sh
 tests/git-cred-lib-test.sh
 tests/git-setup-test.sh
+tests/gotchas-index-merge-test.sh
 tests/guide-labels-test.sh
 tests/heal-lib-test.sh
 tests/heal-test.sh

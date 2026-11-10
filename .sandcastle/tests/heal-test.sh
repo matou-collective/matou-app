@@ -927,7 +927,14 @@ for a in "\$@"; do url="\$a"; done
 case "\$url" in
   *"/jobs/"*"/attempt/1/logs")
      leg="\${url%/attempt/1/logs}"; leg="\${leg##*/jobs/}"
-     if [ "\$leg" -le "\${JOBLOG_MAX_OK:-0}" ] 2>/dev/null; then
+     # JOBLOG_OK_LEGS, when set, is an explicit space-separated set of legs that
+     # serve a log (everything else 404s) — lets a test model a non-contiguous
+     # job matrix (a gap, #304). Otherwise fall back to the MAX_OK threshold.
+     if [ -n "\${JOBLOG_OK_LEGS:-}" ]; then
+       ok=404
+       for L in \$JOBLOG_OK_LEGS; do [ "\$L" = "\$leg" ] && ok=200; done
+       if [ "\$ok" = 200 ]; then cat "\$JOBLOG_FILE"; printf '\n200'; else printf '\n404'; fi
+     elif [ "\$leg" -le "\${JOBLOG_MAX_OK:-0}" ] 2>/dev/null; then
        cat "\$JOBLOG_FILE"; printf '\n200'
      else
        printf '\n404'
@@ -973,6 +980,18 @@ grep -q "job 0 (attempt 1)" "$jlcap/job-log.txt" 2>/dev/null \
   || fail "#188: a matrix bundle must carry leg 0's log"
 grep -q "job 1 (attempt 1)" "$jlcap/job-log.txt" 2>/dev/null \
   || fail "#188: a matrix bundle must carry every leg's log (leg 1 missing)"
+
+# #304: a matrix whose failing leg sits ABOVE a gap must not be skipped. Forgejo
+# job indices are not contiguous (run 24158 served leg 0 → 200, leg 1 → 404, leg
+# 2 → 200); the old code broke on leg 1's 404 and never probed leg 2. Serve legs
+# 0 and 2 but 404 leg 1, and assert leg 2's log still lands in the bundle.
+rm -rf "$work/state" "$jlcap"; mkdir -p "$work/state"
+run_heal PATH="$jl_dir:$PATH" JOBLOG_FILE="$jl_log" JOBLOG_OK_LEGS="0 2" \
+  HEAL_AGENT_CMD="bash $work/jl-agent.sh" JLCAP="$jlcap" >/dev/null 2>&1 || true
+grep -q "job 0 (attempt 1)" "$jlcap/job-log.txt" 2>/dev/null \
+  || fail "#304: leg 0's log must still land"
+grep -q "job 2 (attempt 1)" "$jlcap/job-log.txt" 2>/dev/null \
+  || fail "#304: a matrix with a 404 gap at leg 1 must still fetch leg 2 (the failing leg above the gap)"
 
 # fail-soft (AC3): leg 0 returns 404 → a one-line note, NOT a silent empty file,
 # and the heal run still exits 0 (a missing log never reds the healer).

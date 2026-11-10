@@ -359,9 +359,17 @@ try {
     promptFile: "./.sandcastle/prompt.md",
 
     // Maximum number of iterations (agent invocations) to run in a session.
-    // Each iteration works on a single issue. Increase this to process more issues
-    // per run, or set it to 1 for a single-shot mode.
-    maxIterations: 3,
+    // Each iteration works on a single issue. ONE since #301 (Ben's ruling,
+    // 2026-10-22): a run is one ticket. The order tickets are worked in is
+    // fleet-wide — priority, then filing date, across every consumer repo, a
+    // closed ticket's dependants first — and that order is decided OUTSIDE the
+    // run (fleet-queue.sh dispatches one repo for one ticket). A run that drained
+    // its own repo's list for three iterations would claim its second and third
+    // tickets ahead of an older ticket waiting in another repo, so the fleet
+    // order held only at dispatch and leaked inside every run. The successor is
+    // dispatched by the self-rearm (report-lib.sh), so throughput is unchanged;
+    // what a longer run saved was one dispatch + one leg per ticket.
+    maxIterations: 1,
 
     // Branch strategy — LANDING-aware (#230; branch-strategy.mts has the full
     // why). merge-to-head runs the agent on a temp worktree branch and merges

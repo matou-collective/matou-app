@@ -59,10 +59,23 @@ export const useIdentityStore = defineStore('identity', () => {
     return role.includes('steward') || role.includes('founding member');
   });
 
-  const canManageMembers = computed(() => {
+  // The community-admin tier: holders of an Operations Steward / Founding Member
+  // credential. This matches the backend's `adminScope` (the only roles granted
+  // a community-wide pass on project/member actions — see
+  // contributions.RequireProjectAction). It is deliberately NARROWER than
+  // `isSteward` above, which is a loose substring match ("steward"/"founding
+  // member") that also flips on for Technical / Financial / Cultural / Community
+  // Steward credentials. Those do NOT confer community-wide project powers on the
+  // backend, so gating community-wide admin UI on `isSteward`/`isAdmin` showed
+  // buttons the backend then refused with "insufficient permissions" (#749).
+  const isCommunityAdmin = computed(() => {
     const role = (adminCredential.value?.role || '').toLowerCase();
     return role.includes('operations steward') || role.includes('founding member');
   });
+
+  // canManageMembers is the same community-admin tier (used for member
+  // management on the dashboard); keep the one definition.
+  const canManageMembers = isCommunityAdmin;
 
   // Computed
   const hasIdentity = computed(() => currentAID.value !== null);
@@ -624,6 +637,7 @@ export const useIdentityStore = defineStore('identity', () => {
     adminCredential,
     adminChecked,
     isSteward,
+    isCommunityAdmin,
     canManageMembers,
 
     // Computed

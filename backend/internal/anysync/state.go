@@ -43,6 +43,26 @@ type ObjectState struct {
 // bypass the write rules.
 var ErrUnknownObjectType = errors.New("cannot validate object of unknown type")
 
+// ErrNoChangesInTree is returned by BuildStateValidated when a tree carries no
+// content changes at all — only its root — so no state can be reconstructed.
+// For an object the local index knows about this is the signature of an
+// incomplete local copy: the tree's content changes never arrived (or never
+// persisted) on this device, yet a head-storage entry was written, so HeadSync
+// never classifies it as "missing" and it never self-heals. A read for it fails
+// forever (#808). Callers on the read path match this with errors.Is to drop the
+// stuck local copy and let HeadSync re-fetch a clean one from a peer. It is kept
+// distinct from ErrAllChangesRejected so only the genuinely-empty case triggers
+// that (destructive-looking but reversible) re-fetch.
+var ErrNoChangesInTree = errors.New("no changes found in tree")
+
+// ErrAllChangesRejected is returned when a tree DOES carry content changes but
+// none survived validation (every change was excluded by the write-rule
+// validator), so the reconstructed version is still 0. Unlike
+// ErrNoChangesInTree this is not a missing-data condition — the changes are
+// present locally — so re-fetching cannot help and the read path must NOT drop
+// the tree.
+var ErrAllChangesRejected = errors.New("all changes rejected by validator")
+
 // SnapshotInterval controls how many changes between automatic snapshots.
 // After this many changes, a snapshot is created for faster state reconstruction.
 const SnapshotInterval = 10
@@ -75,6 +95,11 @@ func BuildStateValidated(tree objecttree.ReadableObjectTree, spaceID, objectID, 
 		Fields:     make(map[string]json.RawMessage),
 	}
 
+	// seen counts ops-bearing content changes actually present in the tree,
+	// before validation. It distinguishes a genuinely empty/incomplete tree
+	// (seen == 0 → ErrNoChangesInTree) from one whose changes are all present
+	// but excluded by the validator (seen > 0, version 0 → ErrAllChangesRejected).
+	seen := 0
 	err := tree.IterateRoot(
 		// convert: decrypted bytes → ObjectChange
 		func(_ *objecttree.Change, decrypted []byte) (any, error) {
@@ -99,6 +124,7 @@ func BuildStateValidated(tree objecttree.ReadableObjectTree, spaceID, objectID, 
 			if !ok || oc == nil {
 				return true
 			}
+			seen++
 			state.applyChange(spaceID, change, oc, validator)
 			return true
 		},
@@ -108,7 +134,13 @@ func BuildStateValidated(tree objecttree.ReadableObjectTree, spaceID, objectID, 
 	}
 
 	if state.Version == 0 {
-		return nil, fmt.Errorf("no changes found in tree for object %s", objectID)
+		if seen > 0 {
+			// Content changes exist locally but none survived validation.
+			// Re-fetching the same bytes cannot change that, so this must not
+			// be mistaken for the missing-data case that triggers a re-fetch.
+			return nil, fmt.Errorf("%w for object %s", ErrAllChangesRejected, objectID)
+		}
+		return nil, fmt.Errorf("%w for object %s", ErrNoChangesInTree, objectID)
 	}
 
 	return state, nil

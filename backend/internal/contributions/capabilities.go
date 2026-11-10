@@ -195,7 +195,7 @@ var capabilityActions = map[Capability][]Action{
 	CapArchiveWork: {
 		ActionArchiveProject, ActionArchiveMilestone, ActionArchiveContribution,
 		ActionUnassignContribution, ActionEditMilestone, ActionLinkProposal,
-		ActionReorderContribution,
+		ActionReorderContribution, ActionPromoteSubContribution,
 	},
 	// adminScope: member roles plus the role-granting bootstrap routes.
 	// save_org_config has moved OUT of manage_members into

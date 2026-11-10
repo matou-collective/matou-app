@@ -17,8 +17,20 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/lib.sh"
 
 # The repo root. Vendored, tests/ IS .sandcastle/tests/ in a consumer, so the
-# repo's docs/ is one level up from there; here/.. covers both (#23).
-root="$here/.."
+# repo's docs/ is one level up from there; here/.. covers both (#23). Resolve
+# it so its basename is real (not the literal `..`) — that basename is the
+# vendored signal below.
+root="$(cd "$here/.." && pwd)"
+
+# Vendored byte-identical into every consumer's `.sandcastle/` (and into this
+# repo's own `.sandcastle/` self-copy), so there `root` IS `.sandcastle/` —
+# which carries neither the factory-root STATUS.md nor docs/GOTCHAS.md (both
+# vendor-excluded). An absent budgeted doc there is EXPECTED, so skip it
+# visibly rather than red; in the factory core the same doc absent IS a
+# regression and still reds (#294). The signal: the resolved root's basename
+# is `.sandcastle` only in the vendored self-copy / a consumer.
+vendored=0
+[ "$(basename "$root")" = ".sandcastle" ] && vendored=1
 
 STATUS_MAX=16384   # 16 KB
 LINE_MAX=2048      #  2 KB — the ~300 KB host-capacity row was the worst offender
@@ -53,6 +65,8 @@ if [ -f "$status" ]; then
   updated="$(grep -c '^\*\*Last updated' "$status" 2>/dev/null || true)"
   check "STATUS.md carries NO '**Last updated' dated lead (has $updated — the what-changed head goes in docs/journal/)" \
     "[ ${updated:-0} -eq 0 ]"
+elif [ "$vendored" -eq 1 ]; then
+  echo "docs-budget-test: SKIPPING STATUS.md budget — absent in vendored copy (root $root)"
 else
   fail "STATUS.md not found at $status"
 fi
@@ -61,6 +75,8 @@ if [ -f "$gotchas" ]; then
   gbytes="$(wc -c <"$gotchas")"
   check "docs/GOTCHAS.md index is under ${GOTCHAS_MAX} bytes (is $gbytes)" \
     "[ $gbytes -lt $GOTCHAS_MAX ]"
+elif [ "$vendored" -eq 1 ]; then
+  echo "docs-budget-test: SKIPPING docs/GOTCHAS.md budget — absent in vendored copy (root $root)"
 else
   fail "docs/GOTCHAS.md not found at $gotchas"
 fi

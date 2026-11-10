@@ -388,4 +388,53 @@ fi
 pass=$((pass+1))
 rm -rf "$staler"
 
+# --- the DEFAULT gofmt command: what it scans (the #1458 regression) --------
+# Every check above stubs the stage with GATE_GOFMT_CMD, so gate_gofmt_default_cmd
+# — the arm that actually runs on a host push — was never exercised, which is how
+# it shipped scanning `.sandcastle/nix-store/`. That store holds the Go
+# distribution's own src/, ~340 files gofmt calls unformatted plus a wall of
+# deliberately-malformed testdata parse errors: the host gate blocked EVERY Go
+# push with a verdict about files this repo cannot fix, so it got bypassed and
+# gofmt debt reached main again (ce04cd10). These checks pin the scan's shape.
+if command -v gofmt >/dev/null 2>&1; then
+  fmtrepo="$(mktemp -d)"
+  mkdir -p "$fmtrepo/internal" "$fmtrepo/node_modules/dep" \
+           "$fmtrepo/.sandcastle/nix-store/store/go-1.23.8/share/go/src/cmd"
+  # gofmt wants a tab indent; two spaces is debt.
+  debt='package p\n\nfunc f() {\n  return\n}\n'
+  clean='package p\n\nfunc f() {\n\treturn\n}\n'
+  printf "$clean" > "$fmtrepo/internal/ours.go"
+  printf "$debt"  > "$fmtrepo/node_modules/dep/vendored.go"
+  printf "$debt"  > "$fmtrepo/.sandcastle/nix-store/store/go-1.23.8/share/go/src/cmd/foreign.go"
+  # and the malformed testdata that makes gofmt print parse errors, not a verdict
+  printf 'package p\nfunc f() { if x := 1 {} }\n' \
+    > "$fmtrepo/.sandcastle/nix-store/store/go-1.23.8/share/go/src/cmd/broken.go"
+
+  # Debt that lives ONLY in gitignored artifact trees is not this repo's debt.
+  rc=0; out="$(gate_gofmt_stage "$fmtrepo" 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || fail "artifact-only gofmt debt must not block the push, got rc=$rc: $out"
+  [ -z "$out" ] || fail "the gate must stay silent on a clean tree, got: $out"
+  pass=$((pass+1))
+
+  # Debt in the repo's OWN Go is still caught, and named root-relative.
+  printf "$debt" > "$fmtrepo/internal/ours.go"
+  rc=0; out="$(gate_gofmt_stage "$fmtrepo" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "real gofmt debt must block the push"
+  printf '%s\n' "$out" | grep -qx 'internal/ours.go' \
+    || fail "the verdict must name the offending file root-relative, got: $out"
+  printf '%s\n' "$out" | grep -qv 'nix-store' \
+    || fail "the verdict must not mention nix-store, got: $out"
+  [ "$(printf '%s\n' "$out" | wc -l)" -le 2 ] \
+    || fail "the verdict must be the debt and nothing else, got: $out"
+  pass=$((pass+1))
+
+  # A scan that finds no Go file at all is a broken scan, not a clean tree:
+  # fail CLOSED rather than wave a push through unchecked.
+  rc=0; gate_gofmt_stage "$(mktemp -d)" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "a scan that found no Go files must fail closed (#1458)"
+  pass=$((pass+1))
+
+  rm -rf "$fmtrepo"
+fi
+
 echo "gate-lib: $pass checks passed"

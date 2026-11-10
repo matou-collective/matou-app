@@ -162,12 +162,37 @@ No commits produced (agent blocked or task left open — see issue comments)."
 # report_post_summary <same args as report_run_summary> — assemble and post.
 report_post_summary() { _report_notify "$(report_run_summary "$@")"; }
 
-# ── the self-rearm (spec D5) ──────────────────────────────────────────────
-# A run that did real work and left ready tickets behind dispatches its successor
-# instead of waiting for the :15/:45 cron. Gated on <worker-ran> so an empty or
-# coalesced run can never dispatch-loop.
-report_self_rearm() { # report_self_rearm <worker-ran>
+# ── the self-rearm (spec D5, fleet-ordered since #301) ────────────────────
+# A run that did real work dispatches its successor instead of waiting for the
+# :15/:45 cron. Gated on <worker-ran> so an empty or coalesced run can never
+# dispatch-loop. Since #301 the successor is the FLEET's choice, not this
+# repo's: "each ticket, on close, asks for any dependant ticket, otherwise the
+# next in line from the queue" (Ben, 2026-10-22). The host's generated
+# fleet-queue tick (FLEET_QUEUE_TICK) is asked in `after-close` mode with the
+# ticket this run closed (the first `outcome=success` SANDCASTLE_ATTEMPT line),
+# or `rearm` mode when it closed nothing: either way it promotes dependants,
+# orders the fleet, and dispatches ONE ticket to THIS host with no slot gate
+# (ours is freeing). A host without the tick (not yet re-enrolled) keeps the
+# pre-#301 behaviour: own ready list non-empty → dispatch own repo.
+FLEET_QUEUE_TICK="${FLEET_QUEUE_TICK:-$HOME/factory-cron/fleet-queue-tick.sh}"
+report_self_rearm() { # report_self_rearm <worker-ran> [repo-slug] [attempts-file]
   [ -n "$1" ] || return 0
+  local slug="${2:-}" attempts="${3:-}" issue=""
+  if [ -f "$FLEET_QUEUE_TICK" ]; then
+    # `|| true` INSIDE the substitution: under the run's `set -euo pipefail` a
+    # grep that matches nothing (a run that closed nothing) would otherwise end
+    # the run here, after its work landed.
+    if [ -n "$attempts" ] && [ -f "$attempts" ]; then
+      issue="$( { grep -E '^SANDCASTLE_ATTEMPT .* outcome=success( |$)' "$attempts" 2>/dev/null \
+        | sed -n 's/.* issue=\([0-9][0-9]*\).*/\1/p' | head -1; } || true)"
+    fi
+    if [ -n "$issue" ] && [ -n "$slug" ]; then
+      bash "$FLEET_QUEUE_TICK" after-close "$slug" "$issue" 2>&1 | sed 's/^/run-swarm: /' || true
+    else
+      bash "$FLEET_QUEUE_TICK" rearm 2>&1 | sed 's/^/run-swarm: /' || true
+    fi
+    return 0
+  fi
   [ "$(bash "$REPORT_LIST_READY" | jq length)" -gt 0 ] || return 0
   rearm_dispatch && echo "run-swarm: ready tickets remain — dispatched a follow-up run" || true
 }

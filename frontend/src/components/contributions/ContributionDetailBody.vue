@@ -319,6 +319,15 @@
                 >
                   <q-tooltip>Edit Sub-Contribution</q-tooltip>
                 </q-btn>
+                <q-btn
+                  flat round dense size="sm"
+                  icon="upgrade"
+                  class="promote-sub-btn"
+                  :loading="actionLoading === `promote-sub-${child.id}`"
+                  @click.stop="handlePromoteSub(child)"
+                >
+                  <q-tooltip>Promote to top-level Contribution</q-tooltip>
+                </q-btn>
               </template>
             </div>
           </div>
@@ -1823,6 +1832,36 @@ async function handleApproveSub(subId: string) {
     emit('update', updated as unknown as Contribution);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Approve failed' });
+  } finally {
+    actionLoading.value = null;
+  }
+}
+
+// Promote a sub-contribution to a top-level contribution in the parent chain's
+// milestone. Confirm first: it restructures the plan and (on a signed-off plan)
+// requires re-signoff. On success, emit update so the page refetches and the
+// child drops out of this parent's sub-list. #778
+function handlePromoteSub(child: Contribution) {
+  $q.dialog({
+    title: 'Promote to Contribution',
+    message: `Promote "${child.title}" to a top-level contribution? It will no longer be a sub-contribution of "${props.contribution.title}" and will appear directly under the milestone.`,
+    cancel: true,
+    persistent: true,
+    ok: { label: 'Promote', color: 'primary', noCaps: true },
+  }).onOk(() => {
+    void doPromoteSub(child.id);
+  });
+}
+
+async function doPromoteSub(subId: string) {
+  actionLoading.value = `promote-sub-${subId}`;
+  try {
+    await store.promoteSub(subId);
+    localChildren.value = localChildren.value.filter(c => c.id !== subId);
+    $q.notify({ type: 'positive', message: 'Promoted to a top-level contribution.' });
+    emit('update', props.contribution);
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Promote failed' });
   } finally {
     actionLoading.value = null;
   }

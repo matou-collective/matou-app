@@ -151,4 +151,33 @@ REPORT_LIST_READY="$tmp/ready-some" report_self_rearm 1 >/dev/null \
   || fail "a failed re-arm must not fail the run (the cron backstop covers it)"
 pass=$((pass+1))
 
+# ── 5b. #301: with the host's fleet-queue tick present, the successor is the
+# FLEET's pick — after-close with the ticket this run closed, rearm otherwise;
+# the legacy own-repo dispatch is never used on such a host.
+cat > "$tmp/fleet-tick" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${TICK_LOG:?}"
+echo "dispatched Acme/beta#5 to box-07 (dependant of Acme/widget#9)"
+SH
+chmod +x "$tmp/fleet-tick"
+printf 'SANDCASTLE_ATTEMPT issue=9 outcome=success commits=abc\n' > "$tmp/attempts"
+printf 'SANDCASTLE_ATTEMPT issue=9 outcome=blocked commits=\n' > "$tmp/attempts-blocked"
+rearm_dispatch() { printf 'dispatched\n' >> "$tmp/rearm.log"; }
+rm -f "$tmp/rearm.log" "$tmp/tick.log"
+out="$(TICK_LOG="$tmp/tick.log" FLEET_QUEUE_TICK="$tmp/fleet-tick" REPORT_LIST_READY="$tmp/ready-some" report_self_rearm 1 Acme/widget "$tmp/attempts")"
+grep -q '^after-close Acme/widget 9$' "$tmp/tick.log" || fail "a run that closed #9 must ask the fleet queue after-close Acme/widget 9 (got: $(cat "$tmp/tick.log" 2>/dev/null))"
+grep -q 'run-swarm: dispatched Acme/beta#5' <<<"$out" || fail "the tick's lines must be relayed under the run-swarm prefix: $out"
+[ ! -f "$tmp/rearm.log" ] || fail "with the fleet tick present the legacy own-repo dispatch must not fire"
+rm -f "$tmp/tick.log"
+TICK_LOG="$tmp/tick.log" FLEET_QUEUE_TICK="$tmp/fleet-tick" report_self_rearm 1 Acme/widget "$tmp/attempts-blocked" >/dev/null
+grep -q '^rearm$' "$tmp/tick.log" || fail "a run that closed nothing must ask the fleet queue to rearm (got: $(cat "$tmp/tick.log" 2>/dev/null))"
+rm -f "$tmp/tick.log"
+TICK_LOG="$tmp/tick.log" FLEET_QUEUE_TICK="$tmp/fleet-tick" report_self_rearm "" Acme/widget "$tmp/attempts" >/dev/null
+[ ! -f "$tmp/tick.log" ] || fail "no worker → no fleet rearm either (the dispatch-loop guard)"
+# a failing tick is not a run failure
+printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/fleet-tick-red"; chmod +x "$tmp/fleet-tick-red"
+FLEET_QUEUE_TICK="$tmp/fleet-tick-red" report_self_rearm 1 Acme/widget "$tmp/attempts" >/dev/null \
+  || fail "a failing fleet tick must not fail the run"
+pass=$((pass+1))
+
 echo "report-lib: $pass groups passed"

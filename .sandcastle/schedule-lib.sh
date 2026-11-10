@@ -10,7 +10,7 @@
 # Everything between "a trigger fired" and "this run has a ready set, a
 # debounce ruling and a model":
 #
-#   drive yield → janitor re-arm → list ready → debounce → per-run model
+#   drive yield → janitor re-arm → list ready → fleet pick → debounce → per-run model
 #
 # All of it was inline in run-swarm.sh, and the debounce coalescer's only test
 # was a byte-for-byte COPY of the block kept in tests/debounce-test.sh — the
@@ -35,6 +35,13 @@ _SCHEDULE_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The lister this seam reads its ready set from. Overridable so an offline test
 # never needs a tracker.
 SCHEDULE_LIST_READY="${SCHEDULE_LIST_READY:-$_SCHEDULE_HERE/list-ready-tasks.sh}"
+
+# The fleet queue (#301): the host cache + the recent-closes record live in
+# fleet-queue-lib.sh; the generated host tick (onboarding/host-state-lib.sh)
+# is what a leg looks for to know this host runs the watcher at all.
+# shellcheck source=fleet-queue-lib.sh
+. "$_SCHEDULE_HERE/fleet-queue-lib.sh"
+FLEET_QUEUE_TICK="${FLEET_QUEUE_TICK:-$HOME/factory-cron/fleet-queue-tick.sh}"
 
 # Coalescing window, seconds. See schedule_debounce_decide.
 SWARM_DEBOUNCE="${SWARM_DEBOUNCE:-600}"
@@ -194,6 +201,80 @@ schedule_debounce_decide() {
   fi
   printf '%s %s\n' "$ready_hash" "$now" > "$stamp"
   echo run
+}
+
+# ── the fleet pick (#301) ──────────────────────────────────────────────────
+# A run is ONE ticket, and WHICH ticket is a fleet-wide decision, not this
+# repo's: `priority` first, then the filing date, across every consumer repo —
+# with a closed ticket's dependants ahead of both (Ben's ruling, 2026-10-22).
+# Three ways a leg learns its ticket, in precedence order:
+#   1. inputs.ticket (SWARM_TICKET) — the fleet queue watcher dispatched THIS
+#      run for THAT ticket. It is the pick, or — when it is no longer ready
+#      here (claimed by another host, closed, handed off) — the run stands
+#      down rather than drift onto this repo's next ticket ahead of an older
+#      one elsewhere.
+#   2. the host cache the watcher's tick writes (fleet-queue.json): a `closed`
+#      or cron leg reads where the fleet stands. Head in another repo → stand
+#      down (the watcher dispatches it); head here and still ready → the pick.
+#   3. neither (a host not yet enrolled with the tick, or a stale cache) →
+#      the pre-#301 behaviour: this repo's own order, no pick signal.
+# A `closed` leg additionally RECORDS the close on the host, so the next tick
+# promotes that ticket's dependants (a human's close, not only the swarm's).
+#
+# schedule_fleet_pick <ready-json> <repo-slug> <out-file>
+#   rc 0  <out-file> holds the ready JSON to proceed with — exactly the pick
+#         when one was found (SCHEDULE_FLEET_PICK=<n>), else the input;
+#         SCHEDULE_FLEET_NOTE is the one job-log line.
+#   rc 1  the leg must stand down: SCHEDULE_FLEET_REASON is the runlog reason
+#         (fleet-pick-gone | fleet-head-elsewhere), SCHEDULE_FLEET_NOTE says why.
+# Takes an out-file (never `$(...)`) for the same reason as
+# schedule_list_ready_or_verdict: the three SCHEDULE_FLEET_* results must land
+# in the run's own shell.
+schedule_fleet_pick() {
+  local ready="$1" slug="$2" out="$3" pick="" head hslug hn
+  SCHEDULE_FLEET_PICK=""; SCHEDULE_FLEET_NOTE=""; SCHEDULE_FLEET_REASON=""
+  if [ -n "${SWARM_TICKET:-}" ]; then
+    if jq -e --arg n "$SWARM_TICKET" 'any(.[]; (.number | tostring) == $n)' <<<"$ready" >/dev/null 2>&1; then
+      pick="$SWARM_TICKET"
+      SCHEDULE_FLEET_NOTE="fleet pick #$pick (dispatched by the fleet queue, #301) — this run works it and nothing else"
+    else
+      SCHEDULE_FLEET_REASON=fleet-pick-gone
+      SCHEDULE_FLEET_NOTE="the fleet pick #$SWARM_TICKET is no longer ready here (claimed elsewhere, closed or handed off) — standing down; the fleet queue picks again next tick (#301)"
+      return 1
+    fi
+  else
+    if [ -n "${SWARM_CLOSED_ISSUE:-}" ] && [ -f "$FLEET_QUEUE_TICK" ]; then
+      fleet_queue_recent_close_record "$slug" "$SWARM_CLOSED_ISSUE"
+    fi
+    if head="$(fleet_queue_cache_head)"; then
+      hslug="${head% *}"; hn="${head#* }"
+      if [ "$hslug" != "$slug" ]; then
+        SCHEDULE_FLEET_REASON=fleet-head-elsewhere
+        SCHEDULE_FLEET_NOTE="the fleet head is $hslug#$hn, not a ticket of this repo — standing down; the fleet queue dispatches it (#301)"
+        return 1
+      fi
+      if jq -e --arg n "$hn" 'any(.[]; (.number | tostring) == $n)' <<<"$ready" >/dev/null 2>&1; then
+        pick="$hn"
+        SCHEDULE_FLEET_NOTE="fleet head #$pick is this repo's (#301) — this run works it and nothing else"
+      fi
+    fi
+  fi
+  if [ -n "$pick" ]; then
+    jq --arg n "$pick" 'map(select((.number | tostring) == $n))' <<<"$ready" >"$out"
+    SCHEDULE_FLEET_PICK="$pick"
+  else
+    printf '%s' "$ready" >"$out"
+    [ -n "$SCHEDULE_FLEET_NOTE" ] || SCHEDULE_FLEET_NOTE="no fleet view on this host (fleet-queue cache absent or stale) — this repo's own order (#301)"
+  fi
+  return 0
+}
+
+# schedule_fleet_pick_signal <host-signals-dir> — drop the pick where every
+# sandbox sees it read-only (/run/host-signals/fleet-pick, the start-sha
+# pattern). No pick → no file → the in-sandbox lister's own order. Best-effort.
+schedule_fleet_pick_signal() {
+  [ -n "${SCHEDULE_FLEET_PICK:-}" ] || return 0
+  mkdir -p "$1" 2>/dev/null && printf '%s\n' "$SCHEDULE_FLEET_PICK" >"$1/fleet-pick" 2>/dev/null || true
 }
 
 # ── the per-run model (#448) ───────────────────────────────────────────────

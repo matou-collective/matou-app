@@ -79,6 +79,24 @@
           <div class="text-caption text-grey-6">Type cannot be changed after creation</div>
         </div>
 
+        <!-- Milestone picker (edit mode, top-level contribution, move rights) -->
+        <div v-if="showMilestonePicker">
+          <div class="text-subtitle2 q-mb-sm">Milestone</div>
+          <q-select
+            v-model="selectedMilestoneId"
+            :options="milestoneOptions"
+            option-label="label"
+            option-value="value"
+            emit-value
+            map-options
+            outlined
+            dense
+          />
+          <div class="text-caption text-grey-6 q-mt-xs">
+            Move this contribution to a different milestone.
+          </div>
+        </div>
+
         <!-- Contributor picker (sub-create mode and sub-edit mode only) -->
         <div
           v-if="parentContributionId || (editing && contribution?.parent_contribution)"
@@ -346,14 +364,28 @@ import type { Contribution } from 'src/types/projects';
 import { useProfilesStore } from 'stores/profiles';
 import { useProjectsStore } from 'stores/projects';
 import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
+import { normalizeEstimatedHours, normalizeContributionBudget } from 'src/lib/contributionPlanning';
 import AssignmentCard from 'src/components/contributions/AssignmentCard.vue';
 import MemberPicker from 'src/components/common/MemberPicker.vue';
 import type { MemberOption } from 'src/components/common/MemberPicker.vue';
+
+interface MilestoneOption {
+  milestone_id: string;
+  title: string;
+}
 
 interface Props {
   modelValue: boolean;
   projectId?: string;
   milestoneId?: string;
+  /**
+   * Milestones of the contribution's plan, used to offer a "move to another
+   * milestone" picker in edit mode. Only shown for top-level contributions when
+   * canMoveMilestone is true.
+   */
+  milestones?: MilestoneOption[];
+  /** Whether the current user may move this contribution between milestones. */
+  canMoveMilestone?: boolean;
   parentContributionId?: string;
   parentAssignedContributorId?: string;
   isSubmitting?: boolean;
@@ -375,6 +407,8 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   projectId: '',
   milestoneId: undefined,
+  milestones: () => [],
+  canMoveMilestone: false,
   parentContributionId: undefined,
   parentAssignedContributorId: undefined,
   isSubmitting: false,
@@ -492,6 +526,28 @@ function makeDefault(): ContributionForm {
 
 const form = ref<ContributionForm>(makeDefault());
 const changeReason = ref('');
+const selectedMilestoneId = ref('');
+
+// A sub-contribution resolves its milestone through its parent, so it has no
+// milestone of its own to move between.
+const isSubContribution = computed(
+  () => !!(props.parentContributionId || props.contribution?.parent_contribution),
+);
+
+// The move picker is edit-only, top-level-only, and gated on the move
+// permission. Needs at least two milestones to offer a destination.
+const showMilestonePicker = computed(
+  () =>
+    props.editing &&
+    !props.changeRequest &&
+    !isSubContribution.value &&
+    props.canMoveMilestone &&
+    props.milestones.length > 1,
+);
+
+const milestoneOptions = computed(() =>
+  props.milestones.map((m) => ({ label: m.title, value: m.milestone_id })),
+);
 
 const canSeeBudgetForThis = computed(() =>
   budgetAccess.canSeeBudget({ project_id: props.projectId || form.value.project_id }),
@@ -549,6 +605,7 @@ watch(
       form.value.acceptance_criteria = c.acceptance_criteria?.length ? [...c.acceptance_criteria] : [''];
       form.value.skill_requirements = c.skill_requirements?.length ? [...c.skill_requirements] : [''];
       form.value.assigned_contributor_id = c.assigned_contributor_id ?? c.assigned_contributor ?? '';
+      selectedMilestoneId.value = c.milestone_id ?? props.milestoneId ?? '';
       changeReason.value = '';
     } else if (open && props.parentContributionId) {
       // Sub-create mode: pre-fill the picker with the parent's contributor
@@ -581,9 +638,9 @@ function handleSubmit() {
         deliverables: form.value.deliverables.filter((d) => d.trim()),
         acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
         skill_requirements: form.value.skill_requirements.filter((s) => s.trim()),
-        estimated_duration: form.value.estimated_duration,
+        estimated_duration: normalizeEstimatedHours(form.value.estimated_duration),
         deadline: toISODate(form.value.deadline) || undefined,
-        budget: form.value.budget?.trim() || undefined,
+        budget: normalizeContributionBudget(form.value.budget),
         ...(isSub && form.value.assigned_contributor_id
           ? { assigned_contributor_id: form.value.assigned_contributor_id }
           : {}),
@@ -604,11 +661,17 @@ function handleSubmit() {
       deliverables: form.value.deliverables.filter((d) => d.trim()),
       acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
       skill_requirements: form.value.skill_requirements.filter((s) => s.trim()),
-      estimated_duration: form.value.estimated_duration,
+      estimated_duration: normalizeEstimatedHours(form.value.estimated_duration),
       deadline: toISODate(form.value.deadline) || undefined,
-      budget: form.value.budget?.trim() || undefined,
+      budget: normalizeContributionBudget(form.value.budget),
       ...(form.value.assigned_contributor_id
         ? { assigned_contributor_id: form.value.assigned_contributor_id }
+        : {}),
+      // Carry the (possibly changed) milestone so the page can relocate the
+      // contribution via the dedicated move endpoint. Only emitted when the
+      // move picker is shown, so other edit surfaces are unaffected.
+      ...(showMilestonePicker.value && selectedMilestoneId.value
+        ? { milestone_id: selectedMilestoneId.value }
         : {}),
     });
     emit('update:modelValue', false);
@@ -626,9 +689,9 @@ function handleSubmit() {
     deliverables: form.value.deliverables.filter((d) => d.trim()),
     acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
     skill_requirements: form.value.skill_requirements.filter((s) => s.trim()),
-    estimated_duration: form.value.estimated_duration,
+    estimated_duration: normalizeEstimatedHours(form.value.estimated_duration),
     deadline: toISODate(form.value.deadline) || undefined,
-    budget: form.value.budget.trim() || undefined,
+    budget: normalizeContributionBudget(form.value.budget),
     created_by: 'current-user',
     ...(form.value.assigned_contributor_id ? { assigned_contributor_id: form.value.assigned_contributor_id } : {}),
   };

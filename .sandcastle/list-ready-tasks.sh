@@ -18,7 +18,9 @@
 # in a consumer's checkout; #47).
 #
 # Output: a JSON array of {number, title, body, url} — the shape Sandcastle's
-# built-in trackers emit. An empty array means done.
+# built-in trackers emit. An empty array means done. Order IS the scheduler
+# (prompt.md says "pick the first task"): drive blockers, then `priority`,
+# then the rest — and within each group the oldest ticket first.
 #
 # Auth: FORGEJO_TOKEN from the environment, from .sandcastle/.env (host runs),
 # or from the read-only file .sandcastle/secrets/forgejo_token that Sandcastle
@@ -284,7 +286,7 @@ while :; do
       | select(((.labels // []) | map(.name) | index("agent-working")) == null)
       | ((.labels // []) | map(.name) | map(select(startswith("landing-")))
          | if length == 0 then null else (.[0] | ltrimstr("landing-")) end) as $ll
-      | {number, title, body, url: .html_url,
+      | {number, title, body, url: .html_url, created_at,
          priority: ((.labels // []) | map(.name) | index("priority") != null),
          model: ((.labels // []) | map(.name) | map(select(startswith("model-")))
                  | if length == 0 then null else (.[0] | ltrimstr("model-")) end),
@@ -421,14 +423,43 @@ fi
 # may hand-apply it to anything else), tracker order preserved within a group.
 # Concatenation, never sort_by, so within-group order is provably the tracker's.
 # prompt.md's "pick the first task" makes this list order the scheduler. The
-# `priority`/`blocker` helper flags are stripped before emit; the contract stays
-# {number, title, body, url} plus the additive `.model` (#448), `.landing_label`
-# and `.landing` (idss ADR 0267) — which survive the del below; `.model` is the
-# per-ticket override run-swarm.sh reads from .[0].model.
-jq --argjson blockers "$blocker_nums" '
+# contract stays {number, title, body, url} plus ADDITIVE fields: `.model`
+# (#448), `.landing_label` and `.landing` (idss ADR 0267), and since #301 the
+# ordering keys themselves — `.created_at`, `.priority`, `.blocker` — so the
+# fleet queue (fleet-queue-lib.sh) can merge every repo's list into ONE order
+# without re-deriving them; `.model` is the per-ticket override run-swarm.sh
+# reads from .[0].model.
+# Within each group the OLDEST ticket comes first: the tracker answers
+# newest-first, so a ticket filed an hour ago jumped every older one in its
+# group and the queue was last-in-first-out (Ben, 2026-10-22). The filing date
+# is the line; a ticket with no created_at (older fixtures) keeps tracker order
+# (the index tie-break), and `priority` still jumps the whole line.
+ordered="$(jq --argjson blockers "$blocker_nums" '
+  def oldest_first: to_entries | sort_by(.value.created_at // "", .key) | map(.value);
   map(. + {blocker: ((.number) as $n | ($blockers | index($n)) != null)})
-  | ( [.[] | select(.blocker and .priority)]
-    + [.[] | select(.blocker and (.priority | not))]
-    + [.[] | select((.blocker | not) and .priority)]
-    + [.[] | select((.blocker | not) and (.priority | not))] )
-  | map(del(.priority, .blocker))' <<<"$ready"
+  | ( ([.[] | select(.blocker and .priority)] | oldest_first)
+    + ([.[] | select(.blocker and (.priority | not))] | oldest_first)
+    + ([.[] | select((.blocker | not) and .priority)] | oldest_first)
+    + ([.[] | select((.blocker | not) and (.priority | not))] | oldest_first) )' <<<"$ready")"
+
+# #301: the FLEET PICK. A run is one ticket, chosen fleet-wide (the host's
+# fleet-queue tick, or the watcher's workflow_dispatch input) and mirrored by
+# run-swarm.sh into the sandbox as /run/host-signals/fleet-pick, the same
+# read-only channel as the drive-yield and run-landing signals. When it is
+# there this lister answers EXACTLY that ticket — or [] when it is no longer
+# ready (claimed by another host, closed, handed off) — so claim-next-task.sh
+# claims it or nothing and the prompt's "Done" re-check completes the run
+# instead of letting it drift onto this repo's next ticket ahead of an older
+# one elsewhere. Host-side callers never see the mount, so nothing changes there.
+fleet_pick_signal="${SWARM_FLEET_PICK_SIGNAL:-/run/host-signals/fleet-pick}"
+if [ -f "$fleet_pick_signal" ]; then
+  fleet_pick="$(head -1 "$fleet_pick_signal" 2>/dev/null | tr -cd '0-9')"
+  if [ -n "$fleet_pick" ]; then
+    picked="$(jq --arg n "$fleet_pick" 'map(select((.number | tostring) == $n))' <<<"$ordered")"
+    if [ "$(jq length <<<"$picked")" -eq 0 ]; then
+      echo "list-ready-tasks: the fleet pick #$fleet_pick is no longer ready here (claimed elsewhere, closed or handed off) — answering [] so this one-ticket run completes (#301)" >&2
+    fi
+    ordered="$picked"
+  fi
+fi
+printf '%s\n' "$ordered"

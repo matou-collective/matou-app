@@ -364,6 +364,26 @@ export async function approveSub(id: string): Promise<Contribution> {
   return response.json();
 }
 
+/**
+ * Promote a sub-contribution to a top-level contribution in its parent chain's
+ * milestone. The backend detaches it from its parent, stamps it with the
+ * milestone, and appends it to the milestone's top-level list. Lead/steward only
+ * (project-scoped RBAC). See #778.
+ */
+export async function promoteSubContribution(id: string): Promise<Contribution> {
+  log.info('Promoting sub-contribution %s to top-level', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/promote`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to promote sub-contribution');
+  }
+  return response.json();
+}
+
 export async function archiveContribution(id: string): Promise<void> {
   log.info('Archiving contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/archive`, {
@@ -407,6 +427,27 @@ export async function reorderContributions(orderedIds: string[]): Promise<{ cont
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(err.error || 'Failed to reorder contributions');
+  }
+  return response.json();
+}
+
+/**
+ * Move a top-level contribution to a different milestone within the same
+ * implementation plan. The backend keeps milestone membership consistent across
+ * its three stores, appends the contribution to the end of the target
+ * milestone, invalidates plan sign-off, and records a move change-log entry.
+ * Sub-contributions are rejected. Lead/steward only (project-scoped RBAC).
+ */
+export async function moveContribution(id: string, milestoneId: string): Promise<Contribution> {
+  log.info('Moving contribution %s to milestone %s', id, milestoneId);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/move`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ milestone_id: milestoneId }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to move contribution');
   }
   return response.json();
 }

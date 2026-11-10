@@ -277,6 +277,7 @@ import { ref, computed, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import type { Contribution, CreateContributionRequest, UpdateContributionRequest } from 'src/lib/api/contributions';
 import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
+import { normalizeEstimatedHours, normalizeContributionBudget } from 'src/lib/contributionPlanning';
 
 const $q = useQuasar();
 const budgetAccess = useContributionBudgetAccess();
@@ -426,8 +427,8 @@ function handleSubmit() {
       deliverables,
       acceptance_criteria,
       skill_requirements,
-      estimated_duration: f.estimated_duration,
-      budget: f.budget.trim() || undefined,
+      estimated_duration: normalizeEstimatedHours(f.estimated_duration),
+      budget: normalizeContributionBudget(f.budget),
     };
     emit('submit', req);
   } else {
@@ -441,8 +442,8 @@ function handleSubmit() {
       deliverables,
       acceptance_criteria,
       skill_requirements,
-      estimated_duration: f.estimated_duration,
-      budget: f.budget.trim() || undefined,
+      estimated_duration: normalizeEstimatedHours(f.estimated_duration),
+      budget: normalizeContributionBudget(f.budget),
       created_by: 'current-user',
     };
     emit('submit', req);
