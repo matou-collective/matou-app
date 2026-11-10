@@ -20,6 +20,24 @@
               {{ formatStatus(project.status) }}
             </span>
           </div>
+
+          <!-- Why is this project still "Created"? Shown to users (e.g. a
+               project lead) who cannot sign off the plan themselves, so they
+               know what activates the project and who to ask (#802). -->
+          <div
+            v-if="project.status === 'created' && !perms.canSignOffPlan.value"
+            class="created-status-hint"
+            data-testid="created-status-hint"
+          >
+            <Info class="created-status-hint-icon" />
+            <span>
+              This project becomes <strong>Active</strong> once its implementation plan is
+              signed off. You don't have permission to sign off the plan — ask a
+              <strong>Project Steward</strong>, <strong>Operations Steward</strong>, or
+              <strong>Founding Member</strong> to sign it off and activate the project.
+            </span>
+          </div>
+
           <h1 class="project-title">{{ project.title }}</h1>
           <p class="project-description">{{ project.description }}</p>
 
@@ -608,6 +626,8 @@
       v-model="showContribForm"
       :project-id="editingContribution?.project_id ?? project?.id ?? ''"
       :milestone-id="editingContribution?.milestone_id"
+      :milestones="milestones"
+      :can-move-milestone="perms.canReorderContributions.value"
       :editing="true"
       :contribution="(editingContribution as any)"
       :can-offer="perms.isLead.value || perms.isSteward.value"
@@ -677,6 +697,7 @@ import {
   DollarSign,
   Pencil,
   Plus,
+  Info,
 } from 'lucide-vue-next';
 import { useProjectsStore } from 'stores/projects';
 import { useCommentCursorsStore } from 'stores/commentCursors';
@@ -995,12 +1016,24 @@ async function doArchiveContribution() {
 
 async function onContributionSave(payload: Record<string, unknown>) {
   if (!editingContribution.value || !project.value) return;
-  // contribution_type isn't in UpdateContributionRequest — strip it before sending.
+  // contribution_type isn't in UpdateContributionRequest; milestone_id is not a
+  // plain-update field (it routes through the dedicated move endpoint). Strip
+  // both before sending the update.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { contribution_type, ...rest } = payload as { contribution_type?: string } & UpdateContributionRequest;
+  const { contribution_type, milestone_id, ...rest } = payload as {
+    contribution_type?: string;
+    milestone_id?: string;
+  } & UpdateContributionRequest;
   const req = rest as UpdateContributionRequest;
+  const targetMilestoneId =
+    typeof milestone_id === 'string' && milestone_id !== editingContribution.value.milestone_id
+      ? milestone_id
+      : undefined;
   try {
     await contributionsStore.update(editingContribution.value.id, req);
+    if (targetMilestoneId) {
+      await contributionsStore.move(editingContribution.value.id, targetMilestoneId);
+    }
     // Refresh the plan AND the flat project-contributions list (+ any open
     // detail dialog) so the edit shows immediately — the plan alone does not
     // hydrate sub-contributions, so the sub-list would stay stale (#751).
@@ -1582,13 +1615,10 @@ async function handleContributionUpdate(updated: Contribution & { _action?: stri
 
   // Refresh both the implementation plan AND project contributions so the
   // milestone view (top-level) and collapsible sub-contributions list both
-  // pick up the new status.
-  if (project.value) {
-    await Promise.all([
-      projectsStore.fetchImplementationPlan(project.value.id),
-      projectsStore.fetchProjectContributions(project.value.id),
-    ]);
-  }
+  // pick up the new status, and re-point the open dialog at the fresh data so
+  // a structural change (e.g. promoting a sub-contribution, #778) is reflected
+  // in the viewed parent's sub-list immediately.
+  await refreshPlanAndContributions();
 }
 
 async function handleReorderContributions(orderedIds: string[]) {
@@ -1714,6 +1744,33 @@ async function submitAssign() {
   &.pending_completion { background: #ffedd5; color: #c2410c; }
   &.completed { background: #dbeafe; color: #2563eb; }
   &.archived { background: #f3f4f6; color: #6b7280; }
+}
+
+.created-status-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--matou-accent) 8%, transparent);
+  color: var(--matou-muted-foreground);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  max-width: 640px;
+
+  strong {
+    color: var(--matou-foreground);
+    font-weight: 600;
+  }
+}
+
+.created-status-hint-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--matou-accent);
 }
 
 .project-title {

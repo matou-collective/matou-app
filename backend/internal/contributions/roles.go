@@ -138,6 +138,11 @@ const (
 	// update_contribution gate) and project-scoped.
 	ActionReorderContribution Action = "reorder_contribution"
 
+	// ActionPromoteSubContribution gates promoting a sub-contribution to a
+	// top-level contribution in its parent chain's milestone. Like the other
+	// structural plan mutations it is lead/steward-scoped and project-scoped.
+	ActionPromoteSubContribution Action = "promote_sub_contribution"
+
 	// ActionSubmitProjectCompletion and the following are project completion
 	// workflow actions.
 	ActionSubmitProjectCompletion  Action = "submit_project_completion"
@@ -269,6 +274,7 @@ var actionPermissions = map[Action][]Role{
 	ActionUnassignContribution:     leadStewardScope,
 	ActionEditMilestone:            leadStewardScope,
 	ActionReorderContribution:      leadStewardScope,
+	ActionPromoteSubContribution:   leadStewardScope,
 	ActionSubmitProjectCompletion:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
 	ActionApproveProjectCompletion: stewardScope,
 	ActionRejectProjectCompletion:  stewardScope,
