@@ -310,6 +310,51 @@
               @reorder-contributions="handleReorderContributions"
             />
           </div>
+
+          <!-- Unassigned contributions holding area (#777): work captured in
+               the plan draft but not yet placed in a milestone. -->
+          <div
+            v-if="unassignedPlanContributions.length > 0 || perms.canAddMilestones.value"
+            class="unassigned-section"
+          >
+            <div class="unassigned-header">
+              <span class="unassigned-title">Not yet in a milestone</span>
+              <span v-if="unassignedPlanContributions.length > 0" class="unassigned-count">
+                {{ unassignedPlanContributions.length }}
+              </span>
+            </div>
+            <p class="unassigned-hint">
+              A place to capture contributions while drafting the plan, before
+              you've decided which milestone they belong to.
+            </p>
+
+            <div v-if="unassignedPlanContributions.length > 0" class="contributions-list">
+              <ContributionCardCompact
+                v-for="contribution in unassignedPlanContributions"
+                :key="contribution.id"
+                :contribution="contribution"
+                :can-confirm="perms.canConfirmContribution.value"
+                :can-edit="perms.canAddMilestones.value"
+                :is-plan-signed-off="implementationPlan.signed_off"
+                :user-role="currentUserRole"
+                :current-user-id="currentUserId"
+                :all-contributions="allProjectContributions"
+                @update="handleContributionUpdate"
+                @view-detail="handleViewContribution"
+                @create-child="handleCreateChildContribution"
+                @assign="handleAssignContribution"
+                @edit="openEditContribution"
+                @archive="confirmArchiveContribution"
+              />
+            </div>
+
+            <div v-if="perms.canAddMilestones.value" class="add-contribution-row">
+              <button class="add-contribution-btn" @click="handleCreateUnassignedContribution">
+                <Plus class="add-icon" />
+                Add Contribution
+              </button>
+            </div>
+          </div>
         </template>
       </div>
 
@@ -651,6 +696,7 @@ import {
   Calendar,
   DollarSign,
   Pencil,
+  Plus,
   Info,
 } from 'lucide-vue-next';
 import { useProjectsStore } from 'stores/projects';
@@ -670,10 +716,11 @@ import { useContributionWorkflow } from 'src/composables/useContributionWorkflow
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import ProjectForm from 'src/components/projects/ProjectForm.vue';
 import MilestoneCard from 'src/components/projects/MilestoneCard.vue';
-import { topLevelContributions } from 'src/lib/contributions/nesting';
+import { topLevelContributions, unassignedContributions } from 'src/lib/contributions/nesting';
 import MilestoneFormDialog from 'src/components/projects/MilestoneFormDialog.vue';
 import AssignRoleDialog from 'src/components/projects/AssignRoleDialog.vue';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
+import ContributionCardCompact from 'src/components/projects/ContributionCardCompact.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
 import ConfirmDestroyDialog from 'src/components/common/ConfirmDestroyDialog.vue';
 import ConfirmArchiveDialog from 'src/components/common/ConfirmArchiveDialog.vue';
@@ -1058,6 +1105,14 @@ const planContributions = computed<Contribution[]>(() => {
 // readiness, even when it wrongly carries a milestone_id (#773).
 const topLevelPlanContributions = computed(() =>
   topLevelContributions(planContributions.value),
+);
+
+// Contributions captured in the plan draft but not yet placed in a milestone
+// (#777). A holding area so planners can jot down work before deciding where
+// it fits. These are deliberately excluded from planContributions above, so
+// they don't count toward confirmation progress or block plan sign-off.
+const unassignedPlanContributions = computed(() =>
+  unassignedContributions(allProjectContributions.value),
 );
 
 const confirmedCount = computed(
@@ -1477,13 +1532,28 @@ function handleCreateContribution(milestoneId: string) {
   showCreateContributionDialog.value = true;
 }
 
+// Create a contribution with no milestone — it lands in the plan draft's
+// unassigned holding area (#777).
+function handleCreateUnassignedContribution() {
+  createContributionMilestoneId.value = undefined;
+  showCreateContributionDialog.value = true;
+}
+
 async function handleCreateContributionSubmit(req: CreateContributionRequest) {
   creatingContribution.value = true;
   try {
     await contributionsStore.create(req);
     showCreateContributionDialog.value = false;
     $q.notify({ type: 'positive', message: 'Contribution created!' });
-    if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
+    // Refresh the plan (milestone contributions) AND the project's contributions
+    // list — a contribution created with no milestone lands only in the latter,
+    // which feeds the unassigned holding area (#777).
+    if (project.value) {
+      await Promise.all([
+        projectsStore.fetchImplementationPlan(project.value.id),
+        projectsStore.fetchProjectContributions(project.value.id),
+      ]);
+    }
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to create contribution' });
   } finally {
@@ -2037,6 +2107,86 @@ async function submitAssign() {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+// ── Unassigned contributions holding area (#777) ─────────────────────────────
+
+.unassigned-section {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px dashed var(--matou-border);
+  border-radius: var(--matou-radius-sm);
+  background: var(--matou-secondary);
+}
+
+.unassigned-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.unassigned-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--matou-muted-foreground);
+}
+
+.unassigned-count {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--matou-muted);
+  color: var(--matou-muted-foreground);
+  font-size: 0.72rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.unassigned-hint {
+  font-size: 0.8rem;
+  color: var(--matou-muted-foreground);
+  margin: 6px 0 12px;
+  line-height: 1.5;
+}
+
+.unassigned-section .contributions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.unassigned-section .add-contribution-row {
+  margin-top: 8px;
+}
+
+.unassigned-section .add-contribution-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px dashed var(--matou-border);
+  border-radius: var(--matou-radius-sm);
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--matou-muted-foreground);
+  transition: all 0.12s ease;
+
+  &:hover {
+    border-color: var(--matou-primary);
+    color: var(--matou-primary);
+  }
+}
+
+.unassigned-section .add-icon {
+  width: 14px;
+  height: 14px;
 }
 
 // ── Assign dialog ────────────────────────────────────────────────────────────
