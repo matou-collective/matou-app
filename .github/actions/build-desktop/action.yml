@@ -220,7 +220,11 @@ runs:
         # Hand the existing keychain + identity to electron-builder; the build
         # step clears CSC_LINK/CSC_KEY_PASSWORD so it skips its own import.
         echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
-        echo "CSC_NAME=$IDENTITY"     >> "$GITHUB_ENV"
+        # electron-builder rejects a CSC_NAME that carries the certificate-type
+        # prefix ("Please remove prefix \"Developer ID Application:\"..."): it
+        # adds the prefix itself and picks the certificate. find-identity prints
+        # the full common name, so strip it.
+        echo "CSC_NAME=${IDENTITY#Developer ID Application: }" >> "$GITHUB_ENV"
 
     - name: Build Electron app
       shell: bash
