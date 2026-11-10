@@ -106,3 +106,17 @@ The test Postfix relay container runs on port 3525, not the default 2525.
 **Fix:**
 Ensure `MATOU_SMTP_PORT=3525` is set when running the backend in test mode. The BackendManager and Makefile `run-test` target both set this automatically.
 
+---
+
+## Release fails on Apple agreements
+
+**Symptoms:**
+- The `Matou App Build` workflow fails at the `apple-preflight` job within the first minute with: "Apple has new terms to accept…".
+- (Pre-#813, before the preflight existed:) the mac notarisation or iOS TestFlight step failed only at the very end of a long build.
+
+**Root cause:**
+Apple published new terms. The account holder must accept them before notarisation or TestFlight upload will work.
+
+**Fix:**
+Release fails on Apple agreements: accept at developer.apple.com (sign in as the account holder) and in App Store Connect, then re-run the workflow.
+
