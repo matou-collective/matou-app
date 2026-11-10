@@ -4,6 +4,7 @@ package contributions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -605,6 +606,135 @@ func TestService_CreateContribution_SubDropsMilestoneID(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("sub %s should be nested under parent, children %v", sub.ID, refreshedParent.ChildContributionIDs)
+	}
+}
+
+// Promoting a sub-contribution detaches it from its parent and makes it a
+// top-level contribution in the parent chain's milestone: it leaves the
+// parent's child list, gains the milestone_id, joins the milestone's top-level
+// list, and (because a new top-level contribution appears in a signed-off plan)
+// invalidates sign-off. See #778.
+func TestService_PromoteSubContribution(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+
+	ip, _ := svc.CreateImplementationPlan(ctx, "space-1", &CreateImplementationPlanRequest{
+		ProjectID: "proj-1", TotalBudget: "$1",
+		ProjectLeadID: "lead-1", ProjectStewardID: "steward-1",
+	})
+	ms, _ := svc.AddMilestone(ctx, "space-1", "lead-1", &CreateMilestoneRequest{
+		ImplementationPlanID: ip.ID, Title: "Phase", Duration: "1 week",
+	})
+
+	parent, err := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Parent", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityMedium,
+		CreatedBy: "lead-1", Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		MilestoneID: ms.MilestoneID,
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	sub, err := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Sub", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityMedium,
+		CreatedBy: "lead-1", Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		ParentContributionID: parent.ID,
+	})
+	if err != nil {
+		t.Fatalf("create sub: %v", err)
+	}
+
+	// Mark the plan signed off so we can assert promotion invalidates it.
+	signed, _ := svc.GetImplementationPlan(ctx, "space-1", ip.ID)
+	signed.SignedOff = true
+	if err := svc.SaveImplementationPlan(ctx, "space-1", signed); err != nil {
+		t.Fatalf("mark signed off: %v", err)
+	}
+
+	promoted, err := svc.PromoteSubContribution(ctx, "space-1", sub.ID, "lead-1")
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if promoted.ParentContributionID != "" {
+		t.Errorf("promoted sub should have no parent, got %q", promoted.ParentContributionID)
+	}
+	if promoted.MilestoneID != ms.MilestoneID {
+		t.Errorf("promoted sub should carry milestone %q, got %q", ms.MilestoneID, promoted.MilestoneID)
+	}
+
+	// Milestone now lists both the parent and the promoted contribution.
+	refreshedMs, _ := svc.GetMilestone(ctx, "space-1", ms.MilestoneID)
+	foundInMs := false
+	for _, id := range refreshedMs.ContributionIDs {
+		if id == sub.ID {
+			foundInMs = true
+		}
+	}
+	if !foundInMs {
+		t.Errorf("promoted sub %s should be in milestone list %v", sub.ID, refreshedMs.ContributionIDs)
+	}
+
+	// The parent no longer lists the promoted sub as a child.
+	refreshedParent, _ := svc.GetContribution(ctx, "space-1", parent.ID)
+	for _, id := range refreshedParent.ChildContributionIDs {
+		if id == sub.ID {
+			t.Errorf("promoted sub %s should not remain a child of %s: %v", sub.ID, parent.ID, refreshedParent.ChildContributionIDs)
+		}
+	}
+
+	// Sign-off is invalidated: a new top-level contribution needs re-signoff.
+	refreshedPlan, _ := svc.GetImplementationPlan(ctx, "space-1", ip.ID)
+	if refreshedPlan.SignedOff {
+		t.Errorf("promoting a sub into a signed-off plan should invalidate sign-off")
+	}
+}
+
+// Promoting a contribution that has no parent is an error.
+func TestService_PromoteSubContribution_RejectsTopLevel(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+
+	ip, _ := svc.CreateImplementationPlan(ctx, "space-1", &CreateImplementationPlanRequest{
+		ProjectID: "proj-1", TotalBudget: "$1",
+		ProjectLeadID: "lead-1", ProjectStewardID: "steward-1",
+	})
+	ms, _ := svc.AddMilestone(ctx, "space-1", "lead-1", &CreateMilestoneRequest{
+		ImplementationPlanID: ip.ID, Title: "Phase", Duration: "1 week",
+	})
+	top, err := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Top", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityMedium,
+		CreatedBy: "lead-1", Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		MilestoneID: ms.MilestoneID,
+	})
+	if err != nil {
+		t.Fatalf("create top-level: %v", err)
+	}
+	if _, err := svc.PromoteSubContribution(ctx, "space-1", top.ID, "lead-1"); err == nil {
+		t.Errorf("promoting a top-level contribution should fail")
+	}
+}
+
+func TestActionPromoteSubContribution_LeadStewardOnly(t *testing.T) {
+	cases := []struct {
+		role    Role
+		allowed bool
+	}{
+		{RoleProjectLead, true},
+		{RoleProjectSteward, true},
+		{RoleFoundingMember, true},
+		{RoleOperationsSteward, true},
+		{RoleMember, false},
+		{RoleContributor, false},
+	}
+	for _, c := range cases {
+		if got := CanPerformAction([]Role{c.role}, ActionPromoteSubContribution); got != c.allowed {
+			t.Errorf("ActionPromoteSubContribution for %s: got %v, want %v", c.role, got, c.allowed)
+		}
 	}
 }
 
@@ -2000,6 +2130,166 @@ func TestAcceptOffer_PropagatesAssigneeToCreatedChildren(t *testing.T) {
 	}
 	if reloaded.Status != ContribOffered {
 		t.Errorf("expected status offered, got %s", reloaded.Status)
+	}
+}
+
+// failingChildSaveStore fails Save for one specific objectID, used to simulate
+// a child-propagation failure that must not fail the parent's own accept.
+type failingChildSaveStore struct {
+	*MockObjectStore
+	failObjectID string
+}
+
+func (f *failingChildSaveStore) Save(spaceID, objectID, objectType string, data interface{}) error {
+	if objectID == f.failObjectID {
+		return fmt.Errorf("simulated save failure for %s", objectID)
+	}
+	return f.MockObjectStore.Save(spaceID, objectID, objectType, data)
+}
+
+// Issue #803: accepting an offered contribution whose child-propagation step
+// fails must still succeed and leave the parent assigned — the assignment is
+// already committed, so a best-effort propagation hiccup must not be reported
+// to the caller as an accept failure.
+func TestAcceptOffer_ChildPropagationFailureStillSucceeds(t *testing.T) {
+	store := &failingChildSaveStore{MockObjectStore: NewMockStore()}
+	svc := NewService(store)
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "parent task",
+		Description:        "parent description",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
+		Deadline:           "2026-12-31",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("confirm parent: %v", err)
+	}
+
+	child := createUnassignedChild(ctx, t, svc, spaceID, parent.ID)
+	// Make the child's propagation save fail, reproducing the original defect.
+	store.failObjectID = child.ID
+
+	if _, err := svc.OfferContribution(ctx, spaceID, parent.ID, "user-A", "User A"); err != nil {
+		t.Fatalf("OfferContribution: %v", err)
+	}
+	accepted, err := svc.AcceptOffer(ctx, spaceID, parent.ID, "user-A")
+	if err != nil {
+		t.Fatalf("AcceptOffer must succeed despite child propagation failure, got: %v", err)
+	}
+	if accepted.Status != ContribAssigned {
+		t.Errorf("accepted status = %s, want assigned", accepted.Status)
+	}
+	if accepted.AssignedContributorID != "user-A" {
+		t.Errorf("assigned contributor = %q, want user-A", accepted.AssignedContributorID)
+	}
+
+	// The committed state must also be assigned on reload.
+	reloaded, err := svc.GetContribution(ctx, spaceID, parent.ID)
+	if err != nil {
+		t.Fatalf("reload parent: %v", err)
+	}
+	if reloaded.Status != ContribAssigned {
+		t.Errorf("reloaded status = %s, want assigned", reloaded.Status)
+	}
+}
+
+// Issue #803: re-accepting a contribution already assigned to the accepting
+// user is an idempotent no-op that returns the current record, not an error.
+// This is the recovery path for a client whose first accept appeared to fail.
+func TestAcceptOffer_IdempotentWhenAlreadyAssignedToSameUser(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	c, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "task",
+		Description:        "desc",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
+		Deadline:           "2026-12-31",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, c.ID); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := svc.OfferContribution(ctx, spaceID, c.ID, "user-A", "User A"); err != nil {
+		t.Fatalf("offer: %v", err)
+	}
+	if _, err := svc.AcceptOffer(ctx, spaceID, c.ID, "user-A"); err != nil {
+		t.Fatalf("first accept: %v", err)
+	}
+
+	// Second accept by the same user must be a benign no-op, not an error.
+	second, err := svc.AcceptOffer(ctx, spaceID, c.ID, "user-A")
+	if err != nil {
+		t.Fatalf("re-accept must be idempotent, got: %v", err)
+	}
+	if second.Status != ContribAssigned || second.AssignedContributorID != "user-A" {
+		t.Errorf("re-accept returned status=%s assignee=%q, want assigned/user-A", second.Status, second.AssignedContributorID)
+	}
+
+	// A different user may not steal an already-assigned contribution.
+	if _, err := svc.AcceptOffer(ctx, spaceID, c.ID, "user-B"); err == nil {
+		t.Error("accept by a different user on an assigned contribution should error")
+	}
+}
+
+// Issue #803: re-offering a contribution already assigned to the very user it
+// would be offered to is a benign no-op, not the "current: assigned" hard error.
+func TestOfferContribution_IdempotentWhenAlreadyAssignedToSameUser(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	c, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "task",
+		Description:        "desc",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
+		Deadline:           "2026-12-31",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, c.ID); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := svc.OfferContribution(ctx, spaceID, c.ID, "user-A", "User A"); err != nil {
+		t.Fatalf("offer: %v", err)
+	}
+	if _, err := svc.AcceptOffer(ctx, spaceID, c.ID, "user-A"); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+
+	reoffered, err := svc.OfferContribution(ctx, spaceID, c.ID, "user-A", "User A")
+	if err != nil {
+		t.Fatalf("re-offer to the assigned user must be a no-op, got: %v", err)
+	}
+	if reoffered.Status != ContribAssigned {
+		t.Errorf("re-offer status = %s, want assigned (unchanged)", reoffered.Status)
 	}
 }
 

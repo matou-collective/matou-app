@@ -8,6 +8,7 @@ package anysync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -375,11 +376,38 @@ func (m *ObjectTreeManager) ReadObject(ctx context.Context, spaceID, objectID st
 			freshTree.Unlock()
 		}
 		if err != nil {
+			if errors.Is(err, ErrNoChangesInTree) {
+				m.recoverEmptyTree(ctx, spaceID, tree.Id(), objectID)
+			}
 			return nil, fmt.Errorf("building state for %s: %w", objectID, err)
 		}
 	}
 
 	return stateToPayload(state, tree.Id()), nil
+}
+
+// recoverEmptyTree drops a locally-incomplete object tree — one that builds
+// without error and keeps a head-storage entry but carries no content changes
+// (ErrNoChangesInTree) — so the next HeadSync classifies it as missing and the
+// missing-tree worker re-fetches a clean copy from a peer.
+//
+// This is the read-path counterpart to the sync-path #129 recovery
+// (recoverIfCorrupt). The #808 corruption never surfaces as a sync error: the
+// tree builds, so GetTree/SyncWithPeer succeed and HeadSync — which works from
+// the head-storage entry — never reports it missing, so it never self-heals. It
+// only surfaces here, when state reconstruction finds no content. RecoverCorruptTree
+// is bounded to once per tree per recoveryBackoffWindow, so a tree whose content
+// genuinely cannot be re-fetched does not drop-and-refetch in a loop. Only the
+// no-content case reaches here; a tree whose changes are present but all rejected
+// by the validator returns ErrAllChangesRejected and is left untouched.
+func (m *ObjectTreeManager) recoverEmptyTree(ctx context.Context, spaceID, treeID, objectID string) {
+	if m.treeManager == nil {
+		return
+	}
+	if m.treeManager.RecoverCorruptTree(ctx, spaceID, treeID) {
+		log.Printf("[ObjectTree] object %s (tree %s) built with no content changes — dropped incomplete local copy to re-fetch from a peer (#808)",
+			objectID, treeID)
+	}
 }
 
 // ReadObjectsByType reads all objects of a specific type from a space.
@@ -422,6 +450,9 @@ func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, type
 				freshTree.Unlock()
 			}
 			if err != nil {
+				if errors.Is(err, ErrNoChangesInTree) {
+					m.recoverEmptyTree(ctx, spaceID, entry.TreeID, entry.ObjectID)
+				}
 				log.Printf("[ObjectTree] Warning: failed to build state for %s: %v",
 					entry.ObjectID, err)
 				continue
