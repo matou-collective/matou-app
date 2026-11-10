@@ -46,6 +46,10 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       build_number: ${{ steps.version.outputs.build_number }}
       desktop: ${{ steps.set-matrix.outputs.desktop }}
+      # Whether this run builds a mac target (not just any desktop target): the
+      # Apple agreements preflight is only relevant to mac/iOS, so a linux- or
+      # windows-only dispatch must skip it. See #813.
+      mac: ${{ steps.set-matrix.outputs.mac }}
       android: ${{ steps.set-matrix.outputs.android }}
       ios_spike: ${{ steps.set-matrix.outputs.ios_spike }}
       ios: ${{ steps.set-matrix.outputs.ios }}
@@ -87,6 +91,8 @@ jobs:
             android|ios|ios-spike) FILTERED='[]' ;;
             *)           FILTERED=$(echo "$ALL" | jq -c --arg id "$PLATFORM" '[.[] | select(.id == $id)]') ;;
           esac
+          MAC=false
+          case "$PLATFORM" in all|desktop|mac-arm64|mac-x64) MAC=true ;; esac
           ANDROID=false
           case "$PLATFORM" in all|android) ANDROID=true ;; esac
           IOS_SPIKE=false
@@ -95,16 +101,48 @@ jobs:
           case "$PLATFORM" in all|ios) IOS=true ;; esac
           DESKTOP=true
           [ "$FILTERED" = "[]" ] && DESKTOP=false
-          echo "platform=$PLATFORM desktop=$DESKTOP android=$ANDROID ios=$IOS ios_spike=$IOS_SPIKE"
+          echo "platform=$PLATFORM desktop=$DESKTOP mac=$MAC android=$ANDROID ios=$IOS ios_spike=$IOS_SPIKE"
           echo "matrix={\"include\":$FILTERED}" >> "$GITHUB_OUTPUT"
           echo "desktop=$DESKTOP" >> "$GITHUB_OUTPUT"
+          echo "mac=$MAC" >> "$GITHUB_OUTPUT"
           echo "android=$ANDROID" >> "$GITHUB_OUTPUT"
           echo "ios_spike=$IOS_SPIKE" >> "$GITHUB_OUTPUT"
           echo "ios=$IOS" >> "$GITHUB_OUTPUT"
 
-  build:
+  # Fail fast when Apple's agreements are pending (#813). When Apple publishes
+  # new terms the account holder must accept them before notarisation (mac) or
+  # TestFlight upload (iOS) works; otherwise those steps fail only at the END of
+  # a long build. This cheap check runs on ubuntu-latest (no macOS minutes): it
+  # mints a short-lived App Store Connect API JWT and makes one authenticated
+  # call. On "agreements pending" it stops the run in under a minute with a clear
+  # message, before any build job starts. Only runs when the dispatch builds mac
+  # or iOS, so linux/windows/android-only runs skip it. If the Apple API secrets
+  # are unset the script passes with a notice (behaviour unchanged).
+  apple-preflight:
     needs: prepare
-    if: needs.prepare.outputs.desktop == 'true'
+    if: needs.prepare.outputs.mac == 'true' || needs.prepare.outputs.ios == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Apple agreements are accepted
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: node scripts/ci/apple-preflight.mjs
+
+  build:
+    # apple-preflight is in needs so a pending-agreements failure stops the mac
+    # legs before they build. The matrix also carries linux/windows, which don't
+    # need Apple — they ride along and are blocked too when the preflight fails
+    # (acceptable: fail fast beats a wasted release). !cancelled() + the result
+    # check lets the job run when the preflight is skipped (linux/windows-only
+    # has no mac leg, so apple-preflight never runs). See #813.
+    needs: [prepare, apple-preflight]
+    if: ${{ !cancelled() && needs.prepare.outputs.desktop == 'true' && needs.apple-preflight.result != 'failure' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -329,8 +367,10 @@ jobs:
   # on a tag, or on dispatch with testflight=true — uploads it to TestFlight.
   # Without the signing secrets it falls back to an unsigned archive.
   ios:
-    needs: prepare
-    if: needs.prepare.outputs.ios == 'true'
+    # Blocked by the Apple agreements preflight (#813): no point running the full
+    # Xcode build + TestFlight upload if the account's terms are pending.
+    needs: [prepare, apple-preflight]
+    if: ${{ !cancelled() && needs.prepare.outputs.ios == 'true' && needs.apple-preflight.result != 'failure' }}
     runs-on: macos-latest
     timeout-minutes: 60
     env:
