@@ -141,8 +141,8 @@
             no-caps
             outline
             color="negative"
-            icon="delete_forever"
-            label="Delete Project"
+            icon="archive"
+            label="Archive Project"
             class="full-width"
             @click="$emit('delete')"
           />

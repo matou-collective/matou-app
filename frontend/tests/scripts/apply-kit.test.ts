@@ -47,6 +47,11 @@ describe('apply-kit (core)', () => {
     expect(tokens).toContain('--matou-sidebar-accent: #E8F4F8;');
     expect(tokens).not.toContain('color-mix');
     expect(tokens).toMatch(/\.dark\s*\{[^}]*--matou-secondary: #1e3340;/);
+    // #636 — dark mode primary is a lightened kit primary (+ near-black foreground)
+    // emitted from the kit, so it no longer falls back to Mātou's teal (#7eb3b8).
+    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--matou-primary: #8fafba;/);
+    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--matou-primary-foreground: #08181d;/);
+    expect(tokens).not.toContain('#7eb3b8');
     const kitTs = await readFile(join(root, 'src/generated/kit.ts'), 'utf8');
     expect(kitTs).toContain("export const KIT");
     // Pin the split so the two can't drift apart again: brand.name (in kit.ts) keeps its
@@ -54,10 +59,11 @@ describe('apply-kit (core)', () => {
     expect(kitTs).toContain('"name": "Mātou"');
     expect(build.productName).toBe('Matou');
   });
-  it('a community kit gets coa identities, no publish, no updates', async () => {
+  it('a community kit gets coa identities and its own update feed', async () => {
     await applyKit(await kitDir({ slug: 'ngati-example', brand: { name: 'Ngāti Example', slug: 'ngati-example', primaryColour: '#0A5C6B', secondaryColour: '#F2B134', contactEmail: 'k@x.nz' } }), root, { icons: false });
     const build = JSON.parse(await readFile(join(root, 'kit.build.json'), 'utf8'));
-    expect(build).toMatchObject({ appId: 'org.matou.coa.ngati-example', productName: 'Ngati Example', artifactBase: 'ngati-example', executableName: 'ngati-example', androidApplicationId: 'org.matou.coa.ngati_example', urlScheme: 'org.matou.coa.ngati-example', publish: null, updates: false });
+    expect(build).toMatchObject({ appId: 'org.matou.coa.ngati-example', productName: 'Ngati Example', artifactBase: 'ngati-example', executableName: 'ngati-example', androidApplicationId: 'org.matou.coa.ngati_example', urlScheme: 'org.matou.coa.ngati-example', updates: true });
+    expect(build.publish).toEqual([{ provider: 'generic', url: 'https://coa.matou.nz/dl/ngati-example/current', channel: 'latest' }]);
     expect(JSON.parse(await readFile(join(root, 'src-capacitor/capacitor.config.json'), 'utf8'))).toMatchObject({ appId: 'org.matou.coa.ngati_example', appName: 'Ngāti Example' });
     const strings = await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/strings.xml'), 'utf8');
     expect(strings).toContain('<string name="app_name">Ngāti Example</string>');
@@ -119,6 +125,17 @@ describe('kit secondary wash (#337)', () => {
     expect(scss).toContain('--matou-secondary-strong: #F2B134;');
     expect(scss).toContain('--matou-secondary: color-mix(in srgb, #F2B134 12%, transparent);');
     expect(scss).toContain('--matou-sidebar-accent: color-mix(in srgb, #F2B134 16%, transparent);');
+  });
+});
+
+describe('kit dark-mode primary (#636)', () => {
+  it('derives the dark primary + foreground from the kit, not Mātou teal', () => {
+    // A clearly non-teal kit (magenta) proves the dark primary tracks the kit.
+    const scss = tokensScss({ brand: { primaryColour: '#A21F7A', secondaryColour: '#E8F4F8' } });
+    // mixWithWhite('#A21F7A', 0.5) → #d18fbd ; mixWithBlack('#A21F7A', 0.25) → #29081f
+    expect(scss).toMatch(/\.dark\s*\{[\s\S]*--matou-primary: #d18fbd;/);
+    expect(scss).toMatch(/\.dark\s*\{[\s\S]*--matou-primary-foreground: #29081f;/);
+    expect(scss).not.toContain('#7eb3b8'); // never Mātou's hardcoded dark teal
   });
 });
 

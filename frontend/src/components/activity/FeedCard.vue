@@ -228,8 +228,8 @@ async function handlePin() {
 
 <style scoped>
 .feed-card {
-  background: var(--matou-secondary, #e8f4f8);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  background: var(--matou-secondary);
+  border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius, 8px);
   padding: 1rem 1.25rem;
   display: flex;
@@ -293,7 +293,7 @@ async function handlePin() {
 
 .dark .notice-state-badge.draft { background: #92400e; color: #fef3c7; }
 .dark .notice-state-badge.published { background: #065f46; color: #d1fae5; }
-.dark .notice-state-badge.archived { background: var(--matou-surface-alt, #374151); color: var(--matou-text-secondary, #d1d5db); }
+.dark .notice-state-badge.archived { background: var(--matou-surface-alt); color: var(--matou-text-secondary); }
 
 .feed-card-time {
   font-size: 0.8rem;
@@ -357,7 +357,7 @@ async function handlePin() {
   gap: 0.375rem;
   padding: 1.5rem;
   background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius, 8px);
 }
 
@@ -370,7 +370,7 @@ async function handlePin() {
 }
 
 .feed-card-admin {
-  border-top: 1px solid var(--matou-border, #e5e7eb);
+  border-top: 1px solid var(--matou-border);
   padding-top: 0.625rem;
   display: flex;
   gap: 0.5rem;
@@ -391,8 +391,8 @@ async function handlePin() {
 }
 
 .admin-btn.archive {
-  background: var(--matou-surface-alt, #f3f4f6);
-  color: var(--matou-text-secondary, #6b7280);
+  background: var(--matou-surface-alt);
+  color: var(--matou-text-secondary);
 }
 
 .card-section.card-section-white {

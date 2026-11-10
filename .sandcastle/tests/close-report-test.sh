@@ -23,10 +23,46 @@ printf 'a\n' > "$repo/src.go"; git -C "$repo" add -A; git -C "$repo" commit -qm 
 c1="$(git -C "$repo" rev-parse HEAD)"
 export CR_MAIN_HEAD=main
 
+# swarm.db isolation (#116): the reviewer gate records its call's spend via
+# swarm-db-lib.sh. Point SWARM_DB at the throwaway repo and arm the leak tripwire
+# so a write can NEVER touch the real $HOME telemetry.
+export SWARM_DB="$repo/swarm.db" SWARMDB_ASSERT_UNDER="$repo"
+
+# The independent reviewer gate (#197): shim the headless reviewer via CR_REVIEW_CMD
+# so no real `claude` runs. The stub receives the prompt file as $1 and emits a
+# `claude --output-format json`-shaped result whose `.result` carries the verdict
+# object selected by $REVIEW_VERDICT (default approve). $REVIEW_USAGE adds a usage
+# block so the spend-recording path (swarmdb_spend_from_result) fires.
+cat > "$repo/review-claude.sh" <<'SH'
+#!/usr/bin/env bash
+v="${REVIEW_VERDICT:-approve}"
+case "$v" in
+  approve) r='{"verdict":"approve","findings":[]}' ;;
+  reject)  r='{"verdict":"reject","findings":[{"file":"src.go","line":3,"severity":"high","why":"REVIEWFINDING regression in the hot path"}]}' ;;
+  unsure)  r='{"verdict":"unsure","findings":[{"file":"src.go","line":3,"severity":"medium","why":"PARKFINDING judgement call for a human"}]}' ;;
+  malformed) printf 'I cannot produce JSON, sorry — this looks fine though.'; exit 0 ;;
+  empty)   exit 0 ;;
+  authfail)  # a claude -p child that is not logged in (#228): api_error + /login
+    jq -cn '{type:"result", terminal_reason:"api_error", is_error:true, result:"Not logged in · Please run /login"}'
+    exit 0 ;;
+esac
+# A test may ask the stub to copy the prompt it received (its $1) for inspection.
+[ -n "${REVIEW_PROMPT_COPY:-}" ] && cp -- "$1" "$REVIEW_PROMPT_COPY" 2>/dev/null || true
+if [ -n "${REVIEW_USAGE:-}" ]; then
+  jq -cn --arg r "$r" '{type:"result", result:$r, usage:{input_tokens:100,output_tokens:20,cache_creation_input_tokens:0,cache_read_input_tokens:0}}'
+else
+  jq -cn --arg r "$r" '{type:"result", result:$r}'
+fi
+SH
+chmod +x "$repo/review-claude.sh"
+export CR_REVIEW_CMD="$repo/review-claude.sh"
+export REVIEW_VERDICT=approve   # the default for every existing scenario below
+
 run_close() { # run_close <issue> <envelope-json> [close-fail-code]; sets rc + fresh FAKE_DIR
   FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
-  # The claim labels the verified-close path releases (#22), resolved by NAME.
-  printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"}]\n' \
+  # The claim labels the verified-close path releases (#22), resolved by NAME,
+  # plus ready-for-human for the reviewer-unsure park (#197).
+  printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"},{"id":52,"name":"ready-for-human"}]\n' \
     > "$FAKE_DIR/labels.json"
   # A third arg makes the fake curl 403 (or the given code) the close PATCH —
   # the #20 seam: gates pass but the bot cannot write issue state.
@@ -35,7 +71,12 @@ run_close() { # run_close <issue> <envelope-json> [close-fail-code]; sets rc + f
   # release must warn, never change the exit code.
   [ -n "${4:-}" ] && printf '%s' "$4" > "$FAKE_DIR/label-delete-fail"
   local ef="$FAKE_DIR/envelope.json"; printf '%s' "$2" > "$ef"
-  ( cd "$repo" && bash "$here/../close-report.sh" "$1" "$ef" ) >"$FAKE_DIR/stdout.log" 2>&1
+  # #186: pin the push policy per-scenario — an unset SWARM_POLICY_FILE sources the
+  # HOST repo's real swarm-policy.sh, so T1-T6 (which assert push-mode close: gate
+  # against main + a direct PATCH-closed) RED when this vendored test runs from a
+  # LANDING=pr consumer. The pr/landing-pr scenarios below pin their own file.
+  printf 'LANDING=push\n' > "$FAKE_DIR/swarm-policy.sh"
+  ( cd "$repo" && SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" bash "$here/../close-report.sh" "$1" "$ef" ) >"$FAKE_DIR/stdout.log" 2>&1
 }
 
 posted_comment() { grep -q '"body"' "$FAKE_DIR/forgejo.log" 2>/dev/null; }
@@ -128,6 +169,89 @@ run_close 444 'not json {'; rc=$?
 ! closed_issue   || fail "malformed envelope must not close the issue"; ok
 
 # ==========================================================================
+# The independent reviewer gate (#197): a SECOND agent reads the diff before the
+# close proceeds. approve → close; reject → refuse with the findings verbatim;
+# unsure → park ready-for-human; malformed/empty → fail CLOSED (refuse). Shimmed
+# via CR_REVIEW_CMD; the deterministic claim gates still pass in every case.
+# ==========================================================================
+reviewed()         { grep -q 'independent reviewer' "$FAKE_DIR/forgejo.log" 2>/dev/null; }
+good_env="$(jq -n --arg c1 "$c1" '{
+  issue:444, status:"success", commits:[$c1], changed_files:["src.go"],
+  tests:[{command:"t",exit_code:0}], summary:"did it", blockers:[]
+}')"
+
+# RV-A — approve: the review runs, its JSON is posted on the thread, and the close
+# proceeds exactly as before.
+REVIEW_VERDICT=approve run_close 444 "$good_env"; rc=$?
+[ "$rc" -eq 0 ] || fail "RV-A: an approving review must let the close proceed, got $rc"; ok
+reviewed || fail "RV-A: the reviewer verdict must be posted on the thread (#197)"; ok
+close_stuck 444 || fail "RV-A: an approved close must still close the issue"; ok
+
+# RV-B — reject: the close is refused and the reviewer's findings appear verbatim
+# in the violation list; the issue is NOT closed.
+REVIEW_VERDICT=reject run_close 444 "$good_env"; rc=$?
+[ "$rc" -eq 1 ] || fail "RV-B: a reject verdict must refuse the close, got $rc"; ok
+! close_stuck 444 || fail "RV-B: a rejected close must NOT close the issue"; ok
+grep -q 'REVIEWFINDING regression in the hot path' "$FAKE_DIR/forgejo.log" \
+  || fail "RV-B: the reviewer's findings must appear verbatim in the refusal"; ok
+grep -qE '^SANDCASTLE_ATTEMPT issue=444 outcome=refused ' "$FAKE_DIR/stdout.log" \
+  || fail "RV-B: a reviewer-rejected close must emit outcome=refused"; ok
+
+# RV-C — malformed/empty reviewer output fails CLOSED (refuse), never a silent pass.
+REVIEW_VERDICT=malformed run_close 444 "$good_env"; rc=$?
+[ "$rc" -eq 1 ] || fail "RV-C: malformed reviewer output must refuse the close, got $rc"; ok
+! close_stuck 444 || fail "RV-C: a malformed-review close must NOT close the issue"; ok
+grep -qi 'unparseable\|failing the close CLOSED' "$FAKE_DIR/forgejo.log" \
+  || fail "RV-C: a malformed review must name the fail-closed reason"; ok
+REVIEW_VERDICT=empty run_close 444 "$good_env"; rc=$?
+[ "$rc" -eq 1 ] || fail "RV-C: empty reviewer output must also refuse the close, got $rc"; ok
+
+# RV-D — unsure: the ticket is PARKED ready-for-human (label added, ready-for-agent
+# + agent-working removed), findings attached, issue left OPEN, exit 0.
+REVIEW_VERDICT=unsure run_close 444 "$good_env"; rc=$?
+[ "$rc" -eq 0 ] || fail "RV-D: an unsure review parks (not refuses) — exit 0, got $rc"; ok
+! close_stuck 444 || fail "RV-D: a parked ticket must NOT be closed"; ok
+grep -q '"labels":\[52\]' "$FAKE_DIR/forgejo.log" \
+  || fail "RV-D: an unsure review must add ready-for-human"; ok
+removed_label 444 36 || fail "RV-D: parking must remove ready-for-agent"; ok
+removed_label 444 40 || fail "RV-D: parking must remove agent-working"; ok
+grep -q 'PARKFINDING judgement call for a human' "$FAKE_DIR/forgejo.log" \
+  || fail "RV-D: the park must attach the reviewer's findings"; ok
+grep -qE '^SANDCASTLE_ATTEMPT issue=444 outcome=parked ' "$FAKE_DIR/stdout.log" \
+  || fail "RV-D: an unsure review must emit outcome=parked"; ok
+
+# RV-E — the review call's token spend is recorded (swarm.db, #94) when the result
+# carries a usage block.
+REVIEW_VERDICT=approve REVIEW_USAGE=1 run_close 444 "$good_env"; rc=$?
+[ "$rc" -eq 0 ] || fail "RV-E: an approved+usage close should exit 0, got $rc"; ok
+grep -q "recorded the review call's token spend" "$FAKE_DIR/stdout.log" \
+  || fail "RV-E: the review call's spend must be recorded (#197/#94)"; ok
+
+# RV-F (#228) — an auth-error reviewer result (a claude -p child that is not
+# logged in, as in an interactive standing session) SKIPS the gate like an absent
+# reviewer: the close PROCEEDS on the deterministic gates alone, NOT refused on
+# reviewer grounds, and the skip is visible on stdout — never a silent pass.
+REVIEW_VERDICT=authfail run_close 444 "$good_env"; rc=$?
+[ "$rc" -eq 0 ] || fail "RV-F: an unauthenticated reviewer must SKIP, letting the close proceed, got $rc"; ok
+close_stuck 444 || fail "RV-F: an auth-error-skipped close must still close the issue"; ok
+grep -qi 'could not authenticate.*SKIPPING' "$FAKE_DIR/stdout.log" \
+  || fail "RV-F: the reviewer-auth skip must be visible on stdout (#228)"; ok
+! grep -qi 'reviewer output was empty or unparseable' "$FAKE_DIR/forgejo.log" \
+  || fail "RV-F: an auth error must NOT be treated as unparseable garbage (fail closed) (#228)"; ok
+
+# RV-G (#228) — the reviewer-prompt skeleton is resolved from the repo-root layout
+# (prompts/review-prompt.md) when there is no review-prompt.md beside the script,
+# so the reviewer is not silently stripped of its skeleton. close-report.sh runs
+# from the real repo root here ($here=.. of this test), so the default resolver
+# must find prompts/review-prompt.md and fold its heading into the built prompt.
+promptcopy="$(mktemp)"
+REVIEW_PROMPT_COPY="$promptcopy" REVIEW_VERDICT=approve run_close 444 "$good_env"; rc=$?
+[ "$rc" -eq 0 ] || fail "RV-G: close with a default-resolved skeleton should exit 0, got $rc"; ok
+grep -q 'You are the independent reviewer' "$promptcopy" \
+  || fail "RV-G: the reviewer prompt must include the prompts/review-prompt.md skeleton (#228)"; ok
+rm -f "$promptcopy"
+
+# ==========================================================================
 # LANDING=pr (#13): gate 1 checks reachability from the issue's OPEN PR head,
 # and a green close does NOT PATCH the issue closed — the PR's merge does. Under
 # MERGE_AUTHORITY=human the issue is left OPEN with the PR linked; under
@@ -210,6 +334,16 @@ run_close_pr 444 "$pr_env" agent-after-green "$c1" 444 pending; rc=$?
 ! merged_pr || fail "agent-after-green must NOT merge a PR whose checks are pending"; ok
 ! close_stuck 444 || fail "a pending agent-after-green PR must not close the issue"; ok
 ! labeled_agent_blocked || fail "a pending PR must not be parked agent-blocked"; ok
+
+# PR-2d (#197) — the reviewer gate runs BEFORE the merge step: a reject in
+# agent-after-green mode must refuse the close and leave the PR UNMERGED, even
+# though its checks are green and every deterministic gate passed.
+REVIEW_VERDICT=reject run_close_pr 444 "$pr_env" agent-after-green "$c1" 444 success; rc=$?
+[ "$rc" -eq 1 ] || fail "PR-2d: a reviewer reject must refuse the pr-mode close, got $rc"; ok
+! merged_pr || fail "PR-2d: a reviewer reject must run BEFORE the merge — the PR must NOT merge (#197)"; ok
+! close_stuck 444 || fail "PR-2d: a rejected pr close must not close the issue"; ok
+grep -q 'REVIEWFINDING regression in the hot path' "$FAKE_DIR/forgejo.log" \
+  || fail "PR-2d: the reviewer findings must appear in the pr-mode refusal"; ok
 
 # PR-3 — gate 1 refutes a commit NOT reachable from the PR head. The PR head is
 # a fabricated sha, so the real, main-reachable c1 is not an ancestor of it.
@@ -320,6 +454,168 @@ run_close_pr_superseded 444 "$pr_env" "sandcastle/worker/xyz" no no; rc=$?
 grep -q 'no open agent PR' "$FAKE_DIR/forgejo.log" \
   || fail "the genuine no-landing refusal must still fire for an open issue (#13/#151)"; ok
 
+# ── per-ticket landing (idss ADR 0267) ───────────────────────────────────────
+# A PUSH-default repo (no LANDING=pr in the policy file) whose ticket carries
+# `landing-pr`: close-report must take the PR path for THAT ticket.
+run_close_ticket_pr() { # run_close_ticket_pr <issue> <envelope> <pr-body> <assets-json> [repo-merge-authority]
+  FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
+  printf 'LANDING=push\nMERGE_AUTHORITY=%s\n' "${5:-human}" > "$FAKE_DIR/swarm-policy.sh"
+  export SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh"
+  printf '{"number":%s,"state":"open","labels":[{"name":"ready-for-agent"},{"name":"landing-pr"}]}\n' "$1" > "$FAKE_DIR/issue-$1.json"
+  printf '[{"number":88,"head":{"ref":"agent/issue-%s"}}]\n' "$1" > "$FAKE_DIR/open-pulls.json"
+  jq -n --arg ref "agent/issue-$1" --arg sha "$c1" --arg body "$3" \
+    '{number:88, head:{ref:$ref, sha:$sha}, html_url:"u/pr/88", body:$body}' > "$FAKE_DIR/pr-88.json"
+  printf '%s\n' "$4" > "$FAKE_DIR/assets.json"
+  printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"},{"id":48,"name":"agent-blocked"}]\n' > "$FAKE_DIR/labels.json"
+  printf '{"state":"success","statuses":[{"status":"success","context":"ci/build"}]}\n' > "$FAKE_DIR/commit-status.json"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$1" >> "%s/notify.log"\n' "$FAKE_DIR" > "$FAKE_DIR/notify.sh"
+  export CLOSE_REPORT_NOTIFY="$FAKE_DIR/notify.sh"
+  local ef="$FAKE_DIR/envelope.json"; printf '%s' "$2" > "$ef"
+  ( cd "$repo" && bash "$here/../close-report.sh" "$1" "$ef" ) >"$FAKE_DIR/stdout.log" 2>&1
+}
+
+# TL-1 — evidence attached: the PR path, issue left OPEN, Ben paged once.
+run_close_ticket_pr 444 "$pr_env" "closes #444" '[{"name":"after-rail-foot.png"}]'; rc=$?
+[ "$rc" -eq 0 ] || fail "TL-1: a landing-pr close with a screenshot should exit 0, got $rc: $(cat "$FAKE_DIR/stdout.log")"; ok
+! close_stuck 444 || fail "TL-1: a landing-pr ticket must NOT be closed by the worker (the human's merge closes it)"; ok
+! merged_pr || fail "TL-1: a landing-pr PR must NOT be merged by the harness"; ok
+grep -q 'awaiting human merge' "$FAKE_DIR/stdout.log" || fail "TL-1: must say the issue awaits a human merge"; ok
+grep -q 'ready for your review' "$FAKE_DIR/notify.log" 2>/dev/null || fail "TL-1: a verified landing-pr close must page that the PR is ready for review"; ok
+
+# TL-2 — the waiver line stands in for a screenshot.
+run_close_ticket_pr 444 "$pr_env" $'closes #444\n\n**Screenshots:** none — Go-side fix, nothing renders' '[]'; rc=$?
+[ "$rc" -eq 0 ] || fail "TL-2: the waiver line must satisfy the evidence rule, got $rc"; ok
+
+# TL-3 — neither: REFUSED, violation names the evidence, nobody is paged.
+run_close_ticket_pr 444 "$pr_env" "closes #444" '[]'; rc=$?
+[ "$rc" -eq 1 ] || fail "TL-3: a bare landing-pr PR must be refused, got $rc"; ok
+grep -q 'no screenshot' "$FAKE_DIR/stdout.log" || fail "TL-3: the violation must name the missing evidence"; ok
+[ ! -s "$FAKE_DIR/notify.log" ] || fail "TL-3: no review page for a PR without evidence"; ok
+grep -qE '^SANDCASTLE_ATTEMPT issue=444 outcome=refused ' "$FAKE_DIR/stdout.log" || fail "TL-3: outcome must read refused"; ok
+
+# TL-4 — an agent-after-green repo still leaves a landing-pr PR for a human.
+run_close_ticket_pr 444 "$pr_env" "closes #444" '[{"name":"after.png"}]' agent-after-green; rc=$?
+[ "$rc" -eq 0 ] || fail "TL-4: should exit 0, got $rc"; ok
+! merged_pr || fail "TL-4: agent-after-green must NOT merge a landing-pr ticket's PR"; ok
+
+# TL-5 — the same push repo, an UNLABELLED ticket: today's direct close, untouched.
+FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
+printf 'LANDING=push\n' > "$FAKE_DIR/swarm-policy.sh"; export SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh"
+printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"}]\n' > "$FAKE_DIR/labels.json"
+printf '%s' "$pr_env" > "$FAKE_DIR/envelope.json"
+( cd "$repo" && bash "$here/../close-report.sh" 444 "$FAKE_DIR/envelope.json" ) >"$FAKE_DIR/stdout.log" 2>&1; rc=$?
+[ "$rc" -eq 0 ] && close_stuck 444 || fail "TL-5: an unlabelled ticket in a push repo must still close directly, got rc=$rc"; ok
+
 unset SWARM_POLICY_FILE
+
+# ==========================================================================
+# WB (#193) — push mode: the worker pushes HEAD to its per-run worker branch
+# (sandcastle/worker/<run>), NOT main; the HOST lands main after verify. So gate
+# 1 must verify reachability from the WORKER-BRANCH head PRE-land, not origin/main.
+# ==========================================================================
+git -C "$repo" checkout -q -b sandcastle/worker/wbtest
+printf 'b\n' >> "$repo/src.go"; git -C "$repo" add src.go   # ONLY src.go (review-claude.sh / swarm.db are untracked test scaffolding)
+git -C "$repo" commit -qm "sandcastle: #444 — worker-branch land (#193)"
+wbsha="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" update-ref refs/remotes/origin/main "$c1"   # main does NOT carry it yet
+wb_env="$(jq -n --arg c "$wbsha" '{
+  issue:444, status:"success", commits:[$c], changed_files:["src.go"],
+  tests:[{command:"t",exit_code:0}], summary:"worker-branch land", blockers:[]
+}')"
+run_close_wb() { # run_close_wb <issue> <env> ; uses CR_MAIN_HEAD="" so the worker-branch resolution fires
+  FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
+  printf 'LANDING=push\n' > "$FAKE_DIR/swarm-policy.sh"
+  printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"}]\n' > "$FAKE_DIR/labels.json"
+  printf '%s' "$2" > "$FAKE_DIR/envelope.json"
+  ( cd "$repo" && SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" CR_MAIN_HEAD="" CR_START_SHA="$c1" \
+      bash "$here/../close-report.sh" "$1" "$FAKE_DIR/envelope.json" ) >"$FAKE_DIR/stdout.log" 2>&1
+}
+
+# WB-1 — the worker pushed its branch (origin/<wb> present), main lacks the
+# commit: gate 1 verifies from the worker-branch head and the issue closes.
+git -C "$repo" update-ref refs/remotes/origin/sandcastle/worker/wbtest "$wbsha"
+run_close_wb 444 "$wb_env"; rc=$?
+[ "$rc" -eq 0 ] || fail "WB-1: a push-mode close must verify against the worker-branch head and close, got $rc: $(cat "$FAKE_DIR/stdout.log")"; ok
+close_stuck 444 || fail "WB-1: the issue must close once gate 1 verifies from the worker branch (not origin/main)"; ok
+# #283: the pre-land close verified the WORKER BRANCH, so its comment must say so
+# — never the false "verified against main" (main does not carry it yet).
+grep -q 'worker branch' "$FAKE_DIR/forgejo.log" \
+  || fail "WB-1: the close comment must name the worker branch it verified against (#283)"; ok
+! grep -q 'verified against main' "$FAKE_DIR/forgejo.log" \
+  || fail "WB-1: a pre-land push-mode close must NOT claim it verified against main (#283)"; ok
+
+# WB-2 — the SAME commit, but the worker branch was never pushed (origin/<wb>
+# absent and no reachable remote to fetch it): gate 1 falls back to origin/main,
+# which lacks the commit, so the close is REFUSED — a safe refusal, never a
+# false close of unpushed work.
+git -C "$repo" update-ref -d refs/remotes/origin/sandcastle/worker/wbtest
+run_close_wb 444 "$wb_env"; rc=$?
+[ "$rc" -ne 0 ] || fail "WB-2: an unpushed worker-branch commit must NOT close (safe refusal), got $rc"; ok
+! close_stuck 444 || fail "WB-2: a commit on neither the worker branch nor main must not close"; ok
+
+# ==========================================================================
+# ST (#244) — push-mode STALE origin/main. A non-worker-branch checkout gates
+# against origin/main, which was captured at run START and never refetched. A
+# commit landed on `main` DURING the run must still pass gate 1: close-report
+# refetches the LIVE main head (no manual CR_MAIN_HEAD) in the same checkout it
+# evaluates, before the reachability check. This is the #237 stall: 53793ce
+# landed on main, every subsequent close-report refused it "not landed" because
+# origin/main was the unrefreshed run-start head; #238/#239/#241 sat ~22h.
+# ==========================================================================
+st_dir="$(mktemp -d)"
+st_remote="$st_dir/remote.git"; st_local="$st_dir/local"; st_push="$st_dir/push"
+git init -q --bare -b main "$st_remote"
+git init -q -b main "$st_local"
+printf 'x\n' > "$st_local/src.go"; git -C "$st_local" add -A; git -C "$st_local" commit -qm "base"
+h0="$(git -C "$st_local" rev-parse HEAD)"
+git -C "$st_local" remote add origin "$st_remote"
+git -C "$st_local" push -q origin main                 # remote main = H0; $st_local origin/main = H0
+# Land H1 (descends H0) on the remote from a SEPARATE clone, so $st_local's
+# origin/main tracking ref stays STALE at H0 and the H1 object is not yet local.
+git clone -q "$st_remote" "$st_push"
+printf 'x\ny\n' > "$st_push/src.go"; git -C "$st_push" add -A
+git -C "$st_push" commit -qm "sandcastle: #444 — H1 landed on main during the run (#244)"
+h1="$(git -C "$st_push" rev-parse HEAD)"
+git -C "$st_push" push -q origin main                  # remote main = H1; $st_local origin/main STILL H0
+
+run_close_st() { # run_close_st <issue> <env> <start-sha> [workdir]; CR_MAIN_HEAD="" so the refresh fires
+  FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
+  printf 'LANDING=push\n' > "$FAKE_DIR/swarm-policy.sh"
+  printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"}]\n' > "$FAKE_DIR/labels.json"
+  printf '%s' "$2" > "$FAKE_DIR/envelope.json"
+  ( cd "${4:-$st_local}" && SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" CR_MAIN_HEAD="" CR_START_SHA="$3" \
+      bash "$here/../close-report.sh" "$1" "$FAKE_DIR/envelope.json" ) >"$FAKE_DIR/stdout.log" 2>&1
+}
+
+# ST-1 — the acceptance scenario: H1 is on the live remote main but NOT on the
+# stale local origin/main; the gate refetches and the close VERIFIES with no
+# manual CR_MAIN_HEAD. (On $st_local HEAD is `main` — a non-worker branch.)
+st_env="$(jq -n --arg c "$h1" '{
+  issue:444, status:"success", commits:[$c], changed_files:["src.go"],
+  tests:[{command:"t",exit_code:0}], summary:"landed during the run", blockers:[]
+}')"
+run_close_st 444 "$st_env" "$h0"; rc=$?
+[ "$rc" -eq 0 ] || fail "ST-1: a commit on the LIVE main (stale local origin/main) must verify after the refetch, got $rc: $(cat "$FAKE_DIR/stdout.log")"; ok
+close_stuck 444 || fail "ST-1: the issue must close once gate 1 refetches the live main head (no manual CR_MAIN_HEAD)"; ok
+
+# ST-2 — a commit that genuinely never landed on main (a side branch, pushed
+# nowhere): the refetch still happens, gate 1 refuses, and the refusal message
+# names the head it compared against AND when that head was fetched (#244 AC).
+git -C "$st_local" checkout -q -b sidework "$h0"
+printf 'x\nz\n' > "$st_local/src.go"; git -C "$st_local" add -A
+git -C "$st_local" commit -qm "sandcastle: #444 — side commit never landed on main (#244)"
+h_side="$(git -C "$st_local" rev-parse HEAD)"
+st_env2="$(jq -n --arg c "$h_side" '{
+  issue:444, status:"success", commits:[$c], changed_files:["src.go"],
+  tests:[{command:"t",exit_code:0}], summary:"never landed", blockers:[]
+}')"
+run_close_st 444 "$st_env2" "$h0"; rc=$?
+[ "$rc" -ne 0 ] || fail "ST-2: an unlanded side commit must be refused even after the refetch, got $rc"; ok
+! close_stuck 444 || fail "ST-2: an unlanded commit must NOT close"; ok
+grep -q 'fetched at' "$FAKE_DIR/stdout.log" \
+  || fail "ST-2: the gate-1 refusal must name when the live main head was fetched (#244): $(cat "$FAKE_DIR/stdout.log")"; ok
+grep -q "not reachable from $h1" "$FAKE_DIR/stdout.log" \
+  || fail "ST-2: the gate-1 refusal must name the live head it compared against (#244)"; ok
+rm -rf "$st_dir"
 
 echo "close-report: $pass checks passed"

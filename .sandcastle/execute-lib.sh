@@ -39,12 +39,21 @@ EXECUTE_NOTIFY="${EXECUTE_NOTIFY:-$_EXECUTE_HERE/notify-mattermost.sh}"
 # The auth-dead hourly notice-dedupe marker. Repo-agnostic on purpose, matching
 # the limit marker (#238): the Claude auth session is one host-global thing, so
 # one repo's outage correctly suppresses the other's redundant first notice.
-EXECUTE_AUTH_MARKER="${EXECUTE_AUTH_MARKER:-/tmp/matou-swarm-claude-auth-dead}"
+# Under the host-global state dir (#205), a sibling of the limit/active markers,
+# so a reboot no longer silently resets the auth-dead notice-dedupe window.
+EXECUTE_AUTH_MARKER="${EXECUTE_AUTH_MARKER:-${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}/matou-swarm-claude-auth-dead}"
 EXECUTE_AUTH_TTL="${EXECUTE_AUTH_TTL:-3600}"
 
 # The rc that means "stop the run CLEANLY" — the caller exits 0. Distinct from
 # rc 1 (the generic red) so run-swarm's three-way exit is a case, not a guess.
 EXECUTE_RC_STOP=100
+
+# The .sandcastle dir whose secrets/ main.mts mounts into every worker (#198).
+# run-swarm.sh sets it; a failover rewrites secrets/claude_oauth_token here so
+# the retry's worker (its claude-fence shim reads the file) uses the account we
+# just flipped to. Empty in a bare offline execute-lib test — the rewrite then
+# no-ops, keeping the file write optional.
+EXECUTE_SECRETS_DIR="${EXECUTE_SECRETS_DIR:-}"
 
 # #111: main.mts prints this marker line when the run ended while a rehearsal
 # drive's reservation stood — its 2 s poller mirrored the reservation into the
@@ -65,6 +74,7 @@ _execute_notify() { bash "$EXECUTE_NOTIFY" "$1" || true; }
 _execute_notice_due() {
   local marker="$1" ttl="$2"
   if [ ! -f "$marker" ] || [ $(( $(date +%s) - $(stat -c %Y "$marker") )) -gt "$ttl" ]; then
+    mkdir -p "$(dirname "$marker")" 2>/dev/null || true   # marker moved off /tmp (#205)
     touch "$marker"
     return 0
   fi
@@ -137,6 +147,14 @@ execute_sandcastle_run() {
     EXECUTE_YIELDED_TO_DRIVE=1
     echo "run-swarm: a rehearsal drive reserved host capacity mid-run — this run finished its current task and claimed nothing more (#111); the drive fires next, the swarm resumes on its next trigger"
   fi
+  # #283: preserve this run's SANDCASTLE_ATTEMPT protocol lines before the log is
+  # cleaned. The host's false-green reconcile (landing_reopen_stranded_closes)
+  # needs them AFTER this function returns — if the post-run verify rolls the land
+  # back, every issue a sandbox close-report closed against the worker branch is
+  # stranded and must be reopened. A no-op when the caller wired no capture file.
+  if [ -n "${EXECUTE_ATTEMPTS_FILE:-}" ]; then
+    grep -E '^SANDCASTLE_ATTEMPT ' "$log" > "$EXECUTE_ATTEMPTS_FILE" 2>/dev/null || true
+  fi
   rm -f "$log"
   return 0
 }
@@ -163,6 +181,14 @@ _execute_failover() {
   local kind="$1" log="$2" run_db_id="$3" repo_slug="$4" from hint
   from="$(claude_active_account)"
   claude_failover || return 1
+  # Rewrite the mounted Claude secret so the retry's worker reads the account we
+  # just flipped to (#198) — claude_failover re-exported CLAUDE_CODE_OAUTH_TOKEN,
+  # but the sandbox sees the token only through the file its shim reads, not the
+  # host env. provision-lib owns the 0600 write; a no-op when neither a secrets
+  # dir nor provisioning is wired in (a bare offline test).
+  if [ -n "${EXECUTE_SECRETS_DIR:-}" ] && declare -F provision_write_claude_secret >/dev/null 2>&1; then
+    provision_write_claude_secret "$EXECUTE_SECRETS_DIR"
+  fi
   if [ "$kind" = auth ]; then
     hint="$(_execute_auth_line "$log")"
     _execute_notify ":arrows_counterclockwise: **Swarm failover — Claude account $from auth-dead** in \`$repo_slug\` (${hint:-not logged in}) — retrying once on account $(claude_active_account)."
@@ -176,7 +202,7 @@ _execute_failover() {
 
 # _execute_auth_line <log> — the CLI's own refusal wording, for the notice.
 _execute_auth_line() {
-  grep -ihoE "$CLAUDE_AUTH_RE[^\"]*" "$1" | head -1
+  grep -ihoE "${CLAUDE_AUTH_RE}[^\"]*" "$1" | head -1
 }
 
 # _execute_auth_halt — BOTH accounts (or the only account) are auth-dead. A

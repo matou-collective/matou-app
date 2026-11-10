@@ -37,6 +37,12 @@ test_env_hermetic() {
   # phantom park into the real swarm.db. Redirect them into the sandbox too.
   export CLAUDE_LIMIT_MARKER="$d/host-env/claude-limit-marker"   # limit-lib.sh:52
   export CLAUDE_ACTIVE_MARKER="$d/host-env/claude-active-marker" # limit-lib.sh:172
+  # #203: heal.sh's runtime kill switch reads $HOME/swarm/state/heal.off by
+  # default. Left unpinned, a host that genuinely disabled its healer (the file
+  # present) would make every heal-test scenario yield "kill switch is on" and
+  # read as a red. Point it at an absent sandbox path; the #203 off-file scenario
+  # overrides it with a file it creates.
+  export HEAL_OFF_FILE="$d/host-env/heal.off"
   # #116: arm the swarm.db LEAK TRIPWIRE at the sandbox root, so a write whose
   # SWARM_DB escapes this dir (a per-invocation override that forgot to redirect)
   # is REFUSED and recorded instead of silently poisoning the live telemetry.

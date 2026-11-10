@@ -209,6 +209,11 @@ export interface AppUrlOpenEvent {
 export interface AppPlugin {
   /** The URL the app was cold-started with, or a null-ish result otherwise. */
   getLaunchUrl(): Promise<{ url: string } | null | undefined>;
+  /**
+   * The native app's name, id, versionName and versionCode (`build`). Optional
+   * because an older shell may predate the version line (src/lib/appVersion.ts).
+   */
+  getInfo?(): Promise<{ name: string; id: string; version: string; build: string }>;
   addListener(
     event: 'appUrlOpen',
     fn: (event: AppUrlOpenEvent) => void,

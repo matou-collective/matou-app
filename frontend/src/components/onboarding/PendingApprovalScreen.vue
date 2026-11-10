@@ -302,8 +302,8 @@
           </div>
         </div>
 
-        <!-- Resources -->
-        <div v-if="currentStatus !== 'rejected'" v-motion="fadeSlideUp(700)">
+        <!-- Resources — the stock build's own docs links; a Coa build has none to show. -->
+        <div v-if="currentStatus !== 'rejected' && !isCoa" v-motion="fadeSlideUp(700)">
           <h3 class="mb-4">Explore while you wait</h3>
           <p class="text-muted-foreground mb-4">
             Learn more about Mātou by browsing our documentation and resources
@@ -370,6 +370,7 @@ import { sendBookingEmail } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { KIT } from 'src/generated/kit';
 import { isOpen, needsSession, requiredEndorsements, requirementsFor } from 'src/kit/approval';
+import { isCoaBuild } from 'src/kit/build';
 
 const { fadeSlideUp, slideInLeft, rotate } = useAnimationPresets();
 const identityStore = useIdentityStore();
@@ -927,6 +928,9 @@ watch(
   }
 );
 
+// "Explore while you wait" links the stock build's own documentation: shown in the
+// stock build only, never in a Coa-built community app.
+const isCoa = isCoaBuild();
 const resources = [
   {
     icon: FileText,
@@ -986,12 +990,12 @@ const resources = [
 }
 
 .requirement-pending {
-  background-color: var(--matou-secondary, #f1f5f9);
-  color: var(--matou-muted-foreground, #94a3b8);
+  background-color: var(--matou-secondary);
+  color: var(--matou-muted-foreground);
 }
 
 .requirement-met {
-  background-color: var(--matou-accent, #4a9d9c);
+  background-color: var(--matou-accent);
   color: white;
 }
 
@@ -1021,7 +1025,7 @@ const resources = [
 }
 
 .help-box {
-  background-color: rgba(232, 244, 248, 0.5);
+  background-color: color-mix(in srgb, var(--matou-secondary) 50%, transparent);
 }
 
 .error-box {
@@ -1029,7 +1033,7 @@ const resources = [
 }
 
 .processing-steps {
-  background-color: rgba(232, 244, 248, 0.5);
+  background-color: color-mix(in srgb, var(--matou-secondary) 50%, transparent);
 }
 
 .aid-card {
@@ -1055,7 +1059,7 @@ const resources = [
 }
 
 .booking-confirmed {
-  background-color: rgba(74, 157, 156, 0.1);
+  background-color: color-mix(in srgb, var(--matou-accent) 10%, transparent);
 }
 
 .slot-date-group {
@@ -1093,7 +1097,7 @@ const resources = [
 
   &:hover {
     border-color: var(--matou-primary);
-    background-color: rgba(30, 95, 116, 0.05);
+    background-color: color-mix(in srgb, var(--matou-primary) 5%, transparent);
   }
 
   &:active {

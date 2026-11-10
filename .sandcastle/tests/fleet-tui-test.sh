@@ -36,7 +36,7 @@ sources="$(find "$fleet" -type f \( -name "*.py" -o -name "*.sh" \) ! -path "*/.
 literals="$(grep -rilE 'idss|ourcloud|git\.matou' $sources 2>/dev/null || true)"
 check "no product literal under fleet-tui/" \
   '[ -z "$literals" ] || { echo "  named a product: $literals"; false; }'
-matou_hits="$(grep -rn 'matou' $sources 2>/dev/null | grep -v '/tmp/matou-swarm-claude' || true)"
+matou_hits="$(grep -rn 'matou' $sources 2>/dev/null | grep -v 'matou-swarm-claude' || true)"
 check "matou appears only in limit-lib.sh's verbatim marker paths" \
   '[ -z "$matou_hits" ] || { printf "%s\n" "$matou_hits"; false; }'
 
@@ -48,6 +48,21 @@ check "matou appears only in limit-lib.sh's verbatim marker paths" \
 app_imports="$(grep -rnE '^\s*(from app import|import app\b)' $sources 2>/dev/null | grep -vE "fleet-tui/(app\.py|tests/)" || true)"
 check "no fleet-tui module imports the shadowable name 'app'" \
   '[ -z "$app_imports" ] || { printf "%s\n" "$app_imports"; false; }'
+
+# Node unit tests for the floor server/web modules (#239 wires in board.test.js
+# beside the existing protocol.test.js). Same SKIP-loudly posture as the pytest
+# block below: `fleet-tui/**` is vendor-excluded but this suite (tests/**) is
+# vendored, so a consumer without Node must print a visible SKIP and NOT go red.
+if command -v node >/dev/null 2>&1; then
+  if (cd "$repo" && node --test fleet-tui/floor/server/*.test.js); then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1)); echo "FAIL: fleet-tui/floor/server node --test suite"
+  fi
+else
+  echo "fleet-tui-test: SKIPPED the node --test suite — node not available."
+  echo "  install Node to cover fleet-tui/floor/server/*.test.js; it is UNCOVERED by this run."
+fi
 
 py=""
 if [ -x "$fleet/.venv/bin/python" ]; then py="$fleet/.venv/bin/python"

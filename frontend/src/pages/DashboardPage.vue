@@ -132,6 +132,12 @@
             :error-message="adoptError ?? undefined"
             @adopt="adoptWitnesses"
           />
+          <StewardInboxNotice
+            v-if="isSteward"
+            :message="orgActInbox.lastError.value"
+            :pending-count="orgActInbox.pending.value"
+            :affected="skippedAffected"
+          />
           <div
             v-if="isSteward && (pollingError || unreachableApplicants.length > 0 || expiredRegistrations.length > 0)"
             class="card registration-alert"
@@ -212,6 +218,7 @@
       :isProcessing="isProcessing"
       :error="actionError || endorseError || attendanceError"
       :isSteward="isSteward"
+      :stewardBlockedReason="stewardReadiness.ready.value ? null : stewardReadiness.reason.value"
       :currentUserAid="identityStore.currentAID?.prefix || ''"
       :endorsements="selectedMemberEndorsements"
       :hasEndorsed="selectedMemberHasEndorsed"
@@ -268,10 +275,14 @@ import { useIsMobile } from 'src/composables/useIsMobile';
 import { buildHeaderStats } from 'src/pages/dashboardHeaderStats';
 import { useOrgWitnessState } from 'src/composables/useOrgWitnessState';
 import WitnessAdoptionBanner from 'src/components/dashboard/WitnessAdoptionBanner.vue';
+import StewardInboxNotice, { type AffectedMember } from 'src/components/dashboard/StewardInboxNotice.vue';
+import { useKERINotificationService } from 'src/composables/useKERINotificationService';
 import { fetchOrgConfig } from 'src/api/config';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
 import { useMultisigJoin } from 'src/composables/useMultisigJoin';
+import { useOrgActInbox } from 'src/composables/useOrgActInbox';
+import { useStewardReadiness } from 'src/composables/useStewardReadiness';
 import { useMultisigRotationSignal } from 'src/composables/useMultisigRotationSignal';
 import { useEndorsements } from 'src/composables/useEndorsements';
 import { useMoonPhase } from 'src/composables/useMoonPhase';
@@ -328,6 +339,35 @@ const {
 } = useAdminActions();
 
 const { hasWitnesses: orgHasWitnesses, refresh: refreshOrgWitnesses } = useOrgWitnessState();
+
+// Peer stewards' issues/revokes replayed promptly; Approve gated until this
+// steward's app has joined, synced and adopted the org registry.
+const orgActInbox = useOrgActInbox();
+const stewardReadiness = useStewardReadiness();
+const notificationService = useKERINotificationService();
+
+// Map each skipped credential SAID (keys[0] unsignable, #709) to the member it
+// concerns: the credential's holder is its `sad.a.i`, resolved to a name via
+// the member list. Unresolvable SAIDs fall back to the truncated SAID.
+const skippedAffected = computed<AffectedMember[]>(() => {
+  const saids = orgActInbox.skipped.value;
+  if (saids.length === 0) return [];
+  const holderBySaid = new Map<string, string>();
+  for (const cred of notificationService.credentials.value as Array<{ sad?: { d?: string; a?: { i?: string } } }>) {
+    const sad = cred?.sad;
+    if (sad?.d && sad?.a?.i) holderBySaid.set(sad.d, sad.a.i);
+  }
+  const nameByAid = new Map<string, string>();
+  for (const m of allMembers.value) {
+    const aid = m.profile.aid as string | undefined;
+    const name = m.profile.name as string | undefined;
+    if (aid && name) nameByAid.set(aid, name);
+  }
+  return saids.map((said) => {
+    const aid = holderBySaid.get(said);
+    return { said, name: aid ? nameByAid.get(aid) ?? null : null };
+  });
+});
 const isAdoptingWitnesses = ref(false);
 const adoptError = ref<string | null>(null);
 
@@ -616,6 +656,8 @@ onMounted(async () => {
   // Only poll for pending registrations if the user is a steward/admin
   if (isSteward.value) {
     startPolling();
+    orgActInbox.start();
+    stewardReadiness.start();
   }
 
   // Load activity and chat data for community stats
@@ -637,6 +679,8 @@ onUnmounted(() => {
   stopPolling();
   stopMultisigPolling();
   stopRotationSignalWatcher();
+  orgActInbox.stop();
+  stewardReadiness.stop();
 });
 
 watch(hasJoinedMultisig, async (joined) => {
@@ -645,6 +689,8 @@ watch(hasJoinedMultisig, async (joined) => {
     await recheckAdminStatus();
     if (isSteward.value) {
       startPolling();
+      orgActInbox.start();
+      stewardReadiness.start();
     }
   }
 });
@@ -931,7 +977,7 @@ function handleRoleUpdated(newRole: string) {
   // bar. The negative margin has to live here, not on .welcome-header,
   // because this element's overflow:hidden would clip it. env() is 0 on
   // web/Electron, so this is a no-op there.
-  margin-top: calc(-1 * env(safe-area-inset-top));
+  margin-top: calc(-1 * var(--matou-safe-area-top));
 }
 
 .top-bar {
@@ -970,12 +1016,12 @@ function handleRoleUpdated(newRole: string) {
 
 // Welcome Header
 .welcome-header {
-  background: linear-gradient(135deg, var(--matou-brand), rgba(30, 95, 116, 0.9), var(--matou-brand-accent));
+  background: var(--matou-brand-gradient);
   padding: 2rem 1.5rem;
   // Edge-to-edge mobile: .dashboard-page pulls itself up under the status bar
   // (see above); pad the header by the inset so its content clears the bar
   // while the gradient paints behind it. env() is 0 on web/Electron.
-  padding-top: calc(2rem + env(safe-area-inset-top));
+  padding-top: calc(2rem + var(--matou-safe-area-top));
 }
 
 .welcome-content {
@@ -1408,11 +1454,11 @@ function handleRoleUpdated(newRole: string) {
   flex-shrink: 0;
 
   &.bg-primary-light {
-    background-color: rgba(30, 95, 116, 0.1);
+    background-color: color-mix(in srgb, var(--matou-primary) 10%, transparent);
   }
 
   &.bg-accent-light {
-    background-color: rgba(74, 157, 156, 0.1);
+    background-color: color-mix(in srgb, var(--matou-accent) 10%, transparent);
   }
 
   .icon {
@@ -1534,7 +1580,11 @@ function handleRoleUpdated(newRole: string) {
   }
 
   &.gradient-4 {
-    background: linear-gradient(135deg, rgba(30, 95, 116, 0.8), rgba(74, 157, 156, 0.8));
+    background: linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--matou-primary) 80%, transparent),
+      color-mix(in srgb, var(--matou-accent) 80%, transparent)
+    );
   }
 }
 

@@ -25,12 +25,19 @@ vi.mock('src/lib/clientConfig', () => ({ getCommunityDescriptor: async () => ({ 
 vi.mock('stores/identity', () => ({ useIdentityStore: () => ({ aidPrefix: 'EHa' }) }));
 vi.mock('src/stores/knownDoors', () => ({ useKnownDoorsStore: () => knownDoors }));
 
-import { useSignin, type SigninDeps } from 'src/composables/useSignin';
+import { useSignin, walletReady, type SigninDeps } from 'src/composables/useSignin';
+import { reactive } from 'vue';
 import type { HeldCredential } from 'src/lib/signin/credential';
+import type { PresentVerdict } from 'src/lib/signin/present';
+import { clearRevokedMemory, isRememberedRevoked, rememberRevoked } from 'src/lib/signin/revokedMemory';
+import { clearHeldCodes } from 'src/lib/signin/heldCodes';
 
 const cred: HeldCredential = {
   sad: { d: 'ECred', s: 'EMe', a: { i: 'EHa', role: 'Member', dt: '2026-08-12T00:00:00Z' } },
 };
+
+/** The sign-in site every code here names, unless it says otherwise. */
+const DOOR = 'https://id.example.nz/login';
 
 const LINK =
   'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_3f9&s=EMe&name=Home&service=Files';
@@ -41,13 +48,31 @@ function deps(overrides: Partial<SigninDeps> = {}): SigninDeps {
     exportCredential: async (said) => `EXPORT:${said}`,
     sign: async (_aid, m) => `sig(${m})`,
     present: async () => ({ outcome: 'verified' }),
-    schemaKinds: async () => ({ EMe: 'membership' }),
+    schemaKinds: async () => ({ EMe: 'membership', ECo: 'committee' }),
+    ready: async () => undefined,
+    now: () => 1_000_000,
+    arm: () => undefined,
+    answerHandover: async () => undefined,
     ...overrides,
   };
 }
 
+// A steward's control-panel sign-in: the code says it offers a seat unlock
+// (`offer=seat-unlock`, #688) and the held credential's role is operator. No
+// code carries a sealing key (`ek=`) any more.
+const stewardCred: HeldCredential = {
+  sad: { d: 'ECred', s: 'EMe', i: 'ECommunity', a: { i: 'EHa', role: 'operator', dt: '2026-08-12T00:00:00Z' } },
+};
+const PANEL_LINK =
+  'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_panel&s=EMe&name=Home&svc=the%20control%20panel&offer=seat-unlock';
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // What a door said of a credential, and the codes it will not take again,
+  // last the unlocked session (#675, #690); each test starts as a wallet just
+  // unlocked.
+  clearRevokedMemory();
+  clearHeldCodes();
   knownDoors.isHome.mockReturnValue(true);
   knownDoors.isKnown.mockReturnValue(true);
 });
@@ -75,6 +100,31 @@ describe('useSignin', () => {
     await s.approve();
     expect(s.phase.value).toBe('done');
     expect(touch).toHaveBeenCalledWith('https://id.example.nz/login');
+  });
+
+  it('a `signature` refusal forgets the signer, so the retry signs afresh', async () => {
+    // The door verifies against the identity's newest key state. Whatever left
+    // the wallet signing with another key, trying again with the same signer can
+    // only be refused again.
+    const forgetSigner = vi.fn();
+    const s = useSignin(
+      deps({ present: async () => ({ outcome: 'refused', refusal: 'signature' }), forgetSigner }),
+    );
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(forgetSigner).toHaveBeenCalledTimes(1);
+    expect(forgetSigner).toHaveBeenCalledWith('EHa');
+  });
+
+  it('any other refusal keeps the signer', async () => {
+    const forgetSigner = vi.fn();
+    const s = useSignin(
+      deps({ present: async () => ({ outcome: 'refused', refusal: 'revoked' }), forgetSigner }),
+    );
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(forgetSigner).not.toHaveBeenCalled();
   });
 
   it('approve → refused renders the matching refusal copy', async () => {
@@ -130,6 +180,88 @@ describe('useSignin', () => {
     expect(s.phase.value).toBe('card');
   });
 
+  // #675: the newest sign-in code must always win, and a code the door has
+  // already spent/expired must never be re-presented on "try again".
+  const OTHER_LINK =
+    'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_fresh&s=EMe&name=Home&service=Files';
+
+  it('a second prepare with a fresh code supersedes the held ask (#675)', async () => {
+    const s = useSignin(deps());
+    await s.prepareFromLink(LINK);
+    expect(s.ask.value?.challenge).toBe('c_3f9');
+    // A fresh code arrives (a new deep link / re-scan) while the card is held.
+    await s.prepareFromLink(OTHER_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.ask.value?.challenge).toBe('c_fresh');
+  });
+
+  it('approve presents the newest challenge after a fresh code supersedes it (#675)', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const s = useSignin(deps({ present }));
+    await s.prepareFromLink(LINK);
+    await s.prepareFromLink(OTHER_LINK);
+    await s.approve();
+    expect(present).toHaveBeenCalledTimes(1);
+    // The bound message carries the fresh challenge, never the first one.
+    const body = present.mock.calls[0]?.[1] as { challenge_id?: string } | undefined;
+    expect(body?.challenge_id).toBe('c_fresh');
+  });
+
+  it('a spent refusal holds the card and try again does not re-present it (#675)', async () => {
+    const present = vi.fn(async () => ({ outcome: 'refused' as const, refusal: 'spent' }));
+    const s = useSignin(deps({ present }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(s.refusal.value?.kind).toBe('spent');
+    expect(s.staleCode.value).toBe(true);
+    // Try again must not re-arm Approve with the dead code: it stays on the
+    // refusal (whose copy asks for a fresh code) and posts nothing more.
+    s.tryAgain();
+    expect(s.phase.value).toBe('refused');
+    await s.approve();
+    expect(present).toHaveBeenCalledTimes(1);
+  });
+
+  it('an expired refusal is held the same way (#675)', async () => {
+    const present = vi.fn(async () => ({ outcome: 'refused' as const, refusal: 'expired' }));
+    const s = useSignin(deps({ present }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.staleCode.value).toBe(true);
+    s.tryAgain();
+    await s.approve();
+    expect(present).toHaveBeenCalledTimes(1);
+  });
+
+  it('a fresh code after a spent refusal clears the hold and can approve (#675)', async () => {
+    let outcome: PresentVerdict = { outcome: 'refused', refusal: 'spent' };
+    const present = vi.fn(async () => outcome);
+    const s = useSignin(deps({ present }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.staleCode.value).toBe(true);
+    // A freshly minted code supersedes the spent one; the hold lifts.
+    outcome = { outcome: 'verified' };
+    await s.prepareFromLink(OTHER_LINK);
+    expect(s.staleCode.value).toBe(false);
+    expect(s.phase.value).toBe('card');
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(present).toHaveBeenCalledTimes(2);
+  });
+
+  it('a non-stale refusal still lets try again return to the card (#675)', async () => {
+    // Not `revoked`: that refusal holds its code too, since #690.
+    const s = useSignin(deps({ present: async () => ({ outcome: 'refused', refusal: 'untrusted-issuer' }) }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(s.staleCode.value).toBe(false);
+    s.tryAgain();
+    expect(s.phase.value).toBe('card');
+  });
+
   it('notNow signs and posts nothing', async () => {
     const present = vi.fn(async () => ({ outcome: 'verified' as const }));
     const s = useSignin(deps({ present }));
@@ -137,5 +269,1377 @@ describe('useSignin', () => {
     s.notNow();
     expect(present).not.toHaveBeenCalled();
     expect(s.phase.value).toBe('card');
+  });
+});
+
+// A sign-in code opened before the wallet has finished restoring its session
+// (a cold start from the camera: session restore runs non-blocking in boot)
+// used to leave the card blank with a disabled Approve until a second scan.
+describe('useSignin — preparing before the wallet is ready', () => {
+  it('starts on loading, waits for the wallet, and only then reads credentials', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const listCredentials = vi.fn(async () => [cred]);
+    const s = useSignin(deps({ ready: () => gate, listCredentials }));
+    expect(s.phase.value).toBe('loading');
+    const pending = s.prepareFromLink(LINK);
+    await Promise.resolve();
+    expect(s.phase.value).toBe('loading');
+    expect(s.view.value).toBeNull();
+    expect(listCredentials).not.toHaveBeenCalled();
+    release();
+    await pending;
+    expect(s.phase.value).toBe('card');
+    expect(s.view.value?.service).toBe('Files');
+  });
+
+  it('lands on unavailable, never a half-built card, when the wallet never gets ready', async () => {
+    const s = useSignin(deps({ ready: async () => { throw new Error('wallet not ready'); } }));
+    await expect(s.prepareFromLink(LINK)).resolves.toBe(true);
+    expect(s.phase.value).toBe('unavailable');
+    expect(s.view.value).toBeNull();
+  });
+
+  it('lands on unavailable when reading the credentials fails', async () => {
+    const s = useSignin(deps({ listCredentials: async () => { throw new Error('agent not connected'); } }));
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('unavailable');
+    expect(s.view.value).toBeNull();
+  });
+
+  it('retry re-runs the same sign-in and reaches the card once the wallet answers', async () => {
+    let fail = true;
+    const s = useSignin(deps({ listCredentials: async () => { if (fail) throw new Error('not yet'); return [cred]; } }));
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('unavailable');
+    fail = false;
+    await s.retry();
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(cred);
+  });
+});
+
+describe('walletReady — the default readiness gate', () => {
+  it('waits for the session restore to finish, then refreshes the agent session', async () => {
+    const identity = reactive({ isReady: false, aidPrefix: null as string | null });
+    const ensureSession = vi.fn(async () => undefined);
+    let settled = false;
+    const p = walletReady(identity, { ensureSession }).then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    identity.aidPrefix = 'EHa';
+    identity.isReady = true;
+    await p;
+    expect(ensureSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails when the restore finishes with no identity', async () => {
+    const identity = reactive({ isReady: true, aidPrefix: null as string | null });
+    await expect(walletReady(identity, { ensureSession: async () => undefined })).rejects.toThrow(/no identity/);
+  });
+
+  it('gives up after the timeout', async () => {
+    const identity = reactive({ isReady: false, aidPrefix: null as string | null });
+    await expect(walletReady(identity, { ensureSession: async () => undefined }, 10)).rejects.toThrow(/did not finish/);
+  });
+});
+
+// The steward-unlock line (#663, PU-A2u; read from the code's own offer field
+// since #688). The line appears ONLY when the code offers a seat unlock AND the
+// wallet's identity is a steward; on approve with it on the wallet arms and
+// posts `armed`; every other card is untouched and nothing is armed.
+describe('useSignin — the steward-unlock line (#663, #688)', () => {
+  it('offers the unlock line, on by default, for a steward control-panel sign-in', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(PANEL_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.unlockAvailable.value).toBe(true);
+    expect(s.unlockOn.value).toBe(true);
+    expect(s.view.value?.unlockLine).toBe(true);
+    expect(s.form.value).toBe('signin');
+    // No sealing key rode the code, and none is shown.
+    expect(JSON.stringify(s.view.value)).not.toMatch(/fingerprint/i);
+  });
+
+  it('offers no unlock line for an ordinary service sign-in (no offer)', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(LINK);
+    expect(s.unlockAvailable.value).toBe(false);
+    expect(s.view.value?.unlockLine).toBe(false);
+  });
+
+  it('offers no unlock line on a code with no offer, whatever else the code carries (#688)', async () => {
+    // Everything the old wallet keyed off — a sealing key, the control panel's
+    // display name, the Administrator ask — and no offer field.
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm }));
+    await s.prepareFromLink(
+      'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_old&s=EMe&name=Home&svc=the%20control%20panel&cred=administrator&ek=DVERKEY_EXAMPLE',
+    );
+    expect(s.phase.value).toBe('card');
+    expect(s.unlockAvailable.value).toBe(false);
+    expect(s.view.value?.unlockLine).toBe(false);
+    await s.approve();
+    expect(arm).not.toHaveBeenCalled();
+    expect(present.mock.calls[0]![1]).not.toHaveProperty('armed');
+  });
+
+  it('offers no unlock line to a non-steward on a control-panel sign-in', async () => {
+    // The held credential is a plain Member (role !== operator).
+    const s = useSignin(deps({ listCredentials: async () => [cred] }));
+    await s.prepareFromLink(PANEL_LINK);
+    expect(s.unlockAvailable.value).toBe(false);
+    expect(s.view.value?.unlockLine).toBe(false);
+  });
+
+  it('arms, posts armed:true and no box, and answers the panel later when the line is on (#674)', async () => {
+    // Approve ARMS the wallet for the panel's later request rather than sealing
+    // at approve; the present request carries `armed: true` and
+    // NO box, and the box the panel can open is minted only when it asks — so
+    // after the sign-in verifies the wallet answers the panel's request in the
+    // background (option B, idss #1961/#1967).
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+    const answerHandover = vi.fn(async () => undefined);
+    const s = useSignin(
+      deps({ listCredentials: async () => [stewardCred], present, arm, answerHandover, now: () => 1_000_000 }),
+    );
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    expect(arm).toHaveBeenCalledTimes(1);
+    // Armed for the sign-in's own challenge, with an expiry in the future.
+    expect(arm.mock.calls[0]![0]).toBe('c_panel');
+    expect(arm.mock.calls[0]![1]).toBeGreaterThan(1_000_000);
+    expect(present).toHaveBeenCalledTimes(1);
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('sealed_passcode');
+    // The wire tells the door the sign-in armed a handover so it mints the
+    // capability (idss #1967).
+    expect(body.armed).toBe(true);
+    // The panel's request is answered in the background, keyed by this sign-in's
+    // present URL, challenge and AID.
+    expect(answerHandover).toHaveBeenCalledWith('https://id.example.nz/login/app/present', 'c_panel', 'EHa');
+    expect(s.phase.value).toBe('done');
+  });
+
+  it('arms nothing, posts no armed signal, and answers nothing when the line is switched off (#674)', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+    const answerHandover = vi.fn(async () => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm, answerHandover }));
+    await s.prepareFromLink(PANEL_LINK);
+    s.setUnlock(false);
+    await s.approve();
+    expect(arm).not.toHaveBeenCalled();
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('sealed_passcode');
+    expect(body).not.toHaveProperty('armed');
+    expect(answerHandover).not.toHaveBeenCalled();
+    expect(s.phase.value).toBe('done');
+  });
+
+  it('arms nothing and answers nothing on an ordinary service sign-in even for a steward (#674)', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+    const answerHandover = vi.fn(async () => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm, answerHandover }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(arm).not.toHaveBeenCalled();
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('sealed_passcode');
+    expect(body).not.toHaveProperty('armed');
+    expect(answerHandover).not.toHaveBeenCalled();
+  });
+
+  it('signs in with the seat locked, posts no armed signal, and answers nothing when arming throws (#674)', async () => {
+    // A failure to arm must never block the sign-in — it degrades to an ordinary
+    // locked-seat session; nothing but a later ciphertext ever leaves, and with
+    // no arming there is nothing to answer.
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const arm = vi.fn(() => {
+      throw new Error('no passcode in this session');
+    });
+    const answerHandover = vi.fn(async () => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, arm, answerHandover }));
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('sealed_passcode');
+    expect(body).not.toHaveProperty('armed');
+    expect(answerHandover).not.toHaveBeenCalled();
+    expect(s.phase.value).toBe('done');
+  });
+
+  it('a refused armed sign-in answers no panel request (#674)', async () => {
+    // The door refused, so nothing was handed over — the wallet must not poll or
+    // seal for a sign-in that never completed.
+    const present = vi.fn(async () => ({ outcome: 'refused' as const, refusal: 'signature' }));
+    const answerHandover = vi.fn(async () => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], present, answerHandover }));
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(answerHandover).not.toHaveBeenCalled();
+  });
+});
+
+// The credential the door names (#683, idss ADR 0289). The control panel's door
+// asks for Administrator by slug; the wallet presents that credential, else an
+// operator's Membership, else nothing.
+// The handover happens AFTER the done face shows — the panel lands, binds its
+// key and asks; the armed wallet seals and answers. So a sign-in that armed says
+// to keep the app open, and its face stays until it is closed (PU-A2u: "the app
+// stays open until Members appears").
+describe('useSignin — after an armed sign-in verifies (#688)', () => {
+  it('says it armed, and keeps its done face open', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(PANEL_LINK);
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(s.armed.value).toBe(true);
+    expect(s.keepOpen.value).toBe(true);
+  });
+
+  it('armed nothing with the line switched off: the card closes after a beat, as any sign-in', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(PANEL_LINK);
+    s.setUnlock(false);
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+  });
+
+  it('armed nothing on an ordinary service sign-in', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+  });
+
+  it('armed nothing when arming threw', async () => {
+    const s = useSignin(
+      deps({
+        listCredentials: async () => [stewardCred],
+        arm: () => {
+          throw new Error('no passcode');
+        },
+      }),
+    );
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+  });
+
+  it('a refused armed sign-in is not an armed one', async () => {
+    const s = useSignin(
+      deps({
+        listCredentials: async () => [stewardCred],
+        present: async () => ({ outcome: 'refused', refusal: 'signature' }),
+      }),
+    );
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+  });
+
+  it('a fresh code starts unarmed', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+    await s.prepareFromLink(PANEL_LINK);
+    await s.approve();
+    expect(s.armed.value).toBe(true);
+    await s.prepareFromLink(LINK);
+    expect(s.armed.value).toBe(false);
+    expect(s.keepOpen.value).toBe(false);
+  });
+});
+
+describe('useSignin — the credential the door names (#683)', () => {
+  const financeCred: HeldCredential = {
+    sad: { d: 'EFinance', s: 'ECo', i: 'ECommunity', a: { i: 'EHa', committee: 'finance', dt: '2026-09-01T00:00:00Z' } },
+    status: { s: '0', et: 'iss' },
+  };
+  const administratorCred: HeldCredential = {
+    sad: {
+      d: 'EAdministrator',
+      s: 'ECo',
+      i: 'ECommunity',
+      a: { i: 'EHa', committee: 'administrator', dt: '2026-09-28T00:00:00Z' },
+    },
+    status: { s: '0', et: 'iss' },
+  };
+  // The golden's panel ask: committee schema first, then membership; cred named.
+  const ADMIN_LINK =
+    'matou://signin?c=c_admin&cred=administrator&door=https://id.example.nz/login&name=Home&present=https://id.example.nz/login/app/present&s=ECo,EMe&svc=the%20control%20panel';
+  const ADMIN_PANEL_LINK = `${ADMIN_LINK}&offer=seat-unlock`;
+
+  it.each([
+    ['Membership, Finance, Administrator', [cred, financeCred, administratorCred]],
+    ['Finance, Administrator, Membership', [financeCred, administratorCred, cred]],
+  ])('shows and presents Administrator whatever order the wallet holds them in (%s)', async (_order, held) => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const exportCredential = vi.fn(async (said: string) => `EXPORT:${said}`);
+    const s = useSignin(deps({ listCredentials: async () => held, present, exportCredential }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(administratorCred);
+    expect(s.view.value?.credential?.name).toBe('Administrator');
+    expect(s.view.value?.credential?.card.name).toBe('Administrator');
+
+    await s.approve();
+    expect(exportCredential).toHaveBeenCalledTimes(1);
+    expect(exportCredential).toHaveBeenCalledWith('EAdministrator');
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body.presentation).toBe('EXPORT:EAdministrator');
+    expect(s.phase.value).toBe('done');
+  });
+
+  // #683 as amended (Ben, 2026-09-28): the founding operator, and any steward
+  // still on the legacy role, is never shown the no-credential screen at the
+  // control panel — the gateway admits them on their Membership.
+  it.each([
+    ['alone', [stewardCred]],
+    ['after a komiti credential', [financeCred, stewardCred]],
+    ['before a komiti credential', [stewardCred, financeCred]],
+  ])('an operator with no Administrator is shown and presents their Membership (%s)', async (_case, held) => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const s = useSignin(deps({ listCredentials: async () => held, present }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(stewardCred);
+    expect(s.view.value?.credential?.card.name).toBe('Membership');
+    expect(s.view.value?.provingLine).toBe("Proving you're a member…");
+    await s.approve();
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body.presentation).toBe('EXPORT:ECred');
+    expect(s.phase.value).toBe('done');
+  });
+
+  it('an operator who also holds Administrator is shown and presents Administrator', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred], present }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.chosen.value).toBe(administratorCred);
+    await s.approve();
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body.presentation).toBe('EXPORT:EAdministrator');
+  });
+
+  it('a wallet holding Membership only lands on no-credential and posts nothing', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const exportCredential = vi.fn(async (said: string) => `EXPORT:${said}`);
+    const sign = vi.fn(async (_aid: string, m: string) => `sig(${m})`);
+    const s = useSignin(deps({ listCredentials: async () => [cred], present, exportCredential, sign }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('no-credential');
+    expect(s.chosen.value).toBeNull();
+    // The screen can name what the door asked for, and who asked.
+    expect(s.view.value?.askedName).toBe('Administrator');
+    expect(s.view.value?.service).toBe('the control panel');
+    expect(s.view.value?.credential).toBeNull();
+    expect(s.posted.value).toBe(false);
+
+    // There is no Approve; were it called anyway, nothing is signed or posted.
+    await s.approve();
+    expect(sign).not.toHaveBeenCalled();
+    expect(exportCredential).not.toHaveBeenCalled();
+    expect(present).not.toHaveBeenCalled();
+    expect(s.phase.value).toBe('no-credential');
+  });
+
+  // #685: a credential issued after joining waits in the agent as a grant. A
+  // code scanned cold opens the app on this card, not the dashboard, so the
+  // card admits what the community issued before it says there is nothing.
+  it('admits a credential the community issued but the wallet had not yet accepted, then shows it', async () => {
+    const wallet: HeldCredential[] = [cred];
+    const s = useSignin(
+      deps({
+        listCredentials: async () => [...wallet],
+        admitPending: async () => {
+          wallet.push(administratorCred);
+        },
+      }),
+    );
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(administratorCred);
+    expect(s.view.value?.credential?.card.name).toBe('Administrator');
+  });
+
+  it('admits nothing when the wallet already holds what the door asks for', async () => {
+    const admitPending = vi.fn(async () => undefined);
+    const s = useSignin(deps({ listCredentials: async () => [administratorCred], admitPending }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(admitPending).not.toHaveBeenCalled();
+  });
+
+  it('lands on no-credential when the admission fails or finds nothing', async () => {
+    const failing = useSignin(
+      deps({
+        listCredentials: async () => [cred],
+        admitPending: async () => {
+          throw new Error('agent unreachable');
+        },
+      }),
+    );
+    await failing.prepareFromLink(ADMIN_LINK);
+    expect(failing.phase.value).toBe('no-credential');
+
+    const empty = useSignin(deps({ listCredentials: async () => [cred], admitPending: async () => undefined }));
+    await empty.prepareFromLink(ADMIN_LINK);
+    expect(empty.phase.value).toBe('no-credential');
+  });
+
+  it('a service ask that names no credential shows and presents the Membership, as before', async () => {
+    const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+    const s = useSignin(deps({ listCredentials: async () => [financeCred, administratorCred, cred], present }));
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(cred);
+    expect(s.view.value?.credential?.card.name).toBe('Membership');
+    await s.approve();
+    const body = present.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body.presentation).toBe('EXPORT:ECred');
+  });
+
+  it('a wallet holding nothing the service asks for lands on no-credential too', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [financeCred] }));
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('no-credential');
+    expect(s.view.value?.askedName).toBe('Membership');
+  });
+
+  it('no-credential is shown without first asking to trust an unmet site — nothing would be shown to it', async () => {
+    knownDoors.isKnown.mockReturnValue(false);
+    const s = useSignin(deps({ listCredentials: async () => [cred] }));
+    await s.prepareFromLink(ADMIN_LINK);
+    expect(s.phase.value).toBe('no-credential');
+  });
+
+  it("the door's own no-credential refusal lands on the same screen, marked as posted", async () => {
+    const s = useSignin(
+      deps({
+        listCredentials: async () => [administratorCred],
+        present: async () => ({ outcome: 'refused', refusal: 'no-credential' }),
+      }),
+    );
+    await s.prepareFromLink(ADMIN_LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('no-credential');
+    expect(s.posted.value).toBe(true);
+    expect(touch).not.toHaveBeenCalled();
+  });
+
+  it('a fresh code after no-credential starts clean', async () => {
+    const s = useSignin(
+      deps({
+        listCredentials: async () => [cred, administratorCred],
+        present: async () => ({ outcome: 'refused', refusal: 'no-credential' }),
+      }),
+    );
+    await s.prepareFromLink(ADMIN_LINK);
+    await s.approve();
+    expect(s.posted.value).toBe(true);
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.posted.value).toBe(false);
+  });
+
+  // The handover rides the same card (#663/#674). What is presented changes;
+  // who may unlock, and how the wallet arms, do not.
+  describe('the panel handover is unchanged', () => {
+    it('a steward presenting Administrator is still offered the unlock line, and arms exactly as before', async () => {
+      const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+      const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+      const answerHandover = vi.fn(async () => undefined);
+      const s = useSignin(
+        deps({
+          // The steward's standing is on their Membership; what they present at
+          // this door is their Administrator.
+          listCredentials: async () => [stewardCred, financeCred, administratorCred],
+          present,
+          arm,
+          answerHandover,
+          now: () => 1_000_000,
+        }),
+      );
+      await s.prepareFromLink(ADMIN_PANEL_LINK);
+      expect(s.chosen.value).toBe(administratorCred);
+      expect(s.unlockAvailable.value).toBe(true);
+      expect(s.unlockOn.value).toBe(true);
+      expect(s.view.value?.unlockLine).toBe(true);
+
+      await s.approve();
+      expect(arm).toHaveBeenCalledTimes(1);
+      expect(arm.mock.calls[0]![0]).toBe('c_admin');
+      expect(arm.mock.calls[0]![1]).toBeGreaterThan(1_000_000);
+      const body = present.mock.calls[0]![1] as Record<string, unknown>;
+      expect(body.presentation).toBe('EXPORT:EAdministrator');
+      expect(body.armed).toBe(true);
+      expect(body).not.toHaveProperty('sealed_passcode');
+      expect(answerHandover).toHaveBeenCalledWith('https://id.example.nz/login/app/present', 'c_admin', 'EHa');
+      expect(s.phase.value).toBe('done');
+    });
+
+    it('an operator answering with their Membership arms exactly as before', async () => {
+      const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+      const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+      const answerHandover = vi.fn(async () => undefined);
+      const s = useSignin(deps({ listCredentials: async () => [financeCred, stewardCred], present, arm, answerHandover }));
+      await s.prepareFromLink(ADMIN_PANEL_LINK);
+      expect(s.chosen.value).toBe(stewardCred);
+      expect(s.unlockAvailable.value).toBe(true);
+      await s.approve();
+      expect(arm).toHaveBeenCalledTimes(1);
+      const body = present.mock.calls[0]![1] as Record<string, unknown>;
+      expect(body.presentation).toBe('EXPORT:ECred');
+      expect(body.armed).toBe(true);
+      expect(answerHandover).toHaveBeenCalledWith('https://id.example.nz/login/app/present', 'c_admin', 'EHa');
+    });
+
+    it('an administrator who is not a steward is offered no unlock line and arms nothing', async () => {
+      // Administrator grants the panel, not signing (idss ADR 0286 d.2): holding
+      // it does not make its holder a steward.
+      const present = vi.fn(async () => ({ outcome: 'verified' as const }));
+      const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+      const s = useSignin(deps({ listCredentials: async () => [cred, administratorCred], present, arm }));
+      await s.prepareFromLink(ADMIN_PANEL_LINK);
+      expect(s.chosen.value).toBe(administratorCred);
+      expect(s.unlockAvailable.value).toBe(false);
+      expect(s.view.value?.unlockLine).toBe(false);
+      await s.approve();
+      expect(arm).not.toHaveBeenCalled();
+      const body = present.mock.calls[0]![1] as Record<string, unknown>;
+      expect(body).not.toHaveProperty('armed');
+    });
+
+    it.each([
+      [
+        'revoked',
+        { sad: stewardCred.sad, status: { s: '1', et: 'rev' } } as HeldCredential,
+      ],
+      [
+        'of a schema the door did not ask for',
+        { sad: { ...stewardCred.sad, s: 'ESomeOtherCommunity' } } as HeldCredential,
+      ],
+      [
+        'a komiti credential that claims the role',
+        { sad: { d: 'EKomiti', s: 'ECo', a: { i: 'EHa', committee: 'finance', role: 'operator' } } } as HeldCredential,
+      ],
+    ])("an administrator's operator standing does not count when it is %s", async (_case, notStanding) => {
+      const arm = vi.fn((_challenge: string, _expiresAt: number) => undefined);
+      const s = useSignin(deps({ listCredentials: async () => [notStanding, administratorCred], arm }));
+      await s.prepareFromLink(ADMIN_PANEL_LINK);
+      expect(s.chosen.value).toBe(administratorCred);
+      expect(s.unlockAvailable.value).toBe(false);
+      await s.approve();
+      expect(arm).not.toHaveBeenCalled();
+    });
+
+    it('when a Membership is presented, its own role decides — as it always did', async () => {
+      // A door that names no credential (a gateway that predates `cred=`): the
+      // first Membership is presented, and a second credential the wallet also
+      // holds never lends it a steward's standing.
+      const alsoHeld: HeldCredential = {
+        sad: { d: 'EOtherOperator', s: 'EMe', i: 'ECommunity', a: { i: 'EHa', role: 'operator' } },
+      };
+      const s = useSignin(deps({ listCredentials: async () => [cred, alsoHeld] }));
+      await s.prepareFromLink(PANEL_LINK);
+      expect(s.chosen.value).toBe(cred);
+      expect(s.unlockAvailable.value).toBe(false);
+    });
+
+    it("a steward's standing is never read off someone else's credential", async () => {
+      const someoneElses: HeldCredential = {
+        sad: { d: 'EOther', s: 'EMe', i: 'ECommunity', a: { i: 'ESomeoneElse', role: 'operator' } },
+      };
+      const s = useSignin(deps({ listCredentials: async () => [someoneElses, cred, administratorCred] }));
+      await s.prepareFromLink(ADMIN_PANEL_LINK);
+      expect(s.unlockAvailable.value).toBe(false);
+    });
+  });
+});
+
+// A locked panel unlocks THROUGH THE SIGN-IN DOOR (#688; idss ADR 0282 as
+// amended 2026-09-29, obligations 2b/2c; wireframes PU-A4, PU-A4d, PU-A4n). The
+// code is a sign-in code that says it is an unlock. Opened by a steward it is
+// the approve card in its unlock form — no switch, the act reads Unlock, and
+// Unlock presents and arms. Opened by anyone else, nothing is posted.
+describe('useSignin — a code that says it is an unlock (#688)', () => {
+  const administratorCred: HeldCredential = {
+    sad: {
+      d: 'EAdministrator',
+      s: 'ECo',
+      i: 'ECommunity',
+      a: { i: 'EHa', committee: 'administrator', dt: '2026-09-28T00:00:00Z' },
+    },
+    status: { s: '0', et: 'iss' },
+  };
+  // The golden's unlock code: the same ask as any control-panel sign-in, and
+  // `offer=unlock`.
+  const UNLOCK_LINK =
+    'matou://signin?c=c_unlock&cred=administrator&door=https://id.example.nz/login&name=Home&offer=unlock&present=https://id.example.nz/login/app/present&s=ECo,EMe&svc=the%20control%20panel';
+
+  function spies() {
+    return {
+      present: vi.fn(async (): Promise<PresentVerdict> => ({ outcome: 'verified' })),
+      arm: vi.fn((_challenge: string, _expiresAt: number) => undefined),
+      answerHandover: vi.fn(async () => undefined),
+      sign: vi.fn(async (_aid: string, m: string) => `sig(${m})`),
+      exportCredential: vi.fn(async (said: string) => `EXPORT:${said}`),
+    };
+  }
+
+  it('opened by a steward: the approve card in its unlock form, with no switch', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred] }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.form.value).toBe('unlock');
+    // The credential is the one the door always asks for, shown as its card.
+    expect(s.chosen.value).toBe(administratorCred);
+    expect(s.view.value?.credential?.card.name).toBe('Administrator');
+    // No switch: the unlock line belongs to a sign-in, not to an unlock.
+    expect(s.unlockAvailable.value).toBe(false);
+    expect(s.view.value?.unlockLine).toBe(false);
+  });
+
+  it('Unlock presents Administrator, posts armed:true and no passcode, and answers the panel', async () => {
+    const spy = spies();
+    const s = useSignin(
+      deps({ listCredentials: async () => [stewardCred, administratorCred], ...spy, now: () => 1_000_000 }),
+    );
+    await s.prepareFromLink(UNLOCK_LINK);
+    await s.approve();
+
+    expect(spy.arm).toHaveBeenCalledTimes(1);
+    expect(spy.arm.mock.calls[0]![0]).toBe('c_unlock');
+    expect(spy.arm.mock.calls[0]![1]).toBeGreaterThan(1_000_000);
+    expect(spy.present).toHaveBeenCalledTimes(1);
+    const [url, body] = spy.present.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(url).toBe('https://id.example.nz/login/app/present');
+    expect(body).toEqual({
+      aid: 'EHa',
+      challenge_id: 'c_unlock',
+      response: 'sig(idss-idp:https://id.example.nz/login:EHa:c_unlock)',
+      presentation: 'EXPORT:EAdministrator',
+      armed: true,
+    });
+    expect(body).not.toHaveProperty('sealed_passcode');
+    // The handover routes are answered exactly as at sign-in (#674, unchanged).
+    expect(spy.answerHandover).toHaveBeenCalledWith('https://id.example.nz/login/app/present', 'c_unlock', 'EHa');
+    // PU-A4d: the done face of an unlock.
+    expect(s.phase.value).toBe('done');
+    expect(s.form.value).toBe('unlock');
+    // It carries the one instruction that matters, so it stays until closed.
+    expect(s.keepOpen.value).toBe(true);
+  });
+
+  it('arms whatever the switch was left at — an unlock has none', async () => {
+    const spy = spies();
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    s.setUnlock(false);
+    await s.approve();
+    const [, body] = spy.present.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(body.armed).toBe(true);
+  });
+
+  it('an operator with no Administrator unlocks with their Membership', async () => {
+    const spy = spies();
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('card');
+    expect(s.chosen.value).toBe(stewardCred);
+    await s.approve();
+    const [, body] = spy.present.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(body.presentation).toBe('EXPORT:ECred');
+    expect(body.armed).toBe(true);
+  });
+
+  it('Not now posts nothing', async () => {
+    const spy = spies();
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    s.notNow();
+    expect(spy.arm).not.toHaveBeenCalled();
+    expect(spy.sign).not.toHaveBeenCalled();
+    expect(spy.exportCredential).not.toHaveBeenCalled();
+    expect(spy.present).not.toHaveBeenCalled();
+    expect(spy.answerHandover).not.toHaveBeenCalled();
+  });
+
+  it('opened by an administrator who is not a steward: says so, and posts nothing (PU-A4n)', async () => {
+    const spy = spies();
+    const s = useSignin(deps({ listCredentials: async () => [cred, administratorCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('not-a-steward');
+    expect(s.form.value).toBe('unlock');
+    // There is nothing to press; were Approve called anyway, nothing leaves.
+    await s.approve();
+    s.notNow();
+    expect(s.phase.value).toBe('not-a-steward');
+    expect(spy.arm).not.toHaveBeenCalled();
+    expect(spy.sign).not.toHaveBeenCalled();
+    expect(spy.exportCredential).not.toHaveBeenCalled();
+    expect(spy.present).not.toHaveBeenCalled();
+    expect(spy.answerHandover).not.toHaveBeenCalled();
+    expect(s.posted.value).toBe(false);
+  });
+
+  it.each([
+    ['a member', [cred]],
+    ['a wallet holding nothing', [] as HeldCredential[]],
+  ])('opened by %s: the same screen, nothing posted', async (_who, held) => {
+    const spy = spies();
+    const s = useSignin(deps({ listCredentials: async () => held, ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('not-a-steward');
+    await s.approve();
+    expect(spy.present).not.toHaveBeenCalled();
+  });
+
+  it('says so without first asking to trust an unmet site — nothing would be sent to it', async () => {
+    knownDoors.isKnown.mockReturnValue(false);
+    const s = useSignin(deps({ listCredentials: async () => [cred, administratorCred] }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('not-a-steward');
+  });
+
+  it('a steward at an unmet site still meets the first-contact prompt before the unlock card', async () => {
+    knownDoors.isKnown.mockReturnValue(false);
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred] }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.phase.value).toBe('first-contact');
+    await s.trust();
+    expect(s.phase.value).toBe('card');
+    expect(s.form.value).toBe('unlock');
+  });
+
+  it('a refused unlock shows the same refusal as any sign-in, and answers no panel request', async () => {
+    const spy = spies();
+    spy.present.mockResolvedValue({ outcome: 'refused', refusal: 'expired' });
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    await s.approve();
+    expect(s.phase.value).toBe('refused');
+    expect(s.refusal.value?.kind).toBe('expired');
+    expect(spy.answerHandover).not.toHaveBeenCalled();
+  });
+
+  it('an unlock that cannot arm posts nothing — an unarmed unlock is only a second sign-in', async () => {
+    const spy = spies();
+    spy.arm.mockImplementation(() => {
+      throw new Error('no passcode in this session');
+    });
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred], ...spy }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    await s.approve();
+    expect(spy.present).not.toHaveBeenCalled();
+    expect(spy.answerHandover).not.toHaveBeenCalled();
+    expect(s.phase.value).toBe('unavailable');
+  });
+
+  it('a sign-in code after an unlock code is an ordinary sign-in again', async () => {
+    const s = useSignin(deps({ listCredentials: async () => [stewardCred, administratorCred] }));
+    await s.prepareFromLink(UNLOCK_LINK);
+    expect(s.form.value).toBe('unlock');
+    await s.prepareFromLink(LINK);
+    expect(s.form.value).toBe('signin');
+    expect(s.phase.value).toBe('card');
+  });
+});
+
+// A credential the DOOR called revoked (#690; idss ADR 0289 as amended
+// 2026-09-29, decision 5). Found on Whakatōhea Demo: an Administrator was
+// revoked from the control panel, the holder's app went on reading it as live,
+// and presented it — refused `revoked` — for as long as its view stayed stale.
+// So the steward's Membership, the fallback the rule already names, was never
+// reached. The wallet now remembers what the door said of that one credential.
+// A sign-in code is single-use, so the fallback rides the NEXT code.
+describe('useSignin — a credential the door called revoked (#690)', () => {
+  const administratorCred: HeldCredential = {
+    sad: {
+      d: 'EAdministrator',
+      s: 'ECo',
+      i: 'ECommunity',
+      a: { i: 'EHa', committee: 'administrator', dt: '2026-09-28T00:00:00Z' },
+    },
+    // The agent's record is as old as the day the credential was admitted.
+    status: { s: '0', et: 'iss' },
+  };
+  const panelCode = (challenge: string, offer = 'seat-unlock') =>
+    `matou://signin?c=${challenge}&cred=administrator&door=https://id.example.nz/login&name=Home&offer=${offer}&present=https://id.example.nz/login/app/present&s=ECo,EMe&svc=the%20control%20panel`;
+  const serviceCode = (challenge: string) =>
+    `matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=${challenge}&s=EMe&name=Home&service=Files`;
+
+  /** A door that answers `refusal` to the credentials named, and verifies the rest. */
+  function door(refusal: string, ...saids: string[]) {
+    return vi.fn(async (_url: string, body: { presentation: string; challenge_id: string }) =>
+      saids.some((said) => body.presentation === `EXPORT:${said}`)
+        ? ({ outcome: 'refused', refusal } as PresentVerdict)
+        : ({ outcome: 'verified' } as PresentVerdict),
+    );
+  }
+
+  it("a steward's next control-panel code presents their Membership, and the sign-in verifies", async () => {
+    const present = door('revoked', 'EAdministrator');
+    const wallet = { listCredentials: async () => [administratorCred, stewardCred], present };
+
+    const refused = useSignin(deps(wallet));
+    await refused.prepareFromLink(panelCode('c_refused'));
+    expect(refused.chosen.value).toBe(administratorCred);
+    await refused.approve();
+    expect(refused.phase.value).toBe('refused');
+    expect(refused.refusal.value?.kind).toBe('revoked');
+    expect(touch).not.toHaveBeenCalled();
+
+    // The door's page shows a new code, and the card is opened on it afresh.
+    const next = useSignin(deps(wallet));
+    await next.prepareFromLink(panelCode('c_next'));
+    expect(next.phase.value).toBe('card');
+    expect(next.chosen.value).toBe(stewardCred);
+    expect(next.view.value?.credential?.card.name).toBe('Membership');
+    // A steward still: the unlock line is offered on the Membership's card.
+    expect(next.unlockAvailable.value).toBe(true);
+
+    await next.approve();
+    expect(next.phase.value).toBe('done');
+    expect(present).toHaveBeenCalledTimes(2);
+    expect(present.mock.calls[1]![1]).toMatchObject({ challenge_id: 'c_next', presentation: 'EXPORT:ECred' });
+  });
+
+  it('the same, when the new code reaches the card that was refused', async () => {
+    const present = door('revoked', 'EAdministrator');
+    const s = useSignin(deps({ listCredentials: async () => [administratorCred, stewardCred], present }));
+    await s.prepareFromLink(panelCode('c_refused'));
+    await s.approve();
+    await s.prepareFromLink(panelCode('c_next'));
+    expect(s.staleCode.value).toBe(false);
+    expect(s.refusal.value).toBeNull();
+    expect(s.chosen.value).toBe(stewardCred);
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(present.mock.calls[1]![1]).toMatchObject({ challenge_id: 'c_next', presentation: 'EXPORT:ECred' });
+  });
+
+  it('a holder who is not a steward sees the no-credential screen on the next code, and nothing is posted', async () => {
+    const present = door('revoked', 'EAdministrator');
+    const sign = vi.fn(async (_aid: string, m: string) => `sig(${m})`);
+    const exportCredential = vi.fn(async (said: string) => `EXPORT:${said}`);
+    const wallet = { listCredentials: async () => [cred, administratorCred], present, sign, exportCredential };
+
+    const refused = useSignin(deps(wallet));
+    await refused.prepareFromLink(panelCode('c_refused'));
+    await refused.approve();
+    expect(refused.refusal.value?.kind).toBe('revoked');
+    expect(present).toHaveBeenCalledTimes(1);
+
+    const next = useSignin(deps(wallet));
+    await next.prepareFromLink(panelCode('c_next'));
+    expect(next.phase.value).toBe('no-credential');
+    expect(next.chosen.value).toBeNull();
+    expect(next.view.value?.askedName).toBe('Administrator');
+    expect(next.posted.value).toBe(false);
+
+    await next.approve();
+    expect(present).toHaveBeenCalledTimes(1);
+    expect(sign).toHaveBeenCalledTimes(1);
+    expect(exportCredential).toHaveBeenCalledTimes(1);
+    expect(next.phase.value).toBe('no-credential');
+  });
+
+  it('a credential revoked and issued again: the live one is presented on the next code', async () => {
+    const issuedAgain: HeldCredential = {
+      sad: { ...administratorCred.sad, d: 'EAdministratorAgain' },
+      status: { s: '0', et: 'iss' },
+    };
+    const present = door('revoked', 'EAdministrator');
+    const wallet = { listCredentials: async () => [administratorCred, stewardCred, issuedAgain], present };
+
+    const refused = useSignin(deps(wallet));
+    await refused.prepareFromLink(panelCode('c_refused'));
+    await refused.approve();
+    expect(refused.refusal.value?.kind).toBe('revoked');
+
+    const next = useSignin(deps(wallet));
+    await next.prepareFromLink(panelCode('c_next'));
+    expect(next.chosen.value).toBe(issuedAgain);
+    await next.approve();
+    expect(next.phase.value).toBe('done');
+    expect(present.mock.calls[1]![1]).toMatchObject({ presentation: 'EXPORT:EAdministratorAgain' });
+  });
+
+  it('as today when the agent already reads the first as revoked: the live one is presented at once', async () => {
+    const revoked: HeldCredential = { sad: administratorCred.sad, status: { s: '1', et: 'rev' } };
+    const issuedAgain: HeldCredential = {
+      sad: { ...administratorCred.sad, d: 'EAdministratorAgain' },
+      status: { s: '0', et: 'iss' },
+    };
+    const present = door('revoked', 'EAdministrator');
+    const s = useSignin(deps({ listCredentials: async () => [revoked, issuedAgain], present }));
+    await s.prepareFromLink(panelCode('c_first'));
+    expect(s.chosen.value).toBe(issuedAgain);
+    await s.approve();
+    expect(s.phase.value).toBe('done');
+    expect(present).toHaveBeenCalledTimes(1);
+  });
+
+  describe('a `revoked` answer to a Membership', () => {
+    // The wallet still holds the revoked Membership — an agent lists every
+    // credential it was ever issued — beside the one issued after it.
+    const later: HeldCredential = { sad: { ...cred.sad, d: 'ECredLater' }, status: { s: '0', et: 'iss' } };
+
+    it.each([
+      ['the revoked one held first', [cred, later]],
+      ['the later one held first, and the agent reads the first as live', [cred, later].reverse()],
+    ])('does not stop a later, live Membership being presented at a service (%s)', async (_order, held) => {
+      // The door answers `revoked` to the older one whichever is presented.
+      const present = door('revoked', 'ECred');
+      const wallet = { listCredentials: async () => held, present };
+
+      const first = useSignin(deps(wallet));
+      await first.prepareFromLink(serviceCode('c_first'));
+      await first.approve();
+      if (held[0] === cred) {
+        expect(first.refusal.value?.kind).toBe('revoked');
+        // What happens next is said: the wallet holds a live one.
+        expect(first.refusal.value?.text).toContain('you will sign in with your Membership');
+      } else {
+        expect(first.phase.value).toBe('done');
+      }
+
+      const next = useSignin(deps(wallet));
+      await next.prepareFromLink(serviceCode('c_next'));
+      expect(next.phase.value).toBe('card');
+      expect(next.chosen.value).toBe(later);
+      expect(next.view.value?.credential?.card.statusLabel).toBe('Active');
+      await next.approve();
+      expect(next.phase.value).toBe('done');
+      expect(present.mock.calls.at(-1)![1]).toMatchObject({ challenge_id: 'c_next', presentation: 'EXPORT:ECredLater' });
+    });
+
+    it('the revoked one is never presented a second time while a live one is held', async () => {
+      const present = door('revoked', 'ECred');
+      const wallet = { listCredentials: async () => [cred, later], present };
+      const first = useSignin(deps(wallet));
+      await first.prepareFromLink(serviceCode('c_first'));
+      await first.approve();
+
+      for (const challenge of ['c_second', 'c_third']) {
+        const s = useSignin(deps(wallet));
+        await s.prepareFromLink(serviceCode(challenge));
+        await s.approve();
+        expect(s.phase.value).toBe('done');
+      }
+      const presented = present.mock.calls.map((c) => (c[1] as { presentation: string }).presentation);
+      expect(presented).toEqual(['EXPORT:ECred', 'EXPORT:ECredLater', 'EXPORT:ECredLater']);
+    });
+
+    it.each([
+      ['the revoked one held first', [stewardCred, { sad: { ...stewardCred.sad, d: 'ECredLater' }, status: { s: '0', et: 'iss' } }]],
+      ['the later one held last of three', [cred, stewardCred, { sad: { ...stewardCred.sad, d: 'ECredLater' }, status: { s: '0', et: 'iss' } }]],
+    ])(
+      "does not stop a steward's later, live Membership being the fallback at the control panel (%s)",
+      async (_order, held) => {
+        const present = door('revoked', 'ECred');
+        const wallet = { listCredentials: async () => held as HeldCredential[], present };
+        const refused = useSignin(deps(wallet));
+        await refused.prepareFromLink(panelCode('c_refused'));
+        expect(refused.chosen.value).toBe(stewardCred);
+        await refused.approve();
+        expect(refused.refusal.value?.kind).toBe('revoked');
+
+        const next = useSignin(deps(wallet));
+        await next.prepareFromLink(panelCode('c_next'));
+        expect(next.chosen.value?.sad?.d).toBe('ECredLater');
+        // A steward still, on the Membership that stands.
+        expect(next.unlockAvailable.value).toBe(true);
+        await next.approve();
+        expect(next.phase.value).toBe('done');
+      },
+    );
+
+    it('still presents a Membership that is the only one held, so the door says why', async () => {
+      const present = door('revoked', 'ECred');
+      const s = useSignin(deps({ listCredentials: async () => [cred], present }));
+      await s.prepareFromLink(serviceCode('c_refused'));
+      await s.approve();
+      await s.prepareFromLink(serviceCode('c_next'));
+      expect(s.phase.value).toBe('card');
+      expect(s.chosen.value?.sad?.d).toBe('ECred');
+      // …wearing what the door said of it.
+      expect(s.view.value?.credential?.card.statusLabel).toBe('Revoked');
+    });
+  });
+
+  it.each([
+    'no-membership',
+    'untrusted-issuer',
+    'signature',
+    'wrong-holder',
+    'no-credential',
+    'records-unreachable',
+    'unknown',
+    'spent',
+    'expired',
+    'a-slug-the-wallet-does-not-know',
+  ])('a `%s` refusal remembers nothing: the next code presents the same credential', async (refusal) => {
+    const present = door(refusal, 'EAdministrator');
+    const wallet = { listCredentials: async () => [administratorCred, stewardCred], present };
+    const refused = useSignin(deps(wallet));
+    await refused.prepareFromLink(panelCode('c_refused'));
+    await refused.approve();
+    expect(present).toHaveBeenCalledTimes(1);
+    expect(isRememberedRevoked(DOOR, 'EAdministrator')).toBe(false);
+
+    const next = useSignin(deps(wallet));
+    await next.prepareFromLink(panelCode('c_next'));
+    expect(next.chosen.value).toBe(administratorCred);
+  });
+
+  it.each([
+    ['a post that gets no answer', async () => ({ outcome: 'site-unreachable' }) as PresentVerdict],
+    [
+      'a post that throws',
+      async () => {
+        throw new Error('network down');
+      },
+    ],
+    ['a sign-in that verifies', async () => ({ outcome: 'verified' }) as PresentVerdict],
+  ])('%s remembers nothing', async (_case, present) => {
+    const s = useSignin(deps({ listCredentials: async () => [administratorCred, stewardCred], present }));
+    await s.prepareFromLink(panelCode('c_first'));
+    await s.approve();
+    expect(isRememberedRevoked(DOOR, 'EAdministrator')).toBe(false);
+  });
+
+  describe('the refused code is never presented again', () => {
+    it('Try again holds the refusal, and Approve posts nothing more', async () => {
+      const present = door('revoked', 'EAdministrator');
+      const s = useSignin(deps({ listCredentials: async () => [administratorCred, stewardCred], present }));
+      await s.prepareFromLink(panelCode('c_refused'));
+      await s.approve();
+      expect(s.phase.value).toBe('refused');
+      expect(s.staleCode.value).toBe(true);
+
+      s.tryAgain();
+      expect(s.phase.value).toBe('refused');
+      expect(s.refusal.value?.kind).toBe('revoked');
+      await s.approve();
+      expect(present).toHaveBeenCalledTimes(1);
+    });
+
+    it('the fallback is not presented on it — not by itself, and not when the same code is opened again', async () => {
+      const present = door('revoked', 'EAdministrator');
+      const sign = vi.fn(async (_aid: string, m: string) => `sig(${m})`);
+      const s = useSignin(deps({ listCredentials: async () => [administratorCred, stewardCred], present, sign }));
+      await s.prepareFromLink(panelCode('c_refused'));
+      await s.approve();
+      expect(present).toHaveBeenCalledTimes(1);
+      expect(sign).toHaveBeenCalledTimes(1);
+
+      // The same code, scanned or opened a second time.
+      await s.prepareFromLink(panelCode('c_refused'));
+      expect(s.staleCode.value).toBe(true);
+      await s.approve();
+      expect(present).toHaveBeenCalledTimes(1);
+      expect(sign).toHaveBeenCalledTimes(1);
+    });
+
+    it('not when it is opened again on a card opened afresh', async () => {
+      const present = door('revoked', 'EAdministrator');
+      const sign = vi.fn(async (_aid: string, m: string) => `sig(${m})`);
+      const arm = vi.fn();
+      const wallet = { listCredentials: async () => [administratorCred, stewardCred], present, sign, arm };
+      const refused = useSignin(deps(wallet));
+      await refused.prepareFromLink(panelCode('c_refused'));
+      await refused.approve();
+      expect(present).toHaveBeenCalledTimes(1);
+      expect(arm).toHaveBeenCalledTimes(1);
+
+      // The refusal was left, and the same code is opened again: a new card.
+      const again = useSignin(deps(wallet));
+      await again.prepareFromLink(panelCode('c_refused'));
+      expect(again.staleCode.value).toBe(true);
+      expect(again.canApprove.value).toBe(false);
+      await again.approve();
+      expect(present).toHaveBeenCalledTimes(1);
+      expect(sign).toHaveBeenCalledTimes(1);
+      expect(arm).toHaveBeenCalledTimes(1);
+    });
+
+    it('opened again, it says the code was used — never a card with an Approve that does nothing', async () => {
+      const present = door('revoked', 'EAdministrator');
+      const wallet = { listCredentials: async () => [administratorCred, stewardCred], present };
+      const refused = useSignin(deps(wallet));
+      await refused.prepareFromLink(panelCode('c_refused'));
+      await refused.approve();
+
+      for (const s of [refused, useSignin(deps(wallet))]) {
+        await s.prepareFromLink(panelCode('c_refused'));
+        expect(s.phase.value).toBe('refused');
+        expect(s.refusal.value?.kind).toBe('spent');
+        expect(s.refusal.value?.text).toContain('Start the sign-in again to get a fresh code');
+        expect(s.canApprove.value).toBe(false);
+      }
+    });
+
+    it('is held as a code of its own sign-in site: the same id from another site is a code like any other', async () => {
+      const present = door('revoked', 'EAdministrator');
+      const wallet = { listCredentials: async () => [administratorCred, stewardCred], present };
+      const refused = useSignin(deps(wallet));
+      await refused.prepareFromLink(panelCode('c_refused'));
+      await refused.approve();
+
+      const elsewhere = useSignin(deps(wallet));
+      await elsewhere.prepareFromLink(panelCode('c_refused').split('id.example.nz').join('id.other.nz'));
+      expect(elsewhere.staleCode.value).toBe(false);
+      expect(elsewhere.phase.value).toBe('card');
+    });
+  });
+
+  // #675's hold, whichever card opens the code: the door will not take a code
+  // it has spent or expired, however the wallet comes back to it.
+  describe('a code the door spent or expired is held whichever card opens it (#675)', () => {
+    it.each(['spent', 'expired', 'unknown'])('a `%s` code opened on a card opened afresh', async (refusal) => {
+      const present = vi.fn(async () => ({ outcome: 'refused', refusal }) as PresentVerdict);
+      const first = useSignin(deps({ present }));
+      await first.prepareFromLink(serviceCode('c_dead'));
+      await first.approve();
+      expect(first.refusal.value?.kind).toBe(refusal);
+
+      const again = useSignin(deps({ present }));
+      await again.prepareFromLink(serviceCode('c_dead'));
+      expect(again.staleCode.value).toBe(true);
+      expect(again.phase.value).toBe('refused');
+      expect(again.refusal.value?.kind).toBe(refusal);
+      expect(again.canApprove.value).toBe(false);
+      await again.approve();
+      expect(present).toHaveBeenCalledTimes(1);
+
+      // A fresh code is a code like any other.
+      await again.prepareFromLink(serviceCode('c_fresh'));
+      expect(again.staleCode.value).toBe(false);
+      expect(again.phase.value).toBe('card');
+      expect(again.canApprove.value).toBe(true);
+    });
+  });
+
+  // Only the sign-in site's own answer is heard, and only for its own door
+  // (the review's trust finding on #690).
+  describe('what one sign-in site says is believed at that site only', () => {
+    const at = (code: string, host: string) => code.split('id.example.nz').join(host);
+
+    it('a `revoked` answer at another site does not stop the credential being presented at home', async () => {
+      const present = door('revoked', 'EAdministrator');
+      const wallet = { listCredentials: async () => [cred, administratorCred], present };
+      const elsewhere = useSignin(deps(wallet));
+      await elsewhere.prepareFromLink(at(panelCode('c_other'), 'id.other.nz'));
+      await elsewhere.approve();
+      expect(elsewhere.refusal.value?.kind).toBe('revoked');
+      expect(isRememberedRevoked('https://id.other.nz/login', 'EAdministrator')).toBe(true);
+      expect(isRememberedRevoked(DOOR, 'EAdministrator')).toBe(false);
+
+      const home = useSignin(deps(wallet));
+      await home.prepareFromLink(panelCode('c_home'));
+      expect(home.phase.value).toBe('card');
+      expect(home.chosen.value).toBe(administratorCred);
+    });
+
+    it('…and is still passed over at the site that said it', async () => {
+      const present = door('revoked', 'EAdministrator');
+      const wallet = { listCredentials: async () => [cred, administratorCred], present };
+      const elsewhere = useSignin(deps(wallet));
+      await elsewhere.prepareFromLink(at(panelCode('c_other'), 'id.other.nz'));
+      await elsewhere.approve();
+
+      const back = useSignin(deps(wallet));
+      await back.prepareFromLink(at(panelCode('c_other_next'), 'id.other.nz'));
+      expect(back.phase.value).toBe('no-credential');
+    });
+
+    it("two `revoked` answers at another site leave a steward a steward at home", async () => {
+      const present = door('revoked', 'EAdministrator', 'ECred');
+      const wallet = { listCredentials: async () => [administratorCred, stewardCred], present };
+      for (const challenge of ['c_other_1', 'c_other_2']) {
+        const s = useSignin(deps(wallet));
+        await s.prepareFromLink(at(panelCode(challenge), 'id.other.nz'));
+        await s.approve();
+        expect(s.refusal.value?.kind).toBe('revoked');
+      }
+
+      const home = useSignin(deps({ ...wallet, present: async () => ({ outcome: 'verified' }) }));
+      await home.prepareFromLink(panelCode('c_home'));
+      expect(home.phase.value).toBe('card');
+      expect(home.chosen.value).toBe(administratorCred);
+      expect(home.unlockAvailable.value).toBe(true);
+
+      const unlock = useSignin(deps({ ...wallet, present: async () => ({ outcome: 'verified' }) }));
+      await unlock.prepareFromLink(panelCode('c_home_unlock', 'unlock'));
+      expect(unlock.phase.value).toBe('card');
+    });
+
+    it('an answer from anywhere but the sign-in site itself is not remembered', async () => {
+      // The code names the home site and, apart from it, somewhere else to post.
+      const present = door('revoked', 'EAdministrator');
+      const wallet = { listCredentials: async () => [administratorCred, stewardCred], present };
+      const s = useSignin(deps(wallet));
+      await s.prepareFromLink(
+        panelCode('c_relayed').replace('present=https://id.example.nz/login/app/present', 'present=https://evil.example/present'),
+      );
+      await s.approve();
+      expect(present.mock.calls[0]![0]).toBe('https://evil.example/present');
+      expect(s.refusal.value?.kind).toBe('revoked');
+      expect(isRememberedRevoked(DOOR, 'EAdministrator')).toBe(false);
+      // Nothing was learnt, so nothing is promised of the next code…
+      expect(s.refusal.value?.text).not.toContain('you will sign in with');
+      // …though the code itself was used, and is not answered again.
+      expect(s.staleCode.value).toBe(true);
+
+      const next = useSignin(deps(wallet));
+      await next.prepareFromLink(panelCode('c_next'));
+      expect(next.chosen.value).toBe(administratorCred);
+    });
+
+    it('a `verified` answer from anywhere but the sign-in site itself clears nothing', async () => {
+      rememberRevoked(DOOR, 'ECred');
+      const s = useSignin(deps({ listCredentials: async () => [cred] }));
+      await s.prepareFromLink(
+        serviceCode('c_relayed').replace('present=https://id.example.nz/login/app/present', 'present=https://evil.example/present'),
+      );
+      await s.approve();
+      expect(s.phase.value).toBe('done');
+      expect(isRememberedRevoked(DOOR, 'ECred')).toBe(true);
+    });
+  });
+
+  describe('the refusal says what happens next', () => {
+    it('to a steward: trying again will sign in with the Membership', async () => {
+      const s = useSignin(
+        deps({ listCredentials: async () => [administratorCred, stewardCred], present: door('revoked', 'EAdministrator') }),
+      );
+      await s.prepareFromLink(panelCode('c_refused'));
+      await s.approve();
+      expect(s.refusal.value?.kind).toBe('revoked');
+      expect(s.refusal.value?.text).toContain('your Administrator credential has been revoked');
+      expect(s.refusal.value?.text).toContain('you will sign in with your Membership');
+      expect(s.refusal.value?.showTryAgain).toBe(true);
+    });
+
+    it('names them by what they are, not by the title of their schema', async () => {
+      // As the agent returns them: the schema rides beside the credential.
+      const administrator: HeldCredential = { ...administratorCred, schema: { title: 'Committee Credential' } };
+      const membership: HeldCredential = { ...stewardCred, schema: { title: 'MATOU Membership Credential' } };
+      const s = useSignin(
+        deps({ listCredentials: async () => [administrator, membership], present: door('revoked', 'EAdministrator') }),
+      );
+      await s.prepareFromLink(panelCode('c_refused'));
+      await s.approve();
+      expect(s.refusal.value?.text).toContain('your Administrator credential has been revoked');
+      expect(s.refusal.value?.text).toContain('you will sign in with your Membership.');
+      expect(s.refusal.value?.text).not.toContain('MATOU');
+      expect(s.refusal.value?.text).not.toContain('Credential');
+    });
+
+    it('never promises a credential that is itself revoked', async () => {
+      // Two Memberships, and the agent already reads the first as revoked: once
+      // the door has refused the second, the first is what a service's door
+      // would be shown — so that it says why, not so that it signs in.
+      const dead: HeldCredential = { sad: { ...cred.sad, d: 'ECredDead' }, status: { s: '1', et: 'rev' } };
+      const s = useSignin(deps({ listCredentials: async () => [dead, cred], present: door('revoked', 'ECred') }));
+      await s.prepareFromLink(serviceCode('c_refused'));
+      expect(s.chosen.value).toBe(cred);
+      await s.approve();
+      expect(s.refusal.value?.kind).toBe('revoked');
+      expect(s.refusal.value?.text).not.toContain('you will sign in with');
+    });
+
+    it('to a holder with nothing else this door admits: only that it was revoked', async () => {
+      const s = useSignin(
+        deps({ listCredentials: async () => [cred, administratorCred], present: door('revoked', 'EAdministrator') }),
+      );
+      await s.prepareFromLink(panelCode('c_refused'));
+      await s.approve();
+      expect(s.refusal.value?.kind).toBe('revoked');
+      expect(s.refusal.value?.text).toContain('has been revoked');
+      expect(s.refusal.value?.text).not.toContain('you will sign in with');
+    });
+
+    it('to a member whose only Membership was revoked: only that it was revoked', async () => {
+      const s = useSignin(deps({ listCredentials: async () => [cred], present: door('revoked', 'ECred') }));
+      await s.prepareFromLink(serviceCode('c_refused'));
+      await s.approve();
+      expect(s.refusal.value?.text).toContain('your membership here has been revoked');
+      expect(s.refusal.value?.text).not.toContain('you will sign in with');
+    });
+  });
+
+  describe('what is remembered is cleared when the credential is read as live', () => {
+    it('a door that verifies it clears what an earlier answer left', async () => {
+      rememberRevoked(DOOR, 'ECred');
+      const s = useSignin(deps({ listCredentials: async () => [cred] }));
+      await s.prepareFromLink(serviceCode('c_first'));
+      expect(s.chosen.value?.sad?.d).toBe('ECred');
+      await s.approve();
+      expect(s.phase.value).toBe('done');
+      expect(isRememberedRevoked(DOOR, 'ECred')).toBe(false);
+
+      // …so a steward's Membership is the control panel's fallback again.
+      rememberRevoked(DOOR, 'ECred');
+      const steward = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+      await steward.prepareFromLink(serviceCode('c_second'));
+      await steward.approve();
+      const panel = useSignin(deps({ listCredentials: async () => [stewardCred] }));
+      await panel.prepareFromLink(panelCode('c_panel'));
+      expect(panel.chosen.value).toBe(stewardCred);
+    });
+
+    it('verifying one credential clears nothing remembered of another', async () => {
+      rememberRevoked(DOOR, 'EAdministrator');
+      const s = useSignin(deps({ listCredentials: async () => [administratorCred, stewardCred] }));
+      await s.prepareFromLink(panelCode('c_first'));
+      await s.approve();
+      expect(s.phase.value).toBe('done');
+      expect(isRememberedRevoked(DOOR, 'EAdministrator')).toBe(true);
+    });
+  });
+
+  describe('an unlock is the same door', () => {
+    it("a steward's next unlock code unlocks with their Membership", async () => {
+      const present = door('revoked', 'EAdministrator');
+      const answerHandover = vi.fn(async () => undefined);
+      const wallet = { listCredentials: async () => [administratorCred, stewardCred], present, answerHandover };
+
+      const refused = useSignin(deps(wallet));
+      await refused.prepareFromLink(panelCode('c_refused', 'unlock'));
+      expect(refused.form.value).toBe('unlock');
+      await refused.approve();
+      expect(refused.refusal.value?.kind).toBe('revoked');
+      expect(refused.refusal.value?.text).toContain('your Membership');
+      expect(answerHandover).not.toHaveBeenCalled();
+
+      const next = useSignin(deps(wallet));
+      await next.prepareFromLink(panelCode('c_next', 'unlock'));
+      expect(next.phase.value).toBe('card');
+      expect(next.chosen.value).toBe(stewardCred);
+      await next.approve();
+      expect(next.phase.value).toBe('done');
+      expect(present.mock.calls[1]![1]).toMatchObject({
+        challenge_id: 'c_next',
+        presentation: 'EXPORT:ECred',
+        armed: true,
+      });
+    });
   });
 });

@@ -33,6 +33,12 @@ export function signinLinkToLocation(text: string): RouteLocationRaw | null {
       ...(ask.schemas.length ? { s: ask.schemas.join(',') } : {}),
       ...(ask.community ? { name: ask.community } : {}),
       ...(ask.service ? { service: ask.service } : {}),
+      // A control-panel code's two extras: the credential the door asks for
+      // (#683) and what the code offers — a seat unlock, or an unlock (#688).
+      // Dropping either would have the card answer a different ask than the one
+      // the door made.
+      ...(ask.credential ? { cred: ask.credential } : {}),
+      ...(ask.offer ? { offer: ask.offer } : {}),
     },
   };
 }
@@ -63,9 +69,12 @@ export async function scanSigninCode(router: Router): Promise<ScanOutcome> {
   }
 }
 
-/** Route a scanned/pasted sign-in link, or report it is not a code. */
+/** Route a scanned/pasted sign-in link, or report it is not a code. A locked
+ *  control panel's unlock is a sign-in code too — one that says it is an unlock
+ *  (#688) — so it takes the same route to the same card. */
 export async function routeSigninText(router: Router, text: string): Promise<ScanOutcome> {
-  const location = signinLinkToLocation(text.trim());
+  const trimmed = text.trim();
+  const location = signinLinkToLocation(trimmed);
   if (!location) return { status: 'not-a-code' };
   await router.push(location);
   return { status: 'navigated' };

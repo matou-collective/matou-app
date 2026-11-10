@@ -9,6 +9,8 @@ import { useAppStore } from 'stores/app';
 import { useKERIClient, initKeriConfig } from 'src/lib/keri/client';
 import { getBackendIdentity, setBackendIdentity, initBackendUrl, initApiToken, installBackendAuth } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
+import { getRecordedSpaces } from 'src/lib/clientConfig';
+import { backendNeedsRecordedSpaces } from 'src/lib/spaces/recordedSpaceFill';
 
 /**
  * Ensure the backend has identity configured. If the backend was restarted,
@@ -21,10 +23,20 @@ async function ensureBackendIdentity(
   if (!aid) return;
 
   const backendIdentity = await getBackendIdentity();
-  if (backendIdentity.configured && backendIdentity.aid === aid.prefix) {
+  // A backend identity saved without the community's spaces (a recovery before
+  // #645) is re-set so it picks up the IDs the IDSS descriptor records.
+  let recorded: Awaited<ReturnType<typeof getRecordedSpaces>> = null;
+  try {
+    recorded = await getRecordedSpaces();
+  } catch {
+    recorded = null;
+  }
+  const missingSpaces = backendNeedsRecordedSpaces(backendIdentity, recorded);
+  if (backendIdentity.configured && backendIdentity.aid === aid.prefix && !missingSpaces) {
     console.log('[KERI Boot] Backend identity already configured');
     return;
   }
+  if (missingSpaces) console.log('[KERI Boot] Backend identity has no community space — re-setting with the recorded spaces');
 
   // Backend identity is missing or stale — re-set it
   const savedMnemonic = await secureStorage.getItem('matou_mnemonic');
@@ -193,6 +205,20 @@ export async function initializeApp(): Promise<void> {
     return;
   }
 
+  if (appStore.isBackendProvisioning) {
+    // IDSS backend whose org identity is not yet published (roster still being
+    // written, or /api/config momentarily 404'd). An IDSS-backed app never
+    // founds — it can only join (ADR 0226 decision 3) — so surface a "being set
+    // up by its stewards" message and land on welcome/join, never /setup.
+    console.log('[KERI Boot] IDSS backend still provisioning; org identity not yet available');
+    onboardingStore.setInitializationError(
+      'This community is being set up by its stewards — try again shortly.',
+    );
+    onboardingStore.setAppState('ready');
+    identityStore.setInitialized();
+    return;
+  }
+
   if (appStore.needsSetup) {
     // Server reachable but not configured - navigation guard will redirect
     console.log('[KERI Boot] Org not configured, navigation guard will redirect to setup');
@@ -235,6 +261,15 @@ export default boot(async ({ router }) => {
   // Registered once here (not inside initializeApp) so the splash retry can
   // re-run initialization without stacking duplicate guards.
   router.beforeEach(async (to, _from, next) => {
+    // An IDSS-backed app never founds — it can only join (ADR 0226 decision 3).
+    // The first-admin setup flow must never render on an IDSS backend, even if
+    // reached directly; send it home (welcome/join).
+    if (appStore.isIdssBackend && to.path === '/setup') {
+      console.log('[KERI Boot] IDSS backend never founds; refusing /setup');
+      next('/');
+      return;
+    }
+
     // If org needs setup and we're not already on setup page, redirect
     if (appStore.needsSetup && to.path !== '/setup') {
       console.log('[KERI Boot] Redirecting to setup (org not configured)');

@@ -125,16 +125,21 @@ grep -q 'defaults (' <<<"$present_out" \
   && fail "the present-file branch must NOT carry the defaults wrapper: $present_out"
 pass=$((pass+1))
 
-# the drive-reservation gate short-circuits BEFORE any of that — no tracker call,
-# no verdict, no runlog line (proven end-to-end in run-swarm-drive-yield-test.sh;
-# asserted here as the FIRST stage in the sequence)
+# the drive-reservation gate short-circuits BEFORE any of that — no tracker call
+# and no verdict, but it now leaves ONE runlog line so a stood-down host is not
+# invisible on disk (#1733; the elitebook-03 blind spot behind #1732). It is a
+# runlog line, NOT a verdict (a yield stays a clean exit that keys no healer
+# signature) and NOT a tracker touch. Asserted here as the FIRST stage in the
+# sequence; the end-to-end shape is in run-swarm-drive-yield-test.sh.
 rm -f "$verdict" "$runlog" "$tmp/defer"; : > "$curl_log"
 : > "$tmp/drive-wanted"
 run_swarm SCHEDULE_LIST_READY="$tmp/list-ready-empty" HOST_CAPACITY_DRIVE_WANTED="$tmp/drive-wanted"
 [ "$RC" = 0 ] || fail "a drive yield must exit 0, got $RC: $out"
 grep -q 'yielding this run to a ready drive' <<<"$out" || fail "the yield must be reported: $out"
 [ ! -s "$curl_log" ] || fail "the yield must precede EVERY tracker call: $(cat "$curl_log")"
-[ ! -s "$runlog" ] 2>/dev/null || fail "a yield is not a recorded run: $(cat "$runlog")"
+[ ! -s "$verdict" ] 2>/dev/null || fail "a yield keys no healer verdict: $(cat "$verdict")"
+grep -q 'reason=yielded-to-drive' "$runlog" || fail "a yield must record its reason in the runlog (#1733): $(cat "$runlog")"
+grep -q 'exit=0' "$runlog" || fail "a yield is a clean exit — the runlog line must read exit=0: $(cat "$runlog")"
 pass=$((pass+1))
 
 # a red preflight aborts BEFORE the janitor mutates a label or a worker spawns
@@ -206,6 +211,7 @@ for stage in \
     'preflight_policy_gate' \
     'schedule_janitor_rearm' \
     'schedule_list_ready_or_verdict' \
+    'schedule_fleet_pick' \
     'schedule_debounce_decide' \
     'preflight_model_gate' \
     'provision_env_materialize' \
@@ -226,6 +232,15 @@ for stage in \
   [ "$ln" -gt "$prev" ] || fail "$stage is out of order (line $ln, previous stage at $prev)"
   prev="$ln"
 done
+pass=$((pass+1))
+
+# #301: the slot holder is written only once the run has its ticket — AFTER
+# the fleet pick — so a leg that stands down leaves no ticket-shaped holder.
+hp="$(stage_line host_capacity_holder_write)"; fp="$(stage_line schedule_fleet_pick)"
+[ -n "$hp" ] && [ -n "$fp" ] && [ "$hp" -gt "$fp" ] \
+  || fail "host_capacity_holder_write must come after schedule_fleet_pick (holder line $hp, pick line $fp)"
+grep -q 'report_self_rearm "\$worker_ran" "\$repo_slug" "\$sandcastle_attempts"' "$rs" \
+  || fail "report_self_rearm must be handed the repo slug and the attempts file (#301)"
 pass=$((pass+1))
 
 # every seam library it depends on is sourced

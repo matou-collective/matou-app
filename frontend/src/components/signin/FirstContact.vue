@@ -20,7 +20,7 @@
     <!-- One sentence on what trusting discloses. -->
     <p class="text-sm text-muted-foreground" data-field="discloses">
       Trust it only if you meant to sign in here — the next step shows this site
-      your membership credential.
+      your {{ credentialName || 'membership' }} credential.
     </p>
 
     <div class="space-y-2">
@@ -42,6 +42,9 @@ defineProps<{
   address: string;
   /** The name the code claims for itself; falls back to the address when absent. */
   claimedName: string;
+  /** The credential the door named (`cred=`), in words ("Administrator"), so the
+   *  disclosure says what will be shown (#683). Absent → the membership. */
+  credentialName?: string;
 }>();
 
 defineEmits<{

@@ -53,7 +53,7 @@ export interface ContributionChangeItem {
    * changed but its parent has no changes of its own, so the parent renders
    * as a plain container row with no change tag or meta.
    */
-  kind: 'contribution_added' | 'contribution_edited' | 'contribution_removed' | 'contribution_context';
+  kind: 'contribution_added' | 'contribution_edited' | 'contribution_removed' | 'contribution_moved' | 'contribution_context';
   changes?: HumanizedFieldChange[];
   changedBy: string;
   changedAt: string;
@@ -256,12 +256,16 @@ export function buildPlanChangeGroups(
       case 'contribution_added':
       case 'contribution_edited':
       case 'contribution_removed':
+      case 'contribution_moved':
         group.contributionChanges.push({
           entryId: entry.id,
           contributionId: entry.contribution_id,
           title: entry.contribution_title ?? 'Untitled contribution',
           kind: entry.kind,
-          changes: entry.kind === 'contribution_edited' ? humanizeChanges(entry.changes) : undefined,
+          changes:
+            entry.kind === 'contribution_edited' || entry.kind === 'contribution_moved'
+              ? humanizeChanges(entry.changes)
+              : undefined,
           changedBy: entry.changed_by,
           changedAt: entry.changed_at,
           ...(refs.parentId ? { parentContributionId: refs.parentId } : {}),

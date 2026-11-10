@@ -60,15 +60,35 @@ $red
 # preflight_policy_gate <repo-slug> [policy-file] — load + validate the consumer's
 # swarm-policy.sh (landing / merge-authority / loop-in-label knobs, defaulting to
 # today's byte-identical behaviour when absent) and echo which of the two it got.
-# rc 1 (SWARM_EXIT_REASON set) on an invalid policy — policy_validate has already
-# named the offending key on stderr.
+# rc 1 (SWARM_EXIT_REASON set) on a refusal; which refusal depends on policy_validate:
+#   invalid policy (rc 2)   -> invalid-policy, "fix the named policy key".
+#   tracker unreachable (3) -> policy-tracker-unreachable, "the policy was NOT read".
+# Either way the gate records policy_validate's stderr as the verdict's error line,
+# so the healer never keys on a bare stage with an empty error block (#9, GOTCHAS
+# #217 — the #1359 fix for preflight_gate, never applied to this twin, #2052).
 preflight_policy_gate() {
-  local repo_slug="$1" file="${2:-}"
+  local repo_slug="$1" file="${2:-}" verr rc
   policy_load ${file:+"$file"}
-  if ! policy_validate ${file:+"$file"}; then
+  # Capture policy_validate's stderr (then re-emit it to the job log) so the gate
+  # can both LOG the cause and record it as the verdict's error line; a FATAL to
+  # stderr alone left the verdict's `--- error lines ---` block EMPTY and keyed
+  # the healer's signature on the bare stage name (run 50573, #2052).
+  verr="$(policy_validate ${file:+"$file"} 2>&1 1>/dev/null)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    [ -n "$verr" ] && printf '%s\n' "$verr" >&2
     verdict_stage "policy validation (#12)"
-    _preflight_notify ":no_entry: **Swarm aborted — invalid \`swarm-policy.sh\`** in \`$repo_slug\`. Fix the named policy key; no worker was spawned."
-    SWARM_EXIT_REASON="invalid-policy"
+    verdict_error "$(printf '%s' "$verr" | tr '\n' ' ')"
+    if [ "$rc" -eq 3 ]; then
+      # TRANSPORT: the tracker was unreachable, so the label set was never read
+      # and the policy was NOT validated. A 5xx blip is not an invalid file —
+      # never tell a human to "fix the named policy key" for a policy nothing
+      # read, and never hand the healer `invalid-policy` for a transport fault.
+      _preflight_notify ":satellite: **Swarm tick aborted — tracker unreachable** in \`$repo_slug\`. The repo's label set could not be read, so \`swarm-policy.sh\` was NOT validated; the policy is not implicated. Transient — the next tick retries. No worker was spawned."
+      SWARM_EXIT_REASON="policy-tracker-unreachable"
+    else
+      _preflight_notify ":no_entry: **Swarm aborted — invalid \`swarm-policy.sh\`** in \`$repo_slug\`. Fix the named policy key; no worker was spawned."
+      SWARM_EXIT_REASON="invalid-policy"
+    fi
     return 1
   fi
   if [ "${SWARM_POLICY_FILE_PRESENT:-false}" = true ]; then
@@ -94,6 +114,35 @@ preflight_model_gate() {
   SWARM_MODEL="$resolved"
   export SWARM_MODEL
   schedule_model_note "$ready" "$SWARM_MODEL"
+}
+
+# preflight_landing_gate <repo-slug> <ready-json> — resolve THIS run's landing
+# (idss ADR 0267) and mirror it to the sandbox. An unknown `landing-*` label on
+# ANY ready ticket fails LOUD now, before a single worker spawns — the
+# swarm_resolve_model discipline. The signal file is what list-ready-tasks.sh
+# reads inside every sandbox (/run/host-signals/run-landing, the drive-yield
+# channel). rc 1 on refusal.
+preflight_landing_gate() {
+  local repo_slug="$1" ready="$2" bad named
+  bad="$(schedule_bad_landing_labels "$ready")"
+  if [ -n "$bad" ]; then
+    verdict_stage "ticket landing resolution (fail-fast)"
+    named="$(printf '%s\n' "$bad" | awk '{printf "%s#%s `%s`", (NR>1 ? ", " : ""), $1, $2}')"
+    _preflight_notify ":no_entry: **Swarm aborted — unknown landing label** in \`$repo_slug\`: $named. The only allowed override is \`landing-pr\`. Fix the label; no worker was spawned."
+    SWARM_EXIT_REASON="unknown-landing"
+    return 1
+  fi
+  SWARM_RUN_LANDING="$(schedule_run_landing "$ready")"
+  export SWARM_RUN_LANDING
+  if [ -n "${SWARM_HOST_SIGNALS_DIR:-}" ]; then
+    if ! { mkdir -p "$SWARM_HOST_SIGNALS_DIR" && printf '%s\n' "$SWARM_RUN_LANDING" > "$SWARM_HOST_SIGNALS_DIR/run-landing"; } 2>/dev/null; then
+      verdict_stage "ticket landing resolution (fail-fast)"
+      _preflight_notify ":no_entry: **Swarm aborted — could not write the run-landing signal** to \`$SWARM_HOST_SIGNALS_DIR\` in \`$repo_slug\`. Without it a sandbox hides every PR-landing ticket; no worker was spawned."
+      SWARM_EXIT_REASON="landing-signal-unwritable"
+      return 1
+    fi
+  fi
+  echo "run-swarm: landing for this run: $SWARM_RUN_LANDING$([ "${SWARM_RUN_LANDING%% *}" = pr ] && printf ' (the head ticket carries landing-pr — it is worked alone)')"
 }
 
 fi

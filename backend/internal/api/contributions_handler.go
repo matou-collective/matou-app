@@ -151,6 +151,13 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "save-evidence-draft":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionSaveEvidenceDraft, h.HandleSaveEvidenceDraft)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			case "edit-evidence":
 				if r.Method == http.MethodPost {
 					h.withRBAC(contributions.ActionEditEvidence, h.HandleEditEvidence)(w, r)
@@ -196,6 +203,33 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 			case "unassign":
 				if r.Method == http.MethodPost {
 					h.withProjectRBAC(contributions.ActionUnassignContribution, id, h.HandleUnassign)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "reorder":
+				if r.Method == http.MethodPost {
+					h.withProjectRBAC(contributions.ActionReorderContribution, id, func(w http.ResponseWriter, r *http.Request) {
+						h.HandleReorder(w, r, id)
+					})(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "move":
+				if r.Method == http.MethodPost {
+					h.withProjectRBAC(contributions.ActionReorderContribution, id, func(w http.ResponseWriter, r *http.Request) {
+						h.HandleMove(w, r, id)
+					})(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "promote":
+				if r.Method == http.MethodPost {
+					h.withProjectRBAC(contributions.ActionPromoteSubContribution, id, func(w http.ResponseWriter, r *http.Request) {
+						h.HandlePromoteSub(w, r, id)
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -288,6 +322,7 @@ func (h *ContributionsHandler) HandleCreate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	log.Printf("[Contributions] contribution created: %s in project %s", contrib.ID, contrib.ProjectID)
+	h.service.StampReferences(r.Context(), spaceID, []*contributions.Contribution{contrib})
 	writeJSON(w, http.StatusCreated, contrib)
 }
 
@@ -300,6 +335,7 @@ func (h *ContributionsHandler) HandleList(w http.ResponseWriter, r *http.Request
 		return
 	}
 	contribs = h.visibleAmountsList(r, contribs)
+	h.service.StampReferences(r.Context(), spaceID, contribs)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"contributions": contribs, "total": len(contribs)})
 }
 
@@ -311,7 +347,9 @@ func (h *ContributionsHandler) HandleGet(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "contribution not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, h.visibleAmounts(r, contrib))
+	visible := h.visibleAmounts(r, contrib)
+	h.service.StampReferences(r.Context(), spaceID, []*contributions.Contribution{visible})
+	writeJSON(w, http.StatusOK, visible)
 }
 
 // HandleTransition handles POST /api/v1/contributions/{id}/transition
@@ -874,6 +912,40 @@ func (h *ContributionsHandler) HandleSubmitEvidence(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, contrib)
 }
 
+// HandleSaveEvidenceDraft handles POST /api/v1/contributions/{id}/save-evidence-draft
+// Body: SubmitEvidenceRequest (the complete draft; fields may be partial).
+// RBAC: ActionSaveEvidenceDraft, plus a service-side ownership check — only the
+// assigned contributor (X-User-AID) may save a draft. Saving a draft persists
+// the evidence on the contribution WITHOUT transitioning it to needs_review,
+// so the contribution stays owner-private and non-reviewable until the
+// contributor explicitly submits it for review (issue #722). No reviewer
+// notification is sent — a draft is not a submission.
+func (h *ContributionsHandler) HandleSaveEvidenceDraft(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/save-evidence-draft")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	var req contributions.SubmitEvidenceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.SaveEvidenceDraft(r.Context(), spaceID, id, GetUserAID(r), req)
+	if err != nil {
+		log.Printf("[Contributions] SaveEvidenceDraft failed for %s: %v", id, err)
+		status := http.StatusBadRequest
+		if errors.Is(err, contributions.ErrNotEvidenceOwner) {
+			status = http.StatusForbidden
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] evidence draft saved for %s", id)
+	writeJSON(w, http.StatusOK, contrib)
+}
+
 // HandleEditEvidence handles POST /api/v1/contributions/{id}/edit-evidence
 // Body: SubmitEvidenceRequest (the complete new submission).
 // RBAC: ActionEditEvidence, plus a service-side ownership check — only the
@@ -1161,6 +1233,107 @@ func (h *ContributionsHandler) HandleUnassign(w http.ResponseWriter, r *http.Req
 		})
 	}
 	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandlePromoteSub handles POST /api/v1/contributions/{id}/promote.
+// Promotes a sub-contribution to a top-level contribution in its parent chain's
+// milestone. RBAC: ActionPromoteSubContribution (lead/steward, project-scoped).
+func (h *ContributionsHandler) HandlePromoteSub(w http.ResponseWriter, r *http.Request, id string) {
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	actorID := GetUserAID(r)
+	if actorID == "" {
+		actorID = r.Header.Get("X-User-AID")
+	}
+	contrib, err := h.service.PromoteSubContribution(r.Context(), spaceID, id, actorID)
+	if err != nil {
+		log.Printf("[Contributions] promote failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] sub-contribution %s promoted to top-level", id)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:promoted",
+			Data: map[string]string{"contribution_id": id},
+		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleReorder handles POST /api/v1/contributions/{id}/reorder.
+// {id} is any contribution in the target sibling group; the request body
+// supplies the full new order of that group's non-archived contributions.
+// RBAC: ActionReorderContribution (lead/steward, project-scoped).
+func (h *ContributionsHandler) HandleReorder(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		OrderedIDs []string `json:"ordered_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	actorID := GetUserAID(r)
+	if actorID == "" {
+		actorID = r.Header.Get("X-User-AID")
+	}
+	reordered, err := h.service.ReorderContributions(r.Context(), spaceID, id, body.OrderedIDs, actorID)
+	if err != nil {
+		log.Printf("[Contributions] reorder failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] reordered %d siblings of %s", len(reordered), id)
+	h.service.StampReferences(r.Context(), spaceID, reordered)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:reordered",
+			Data: map[string]string{"contribution_id": id},
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"contributions": reordered, "total": len(reordered)})
+}
+
+// HandleMove handles POST /api/v1/contributions/{id}/move.
+// It relocates a top-level contribution to a different milestone within the
+// same implementation plan. The request body carries the target milestone id.
+// RBAC: ActionReorderContribution (lead/steward, project-scoped) — the same
+// scope as reorder, since a move is a structural plan edit.
+func (h *ContributionsHandler) HandleMove(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		MilestoneID string `json:"milestone_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if body.MilestoneID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "milestone_id is required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	actorID := GetUserAID(r)
+	if actorID == "" {
+		actorID = r.Header.Get("X-User-AID")
+	}
+	moved, err := h.service.MoveContributionToMilestone(r.Context(), spaceID, id, body.MilestoneID, actorID)
+	if err != nil {
+		log.Printf("[Contributions] move failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] moved %s to milestone %s", id, body.MilestoneID)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:moved",
+			Data: map[string]string{"contribution_id": id, "milestone_id": body.MilestoneID},
+		})
+	}
+	writeJSON(w, http.StatusOK, moved)
 }
 
 // transitionGuardAction returns the stricter Action required to move a

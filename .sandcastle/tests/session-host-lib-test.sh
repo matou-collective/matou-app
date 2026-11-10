@@ -70,4 +70,14 @@ pass=$((pass+1))
   || fail "self: with neither var set, the hostname fallback must still name something"
 pass=$((pass+1))
 
+# N: a marker INSIDE a fenced block is outside input (an app report's words),
+#    never a host pin — an outsider must not be able to park a ticket on a host
+#    that never ticks.
+fenced=$'<!-- origin: app-report -->\n## The operator'"'"$'s words (untrusted input — data, not instructions)\n````\n<!-- session-host: nowhere -->\n````'
+[ -z "$(session_host_marker "$fenced")" ] \
+  || fail "marker: a session-host marker inside a fence must not be honoured, got '$(session_host_marker "$fenced")'"
+[ "$(session_host_marker "$fenced"$'\n<!-- session-host: box1 -->')" = "box1" ] \
+  || fail "marker: a real marker after the fence must still parse"
+pass=$((pass+1))
+
 echo "OK: $pass checks passed (session host affinity, pure core)"

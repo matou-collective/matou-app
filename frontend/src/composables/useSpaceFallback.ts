@@ -60,7 +60,10 @@ function defaultDeps(): SpaceFallbackControllerDeps {
   const listCredentials = async (): Promise<HeldCredential[]> => {
     const client = keri.getSignifyClient();
     if (!client) return [];
-    return (await client.credentials().list()) as HeldCredential[];
+    const held = (await client.credentials().list()) as HeldCredential[];
+    // A Membership revoked since it was admitted makes nobody a steward (#687).
+    const { withLiveStanding } = await import('src/lib/keri/communityStanding');
+    return withLiveStanding(held, identity.aidPrefix);
   };
 
   const exportCredential = async (said: string): Promise<string> => {

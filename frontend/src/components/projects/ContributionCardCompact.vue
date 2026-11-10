@@ -8,7 +8,10 @@
     <!-- Top row: title (+ inline meta) left, status + assignment right -->
     <div class="compact-header">
       <div class="compact-title-wrap">
-        <div class="compact-title">{{ contribution.title }}</div>
+        <div class="compact-title-row">
+          <span v-if="contribution.reference" class="contribution-ref">{{ contribution.reference }}</span>
+          <div class="compact-title">{{ contribution.title }}</div>
+        </div>
         <div
           v-if="contribution.estimated_duration || (contribution.budget && canSeeBudgetForThis) || contribution.deadline"
           class="compact-title-meta"
@@ -124,6 +127,7 @@
 import { computed, ref } from 'vue';
 import { ChevronDown } from 'lucide-vue-next';
 import type { Contribution, ProjectRole } from 'src/types/projects';
+import { sortSiblings } from 'src/lib/contributions/ordering';
 import ContributionStatusBadge from 'src/components/contributions/ContributionStatusBadge.vue';
 import ContributionOverdueTag from 'src/components/contributions/ContributionOverdueTag.vue';
 import ContributionTypeBadge from './ContributionTypeBadge.vue';
@@ -215,7 +219,13 @@ const canAssign = computed(() =>
 const childContributions = computed(() => {
   const childIds = props.contribution.child_contributions ?? [];
   if (!childIds.length || !props.allContributions?.length) return [];
-  return props.allContributions.filter(c => childIds.includes(c.id) && c.status !== 'archived');
+  const byId = new Map<string, Contribution>(props.allContributions.map(c => [c.id, c] as const));
+  const children = childIds
+    .map(id => byId.get(id))
+    .filter((c): c is Contribution => !!c && c.status !== 'archived');
+  // Display in canonical sibling order (sort_order, else natural title),
+  // consistent with the milestone list and the detail view.
+  return sortSiblings(children);
 });
 
 const isSubExpanded = ref(false);
@@ -229,6 +239,7 @@ function formatDeadline(iso: string): string {
 
 <style scoped lang="scss">
 @import 'src/css/contribution-status.scss';
+@include contribution-reference;
 
 .contribution-compact {
   position: relative;
@@ -306,6 +317,14 @@ function formatDeadline(iso: string): string {
     align-items: stretch;
     gap: 4px;
   }
+}
+
+.compact-title-row {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .compact-title {

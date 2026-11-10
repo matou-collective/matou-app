@@ -34,6 +34,19 @@ export interface PresentBody {
   response: string;
   /** The exported CESR presentation (ACDC + iss). */
   presentation: string;
+  /**
+   * The armed signal (app-door-golden `panel.present.request.armed`, idss #1967,
+   * matou-app #674): a steward approved a control-panel sign-in with the unlock
+   * line ON (PU-A2u), or pressed Unlock on an unlock (PU-A4, #688), so the
+   * wallet ARMS — it keeps the passcode ready to seal for this one challenge
+   * and sends NO box on present. On completing an armed control-panel sign-in
+   * the door mints a single-use handover capability (delivered to the panel over
+   * the OIDC channel), and the wallet seals to the verkey the panel binds on the
+   * `sign_in_armed_handover` routes. Present (`true`) ONLY then; omitted on
+   * every other sign-in. No passcode, sealed or otherwise, rides any present
+   * (golden `panel.present.no_sealed_passcode`).
+   */
+  armed?: boolean;
 }
 
 /** The outcome the card acts on. */

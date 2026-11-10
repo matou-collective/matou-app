@@ -22,9 +22,22 @@ import { useOnboardingStore } from 'src/stores/onboarding';
 
 const SIGNIN =
   'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_3f9&s=EMe&name=Home&service=Files';
+// The retired panel unlock code (#664). A locked panel unlocks through the
+// sign-in door now (#688), so nothing handles this scheme.
+const OLD_UNLOCK =
+  'matou://unlock?panel=https://admin.example.nz&present=https://id.example.nz/login/app/unlock&u=u_2d7&ek=DFRESHKEY&name=Home&t=14:06';
+// What a locked panel's unlock IS now: a sign-in code that says it is an unlock.
+const UNLOCK_HOP =
+  'matou://signin?c=nonce-UNLOCK&cred=administrator&door=https://id.example.nz/login&name=Home&offer=unlock&present=https://id.example.nz/login/app/present&s=ECo,EMe&svc=the%20control%20panel';
 const PAIR = 'matou://pair?id=s1&pk=EPubKey&s=0ABsig';
 const INBOX = 'matou://inbox';
 const INBOX_TARGET = { name: 'dashboard', query: { focus: 'pending' } };
+// What Windows actually hands the app for a page's `matou://signin?…` link: the
+// shell inserts a `/` after the host (recorded on a Windows 11 install of the
+// WHAKATOHEA DEMO kit, 2026-09-30). The link must still open the approve card.
+const WINDOWS_SIGNIN =
+  'matou://signin/?c=-MOWoIcLtLQok0WU56XhVRYGqmPWLvsyXkNAIBJ-Uvo&door=https%3A%2F%2Fid.whakatohea-demo.idss.nz%2Flogin&name=WHAKATOHEA+DEMO&present=https%3A%2F%2Fid.whakatohea-demo.idss.nz%2Flogin%2Fapp%2Fpresent&s=IBpju1vRXOpF3gG-PXOdkeseqsqr0uD1ut7YN5538x9t%2CICyWw9WrDmRwNEPRIp032_3IrGiY9O1suzD2TGN8Mexx&svc=the+community+portal';
+const WINDOWS_PAIR = 'matou://pair/?id=s1&pk=EPubKey&s=0ABsig';
 
 describe('classifyDeepLink', () => {
   it('recognises a sign-in link', () => {
@@ -32,8 +45,22 @@ describe('classifyDeepLink', () => {
     expect(classifyDeepLink(`  ${SIGNIN}  `)).toBe('signin');
   });
 
+  it('an unlock is a sign-in link that says it is an unlock (#688)', () => {
+    expect(classifyDeepLink(UNLOCK_HOP)).toBe('signin');
+  });
+
+  it('does not recognise the retired matou://unlock code (#688)', () => {
+    expect(classifyDeepLink(OLD_UNLOCK)).toBe('unknown');
+    expect(classifyDeepLink(`  ${OLD_UNLOCK}  `)).toBe('unknown');
+  });
+
   it('recognises a pairing link', () => {
     expect(classifyDeepLink(PAIR)).toBe('pair');
+  });
+
+  it('tolerates the slash Windows inserts after the host (signin, pair)', () => {
+    expect(classifyDeepLink(WINDOWS_SIGNIN)).toBe('signin');
+    expect(classifyDeepLink(WINDOWS_PAIR)).toBe('pair');
   });
 
   it('recognises an inbox link, tolerating a trailing slash and a query', () => {
@@ -89,6 +116,48 @@ describe('handleDeepLink', () => {
       },
     });
     expect(consumePendingPairLink()).toBeNull();
+  });
+
+  it('pushes the approve card for the link as Windows delivers it (slash after the host)', async () => {
+    await handleDeepLink(WINDOWS_SIGNIN);
+    expect(push).toHaveBeenCalledWith({
+      name: 'signin-approve',
+      query: {
+        door: 'https://id.whakatohea-demo.idss.nz/login',
+        present: 'https://id.whakatohea-demo.idss.nz/login/app/present',
+        c: '-MOWoIcLtLQok0WU56XhVRYGqmPWLvsyXkNAIBJ-Uvo',
+        s: 'IBpju1vRXOpF3gG-PXOdkeseqsqr0uD1ut7YN5538x9t,ICyWw9WrDmRwNEPRIp032_3IrGiY9O1suzD2TGN8Mexx',
+        name: 'WHAKATOHEA DEMO',
+        service: 'the community portal',
+      },
+    });
+  });
+
+  it('stashes a pairing link as Windows delivers it in its canonical form', async () => {
+    await handleDeepLink(WINDOWS_PAIR);
+    expect(consumePendingPairLink()).toBe(PAIR);
+  });
+
+  it('pushes the approve card for an unlock code, carrying what it offers (#688)', async () => {
+    await handleDeepLink(UNLOCK_HOP);
+    expect(push).toHaveBeenCalledWith({
+      name: 'signin-approve',
+      query: {
+        door: 'https://id.example.nz/login',
+        present: 'https://id.example.nz/login/app/present',
+        c: 'nonce-UNLOCK',
+        s: 'ECo,EMe',
+        name: 'Home',
+        service: 'the control panel',
+        cred: 'administrator',
+        offer: 'unlock',
+      },
+    });
+  });
+
+  it('ignores the retired matou://unlock code — no navigation (#688)', async () => {
+    await handleDeepLink(OLD_UNLOCK);
+    expect(push).not.toHaveBeenCalled();
   });
 
   it('steers onboarding to the link-device screen and stashes a pairing link', async () => {

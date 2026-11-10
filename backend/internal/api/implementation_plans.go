@@ -108,6 +108,18 @@ func (h *ImplementationPlansHandler) HandleList(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	// Optional server-side filter: when ?project_id=<id> is supplied, return
+	// only the plans for that project. Absent → all community plans (frontend
+	// listImplementationPlans() relies on the unfiltered behavior). See #735.
+	if projectID := r.URL.Query().Get("project_id"); projectID != "" {
+		filtered := make([]*contributions.ImplementationPlan, 0, len(plans))
+		for _, plan := range plans {
+			if plan != nil && plan.ProjectID == projectID {
+				filtered = append(filtered, plan)
+			}
+		}
+		plans = filtered
+	}
 	// Skip hydration on list — only hydrate on detail view
 	writeJSON(w, http.StatusOK, map[string]interface{}{"implementation_plans": plans, "total": len(plans)})
 }

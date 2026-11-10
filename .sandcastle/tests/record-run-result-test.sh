@@ -304,6 +304,38 @@ db run-end --run RUN95B --verdict ok --source test --exit 0 --ended 1790000000
   || fail "the run-end mass finaliser must close the open attempt (invariant 2 intact)"
 pass=$((pass+1))
 
+# --- #200: a mid-run failover attributes iterations to two different fingerprints
+#     The claude-fence shim prints one `claude-account-fp=<fp>` protocol line per
+#     iteration into the combined worker output; the recorder zips them
+#     positionally against iterations[] IN ORDER, exactly like SANDCASTLE_ATTEMPT.
+#     So iteration 1 (ran on account A's token) and iteration 2 (failed over to
+#     B's token mid-run) stamp DIFFERENT account_fp on their spend rows — the
+#     attribution no longer races a single post-run marker read. A third
+#     iteration with NO fp line leaves account_fp NULL (the flag is omitted).
+fpA=aaaaaaaaaaaa; fpB=bbbbbbbbbbbb
+payloadfp="{
+  \"stdout\": \"claude-account-fp=$fpA\\nSANDCASTLE_ATTEMPT issue=301 outcome=success commits=c1\\nclaude-account-fp=$fpB\\nSANDCASTLE_ATTEMPT issue=302 outcome=success commits=c2\\nSANDCASTLE_ATTEMPT issue=303 outcome=success commits=c3\",
+  \"iterations\": [
+    {\"sessionId\": \"fp-1\", \"sessionFilePath\": \"/logs/nofp1.jsonl\",
+     \"usage\": {\"inputTokens\": 1, \"cacheCreationInputTokens\": 0, \"cacheReadInputTokens\": 0, \"outputTokens\": 1}},
+    {\"sessionId\": \"fp-2\", \"sessionFilePath\": \"/logs/nofp2.jsonl\",
+     \"usage\": {\"inputTokens\": 1, \"cacheCreationInputTokens\": 0, \"cacheReadInputTokens\": 0, \"outputTokens\": 1}},
+    {\"sessionId\": \"fp-3\", \"sessionFilePath\": \"/logs/nofp3.jsonl\",
+     \"usage\": {\"inputTokens\": 1, \"cacheCreationInputTokens\": 0, \"cacheReadInputTokens\": 0, \"outputTokens\": 1}}
+  ]
+}"
+printf '%s' "$payloadfp" | bash "$script" RUNFP
+[ "$(val "SELECT account_fp FROM spend WHERE run_id='RUNFP' AND issue=301")" = "$fpA" ] \
+  || fail "iteration 1's spend must carry account A's fingerprint"
+[ "$(val "SELECT account_fp FROM spend WHERE run_id='RUNFP' AND issue=302")" = "$fpB" ] \
+  || fail "a mid-run failover must stamp iteration 2's spend with the OTHER account's fingerprint"
+[ "$(val "SELECT account_fp FROM spend WHERE run_id='RUNFP' AND issue=301")" \
+  != "$(val "SELECT account_fp FROM spend WHERE run_id='RUNFP' AND issue=302")" ] \
+  || fail "the two iterations must attribute to two DIFFERENT fingerprints"
+[ -z "$(val "SELECT account_fp FROM spend WHERE run_id='RUNFP' AND issue=303")" ] \
+  || fail "an iteration with no fp protocol line must leave account_fp NULL"
+pass=$((pass+1))
+
 # --- malformed stdin: never crashes, records nothing, exits 0 ----------------
 printf 'not json {' | bash "$script" RUN4 || fail "malformed stdin must still exit 0"
 [ "$(count "attempts WHERE run_id='RUN4'")" = 0 ] || fail "malformed stdin must record nothing"

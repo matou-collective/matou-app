@@ -78,6 +78,25 @@ run
 [ -z "$EXECUTE_YIELDED_TO_DRIVE" ] || fail "a plain success must not read as a drive yield"
 pass=$((pass+1))
 
+# ── 1c. the SANDCASTLE_ATTEMPT capture for the false-green reconcile (#283) ──
+# On success the log is cleaned, but the host's land-rollback reconcile needs the
+# run's close-report attempt lines AFTER this returns. When EXECUTE_ATTEMPTS_FILE
+# is wired, the attempt protocol lines are preserved into it — and ONLY those, not
+# the worker's ordinary stdout.
+reset; fixture default '0
+iteration 1 done
+SANDCASTLE_ATTEMPT issue=444 outcome=success commits=deadbee
+some other chatter'
+EXECUTE_ATTEMPTS_FILE="$tmp/attempts-capture.log" run
+[ "$RC" = 0 ] || fail "the capture case is still a success, got $RC"
+[ ! -f "$tmp/sandcastle.log" ] || fail "the log is still cleaned when attempts are captured"
+grep -qxE 'SANDCASTLE_ATTEMPT issue=444 outcome=success commits=deadbee' "$tmp/attempts-capture.log" \
+  || fail "#283: the SANDCASTLE_ATTEMPT line must be preserved for the reconcile: $(cat "$tmp/attempts-capture.log" 2>/dev/null)"
+! grep -q 'other chatter' "$tmp/attempts-capture.log" \
+  || fail "#283: only the attempt protocol lines are preserved, not ordinary stdout"
+EXECUTE_ATTEMPTS_FILE=""
+pass=$((pass+1))
+
 # ── 1b. success that stood down for a drive mid-run (#111) ────────────────
 # main.mts's marker line on an otherwise successful run: still rc 0 (the work
 # lands as usual), log cleaned, but the flag run-swarm turns into
@@ -128,6 +147,30 @@ CLAUDE_CODE_OAUTH_TOKEN_B=standby-token run
 [ "$(cat "$tmp/attempts")" = 2 ] || fail "auth-dead must retry exactly ONCE on the standby"
 grep -q 'Swarm failover' "$NOTIFY_LOG" || fail "the failover must be announced: $(cat "$NOTIFY_LOG")"
 grep -q 'auth-failover' "$tmp/db.log" || fail "the failover must be traced in swarm.db"
+pass=$((pass+1))
+
+# ── 3c. the #198 Claude-secret rewrite on failover ────────────────────────
+# A worker reads its token through the mounted file its claude-fence shim reads,
+# not the host env. So a failover must REWRITE that file to the account it just
+# flipped to, before the retry — otherwise the retry's worker runs on the same
+# dead/limited token. _execute_failover delegates the 0600 write to provision-
+# lib (wired in via EXECUTE_SECRETS_DIR); here a recording stub proves the call
+# ran with the flipped-to token. The write is OPTIONAL — a bare run with no
+# secrets dir (the cases above) must not require it.
+reset
+mkdir -p "$tmp/sc/secrets"
+EXECUTE_SECRETS_DIR="$tmp/sc"
+provision_write_claude_secret() { printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN:-}" > "$1/secrets/claude_oauth_token"; }
+fixture 1 '1
+Failed to authenticate: OAuth session expired'
+fixture 2 '0
+iteration 1 done'
+CLAUDE_CODE_OAUTH_TOKEN=tok-A CLAUDE_CODE_OAUTH_TOKEN_B=tok-B run
+[ "$RC" = 0 ] || fail "the auth failover must retry on the standby and succeed, got $RC"
+[ "$(cat "$tmp/sc/secrets/claude_oauth_token")" = tok-B ] \
+  || fail "#198: the failover must rewrite the mounted secret to the standby token, got '$(cat "$tmp/sc/secrets/claude_oauth_token" 2>/dev/null)'"
+unset -f provision_write_claude_secret
+EXECUTE_SECRETS_DIR=""
 pass=$((pass+1))
 
 # both accounts dead: a named halt at exit 0 — never the generic red, which
@@ -193,18 +236,25 @@ CLAUDE_CODE_OAUTH_TOKEN_B=standby-token run
 [ "$SWARM_EXIT_REASON" = "claude-limit-parked" ] || fail "reason should be claude-limit-parked, got '$SWARM_EXIT_REASON'"
 grep -q 'BOTH Claude accounts limited' "$NOTIFY_LOG" || fail "the park must name both accounts: $(cat "$NOTIFY_LOG")"
 grep -qi 'hourglass' "$NOTIFY_LOG" || fail "a limit park is a quiet notice, not an alarm"
-[ -f "$CLAUDE_LIMIT_MARKER" ] || fail "the park must stamp the host-global limit marker"
+# #200: the limit marker is keyed by the exhausted account's token fingerprint
+# (B, after the failover), not a single host-global path.
+fpB="$(printf '%s' standby-token | sha256sum | cut -c1-12)"
+[ -f "${CLAUDE_LIMIT_MARKER}-${fpB}" ] || fail "the park must stamp the fingerprinted limit marker"
 # #100: the park edge is recorded per account — the marker names the exhausted
 # account (B, after the failover) and swarm.db carries the paired park event.
-[ "$(cat "$CLAUDE_LIMIT_MARKER")" = B ] || fail "the marker must carry the exhausted account letter"
-grep -q 'limit-pause|park account=B' "$tmp/db.log" || fail "the park entry must record a per-account limit-pause event: $(cat "$tmp/db.log")"
-# and the dedupe holds — one repo hitting the limit suppresses the other's
-# redundant first notice for the SAME outage (#238: the marker is repo-agnostic)
+[ "$(cat "${CLAUDE_LIMIT_MARKER}-${fpB}")" = B ] || fail "the marker must carry the exhausted account letter"
+grep -q "limit-pause|park account=B fp=${fpB}" "$tmp/db.log" || fail "the park entry must record a per-account, fingerprinted limit-pause event: $(cat "$tmp/db.log")"
+# and the dedupe holds — a re-hit of an ALREADY-parked account inside the hour
+# posts no redundant notice (#238 dedupe, now keyed per account/fingerprint
+# #200). Force the active account back to A so this run flips A→B and lands on
+# B's still-fresh marker (in production the run-swarm limit gate stops the
+# re-entry before execute-lib even runs; here we drive the path directly).
 before="$(grep -c hourglass "$NOTIFY_LOG" || true)"
+printf 'A' > "$CLAUDE_ACTIVE_MARKER"
 rm -f "$tmp/attempts"; SWARM_EXIT_REASON=""
 CLAUDE_CODE_OAUTH_TOKEN_B=standby-token run
 [ "$(grep -c hourglass "$NOTIFY_LOG" || true)" = "$before" ] \
-  || fail "a second park inside the hour must not re-post"
+  || fail "a second park of the same (already-parked) account inside the hour must not re-post"
 pass=$((pass+1))
 
 # auth is checked BEFORE limit: a log carrying both shapes is an auth death, so

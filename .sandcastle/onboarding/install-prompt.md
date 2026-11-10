@@ -159,7 +159,11 @@ the interview: they are the answers you do NOT need to ask a human for.
 `onboard-host preflight` names everything wrong with that machine in one
 pass — docker mode, the toolchain, disk headroom, the uid alignment every
 image build there must use, a checkout and a warm package store per served
-repo, and log egress.
+repo, and log egress. **Linux hosts only (GNU coreutils, bash ≥ 4.3); macOS
+untested** — preflight EXECUTES the GNU behaviours the harness assumes
+(`stat -c %Y`, `date -d`, `flock`, `timeout`, `declare -A`, `sha256sum`,
+python3's `sqlite3`), so a host that merely carries the binary under the same
+name but a divergent behaviour fails here, not later as a crashed worker.
 
 **Stop and ask if:**
 
@@ -236,7 +240,8 @@ set; ask them in this order, and record the answer AND the reason.
 bash onboarding/onboard.sh policy \
      <local-checkout>/.sandcastle/swarm-policy.sh --interactive \
      LANDING=<push|pr> MERGE_AUTHORITY=<human|agent-after-green> \
-     SESSION_RUNNER=<on|off> TWO_WAY_DOOR_DOC=<path>
+     SESSION_RUNNER=<on|off> PROTECTED_PATH_ENFORCE=<on|off> \
+     TWO_WAY_DOOR_DOC=<path>
 ```
 
 `--interactive` asks the hand-off label set and mints anything the tracker
@@ -291,12 +296,27 @@ unless the repo has a second directory with the same "vendored, do not touch
 by hand" property as the harness itself; the default already covers the
 harness and the workflows.
 
+**PROTECTED_PATH_ENFORCE** — `on` by default: a worker that edits a protected
+path is rolled back and the run reds BEFORE anything lands. Take an opt-out
+(`off`) only for a repo that still carries tickets landing changes directly on
+those paths, and only with a DATED reason written beside the key — it is the
+boundary that keeps a worker from editing the machinery that judges it. Retire
+the opt-out once those tickets stop landing directly.
+
 **TWO_WAY_DOOR_DOC** — this repo's OWN decision record stating its
 two-way-door doctrine, as a path relative to its checkout root. A harness
 prompt STRING hands this pointer to an agent, so a wrong path is a 404 in
 every future triage. If the repo keeps no such record, leave it unset: the
 prompt then says so in words, which is honest. If the human wants one, write
 it in this session — it is a page, and it is what every later ruling cites.
+
+**TEST_CMD** — the repo's pinned OFFLINE test command (its CLAUDE.md loop)
+that close-report RE-RUNS host-side to refute a false green (gate 4b): a
+claimed-green close the host cannot reproduce is refused. Leave it unset
+unless the repo has a fast, hermetic loop with a MEANINGFUL exit code (0 =
+all passed, non-zero = a failure) — a loop that always exits 0, or one that
+needs the network or docker, must not go here. There is no cross-repo
+default, so an unset value simply leaves gate 4b inert.
 
 **The e2e tier — mandatory, asked here, written now:**
 
@@ -327,7 +347,7 @@ Run them in any order.
 ```sh
 bash onboarding/onboard.sh labels     <owner/repo> <core|core+design>
 bash onboarding/onboard.sh workflows  <local-checkout>/.forgejo/workflows \
-                                      <pool-label> <e2e-host-label>
+                                      <pool-label> <e2e-host-label> <pool-host-label>...
 bash onboarding/onboard.sh dockerfile <local-checkout>/.sandcastle/Dockerfile \
                                       <stack>
 bash onboarding/onboard.sh secrets    <owner/repo> \
@@ -338,13 +358,17 @@ bash onboarding/onboard.sh secrets    <owner/repo> \
   `core+design` only if this repo is adopting the design-to-agent pipeline;
   otherwise `core`. Note that step 4's interview has already minted any
   hand-off label the tracker lacked.
-- **workflows** — the two arguments are **runner labels**, and they come
+- **workflows** — the arguments are **runner labels**, and they come
   from the host registry, not from a guess: the first is the pool label the
-  swarm's jobs schedule onto, the second is the pinned host label the e2e
-  smoke job needs. Read them out of each chosen machine's registry over its
-  door (`ssh <door> "cat <registry>"`) and repeat them back. With more than
-  one machine, the pool label is the one the machines share, and the pinned
-  label names the ONE machine that carries the repo's product stack. On a
+  harness-only jobs (triage, healer, ci) schedule onto, the second is the
+  pinned host label the e2e smoke job needs, and the rest are the registry
+  `name` of EVERY enrolled pool host — `swarm.yml` renders one matrix leg
+  per host, pinned to that host, so a busy host can never take an idle
+  host's leg (GOTCHAS 62). Read them out of each chosen machine's registry
+  over its door (`ssh <door> "cat <registry>"`) and repeat them back. With
+  more than one machine, the pool label is the one the machines share, the
+  pinned label names the ONE machine that carries the repo's product stack,
+  and the host list names them all (re-render when the pool changes). On a
   machine that has never been enrolled there is no registry to read yet:
   decide the labels with the human NOW, matching the declaration step 8
   will write — the schema in
@@ -355,9 +379,12 @@ bash onboarding/onboard.sh secrets    <owner/repo> \
   placeholder only the human can fill.
 - **dockerfile** — the stack comes from `detect`'s `DETECT_STACKS` (it is
   emitted in exactly the joinable form this subcommand accepts) and the
-  package-manager pin from `DETECT_PKG_MANAGER`. If detect said the stack is
-  none, the generated file still carries the harness layer, which is
-  correct: the stack layer is marked and the human fills it.
+  package-manager pin from `DETECT_PKG_MANAGER`. The harness layer ships a
+  pinned pnpm (main.mts's `onSandboxReady` runs `pnpm install` in every
+  worker, stack or no stack), so a rendered image boots `pnpm install`-ready
+  out of the box. If detect said the stack is none, the generated file still
+  carries that harness layer; only the stack layer is left marked for the
+  human to fill (or delete).
 - **secrets** — writes the checklist the human works from in step 7.
   Nothing here reads or writes a credential.
 
@@ -719,6 +746,7 @@ machines         <door> — registry <registry>; enrol + verify green;
                  (one such line per chosen machine)
 identity         REPO_SLUG / HEAL_WORKDIR / RUNNER_HOST as committed
 policy           LANDING=<> MERGE_AUTHORITY=<> SESSION_RUNNER=<>
+                 PROTECTED_PATH_ENFORCE=<on|off, dated reason if off>
                  hand-off labels: <label>:<trigger> ...
                  TWO_WAY_DOOR_DOC=<path or "unset, stated in words">
 e2e              tier <> (<reason, if opt-out>)

@@ -8,10 +8,13 @@ $primary: $kit-primary;
 $secondary: $kit-secondary;
 $accent: $kit-accent;
 
-$dark: #1a2b3a;
-$dark-page: #0f1a23;
+// Dark-mode framework surfaces are kit-tinted (kit primary mixed into black) so
+// Quasar's own dark components match the app's kit-driven dark palette instead of
+// falling back to Mātou navy. See #642.
+$dark: mix($kit-primary, #000000, 35%);
+$dark-page: mix($kit-primary, #000000, 25%);
 
-$positive: #4a9d9c;
+$positive: #2f9e8a;
 $negative: #c8463a;
 $info: #3d8a99;
 $warning: #e8a43a;

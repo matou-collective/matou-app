@@ -57,7 +57,7 @@ claude_transient_hit() { local f; for f in "$@"; do [ -s "$f" ] && grep -qiE "$C
 claude_limit_reset_hint() {
   local hint
   hint="$(grep -oiE "resets[^\"]*" "$1" | head -1)"
-  [ -n "$hint" ] || hint="$(grep -oiE "[^\"]*$CLAUDE_LIMIT_RE[^\"]*" "$1" | head -1 | sed 's/^ *//')"
+  [ -n "$hint" ] || hint="$(grep -oiE "[^\"]*${CLAUDE_LIMIT_RE}[^\"]*" "$1" | head -1 | sed 's/^ *//')"
   printf '%s' "$hint"
 }
 
@@ -70,12 +70,62 @@ claude_limit_reset_hint() {
 # the whole host instead of each caller reddening or going blind on its own
 # refusal. Marker path is repo-agnostic on purpose (this lib is byte-identical
 # across repos): a limit in one repo parks the other's callers too.
-CLAUDE_LIMIT_MARKER="${CLAUDE_LIMIT_MARKER:-/tmp/matou-swarm-claude-limit}"
+# Lives under the host-global state dir (#205), not /tmp: a reboot wiping /tmp
+# lost the park edge (limit-lost under-reported) and dropped the host back to the
+# possibly-exhausted account. Derives from HOST_CAPACITY_STATE_DIR so a test that
+# redirects the state root isolates this marker too; an enrolled host's env may
+# still override the literal.
+CLAUDE_LIMIT_MARKER="${CLAUDE_LIMIT_MARKER:-${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}/matou-swarm-claude-limit}"
 # How long a marker is trusted as "still parked". Matches run-swarm.sh's
 # hourly notice-dedupe window: during an ongoing outage each limit hit re-touches
 # the marker (posting the hourly notice), so it stays fresh; once claude stops
 # refusing nothing re-touches it and it goes stale, and the next caller retries.
 CLAUDE_LIMIT_TTL="${CLAUDE_LIMIT_TTL:-3600}"
+
+# ── Account FINGERPRINT (#200) ────────────────────────────────────────────────
+#
+# The limit/active markers used to store the host letter A or B, which is
+# repo-agnostic by construction: repo X exhausting ITS account parked every repo
+# and X's failover flipped Y's letter. The attribution key is now the TOKEN
+# itself, reduced to a fingerprint — enough to tell two accounts apart on a host
+# and to survive into a spend row / commit trailer, WITHOUT ever storing the
+# credential. An empty token (a single-account host, or limit-lib sourced before
+# a token is in env) fingerprints to the empty string, and every keyed name below
+# then falls back to the bare, pre-#200 host-global path — so a host that never
+# fingerprints is byte-identical to the old behaviour.
+
+# claude_fingerprint <token> — sha256(token)[:12], NEVER the token. Empty for an
+# empty token or a host with no sha256sum (callers fall back to the bare marker).
+claude_fingerprint() {
+  [ -n "${1:-}" ] || return 0
+  command -v sha256sum >/dev/null 2>&1 || return 0
+  printf '%s' "$1" | sha256sum | cut -c1-12
+}
+
+# claude_active_fp — fingerprint of the token THIS caller would use right now
+# (the active account's), mirroring claude_select_token's own choice so the
+# limit marker and spend attribution key by the credential actually in play.
+# Empty when no token is configured.
+claude_active_fp() {
+  local tok
+  if [ "$(claude_active_account)" = "B" ]; then
+    tok="${CLAUDE_CODE_OAUTH_TOKEN_B:-}"
+  else
+    tok="${CLAUDE_TOKEN_PRIMARY:-${CLAUDE_CODE_OAUTH_TOKEN:-}}"
+  fi
+  claude_fingerprint "$tok"
+}
+
+# claude_limit_marker_path [fp] — the limit marker for a token fingerprint
+# (default: the active token's). Keyed by fp (#200) so one account exhausting its
+# window parks only ITS callers — never the other account, never another repo's
+# token on the same host. An empty fp falls back to the bare base marker, the
+# byte-identical pre-#200 host-global path.
+claude_limit_marker_path() {
+  local fp="${1-$(claude_active_fp)}"
+  if [ -n "$fp" ]; then printf '%s-%s' "$CLAUDE_LIMIT_MARKER" "$fp"
+  else printf '%s' "$CLAUDE_LIMIT_MARKER"; fi
+}
 
 # claude_limit_parked — 0 iff the host is known-parked: the global marker exists,
 # is fresher than the TTL, AND carries the exhausted account letter. A stale
@@ -89,12 +139,13 @@ CLAUDE_LIMIT_TTL="${CLAUDE_LIMIT_TTL:-3600}"
 # file with the letter (claude_limit_park's parked() gate reads false for it)
 # and parks exactly as before.
 claude_limit_parked() {
-  [ -f "$CLAUDE_LIMIT_MARKER" ] || return 1
-  if [ ! -s "$CLAUDE_LIMIT_MARKER" ]; then
-    echo "limit-lib: WARN letter-less limit marker at $CLAUDE_LIMIT_MARKER — no current park path writes one (a stale pin? a stray touch?); distrusting it, NOT parking" >&2
+  local marker; marker="$(claude_limit_marker_path)"
+  [ -f "$marker" ] || return 1
+  if [ ! -s "$marker" ]; then
+    echo "limit-lib: WARN letter-less limit marker at $marker — no current park path writes one (a stale pin? a stray touch?); distrusting it, NOT parking" >&2
     return 1
   fi
-  [ $(( $(date +%s) - $(stat -c %Y "$CLAUDE_LIMIT_MARKER") )) -le "$CLAUDE_LIMIT_TTL" ]
+  [ $(( $(date +%s) - $(stat -c %Y "$marker") )) -le "$CLAUDE_LIMIT_TTL" ]
 }
 
 # ── Limit-park HISTORY (#100) ─────────────────────────────────────────────────
@@ -114,12 +165,17 @@ claude_limit_parked() {
 # so the exit observer can attribute the window it closes; freshness is still by
 # mtime, so no reader that only stats the marker changes.
 
-# _claude_limit_event <park|unpark> <account> <run_id> <evidence> — append a
+# _claude_limit_event <park|unpark> <account> <run_id> <evidence> [fp] — append a
 # `limit-pause` edge to the swarm.db mirror. A no-op where swarm-db-lib.sh was
 # not sourced (swarmdb_event undefined), so limit-lib carries no hard dependency.
+# The account fingerprint (#200) rides the detail as ` fp=<fp>` ONLY when present,
+# so a fingerprint-less host writes exactly the pre-#200 `park account=A` detail
+# and q_limit_lost's account fallback still buckets it.
 _claude_limit_event() {
   declare -F swarmdb_event >/dev/null 2>&1 || return 0
-  swarmdb_event "$3" "" limit-pause "$1 account=$2" "$4"
+  local detail="$1 account=$2"
+  [ -n "${5:-}" ] && detail="$detail fp=$5"
+  swarmdb_event "$3" "" limit-pause "$detail" "$4"
 }
 
 # claude_limit_park [run_id] [evidence] — mark the host parked (write the active
@@ -130,15 +186,23 @@ _claude_limit_event() {
 # already parked it only re-touches the marker (keeping the live window fresh and
 # preserving the original entry account), so re-hits during one outage add no
 # duplicate edge.
+# _claude_marker_dir <path> — best-effort create the parent dir of a host-global
+# marker. Needed since the markers moved off /tmp (#205): the state dir may not
+# exist yet, and a bare `> "$marker"` under set -e would red the whole caller.
+_claude_marker_dir() { mkdir -p "$(dirname "$1")" 2>/dev/null || true; }
+
 claude_limit_park() {
-  local run="${1:-${SWARM_RUN_ID:-limit-park}}" evidence="${2:-$CLAUDE_LIMIT_MARKER}" acct
+  local run="${1:-${SWARM_RUN_ID:-limit-park}}" evidence="${2:-$CLAUDE_LIMIT_MARKER}" acct fp marker
+  marker="$(claude_limit_marker_path)"
+  _claude_marker_dir "$marker"
   if claude_limit_parked; then
-    touch "$CLAUDE_LIMIT_MARKER"
+    touch "$marker"
     return 0
   fi
   acct="$(claude_active_account)"
-  printf '%s' "$acct" > "$CLAUDE_LIMIT_MARKER"
-  _claude_limit_event park "$acct" "$run" "$evidence"
+  fp="$(claude_active_fp)"
+  printf '%s' "$acct" > "$marker"
+  _claude_limit_event park "$acct" "$run" "$evidence" "$fp"
 }
 
 # claude_limit_sweep [run_id] — the EXIT observer: whichever swarm-db-capable
@@ -147,13 +211,19 @@ claude_limit_park() {
 # the exit is stamped exactly once and a later hit re-parks cleanly. A no-op when
 # nothing is parked or the window is still fresh; safe to call every tick.
 claude_limit_sweep() {
-  local run="${1:-${SWARM_RUN_ID:-limit-park}}" acct
-  [ -f "$CLAUDE_LIMIT_MARKER" ] || return 0
-  claude_limit_parked && return 0
-  acct="$(cat "$CLAUDE_LIMIT_MARKER" 2>/dev/null)"
-  [ -n "$acct" ] || acct="?"
-  _claude_limit_event unpark "$acct" "$run" "window reset"
-  rm -f "$CLAUDE_LIMIT_MARKER"
+  local run="${1:-${SWARM_RUN_ID:-limit-park}}" acct fp m
+  # Scan the bare base marker AND every fp-keyed sibling (#200): a host now parks
+  # per account, so more than one window may be open, and each must be closed on
+  # its own exit edge with its own fingerprint. A still-fresh window is left
+  # alone; a stale one is closed exactly once and removed so a later hit re-parks.
+  for m in "$CLAUDE_LIMIT_MARKER" "$CLAUDE_LIMIT_MARKER"-*; do
+    [ -f "$m" ] || continue
+    [ $(( $(date +%s) - $(stat -c %Y "$m") )) -le "$CLAUDE_LIMIT_TTL" ] && continue
+    acct="$(cat "$m" 2>/dev/null)"; [ -n "$acct" ] || acct="?"
+    fp=""; [ "$m" != "$CLAUDE_LIMIT_MARKER" ] && fp="${m#"$CLAUDE_LIMIT_MARKER"-}"
+    _claude_limit_event unpark "$acct" "$run" "window reset" "$fp"
+    rm -f "$m"
+  done
 }
 
 # ── Claude auth-refusal detection (#632, #1682) ───────────────────────────────
@@ -209,7 +279,22 @@ claude_auth_failed() { local f; for f in "$@"; do [ -s "$f" ] && grep -qiE "$CLA
 # with transient pressure on B the host fully parked — the five 2026-08-25
 # reporter parks on #722. Recovery needs no timer: when the resting account's
 # window resets, the active one's NEXT limit refusal fails over onto it.
-CLAUDE_ACTIVE_MARKER="${CLAUDE_ACTIVE_MARKER:-/tmp/matou-swarm-claude-active-token}"
+# The name is keyed by the PAIR of token fingerprints it arbitrates between
+# (#200: `…-active-token-<fpA>-<fpB>`), so a future per-repo token pair — or two
+# hosts sharing a state dir — never collide on one letter marker. The pair is
+# stable across a failover (the two tokens don't change, only which letter wins)
+# and across a fresh process (same tokens → same name). It degrades to the bare
+# base on a single-account host (one fp) or with no token at all (the pre-#200
+# path), so every reader that pins CLAUDE_ACTIVE_MARKER in env is unaffected.
+_claude_active_marker_default() {
+  local base="${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}/matou-swarm-claude-active-token" a b
+  a="$(claude_fingerprint "${CLAUDE_TOKEN_PRIMARY:-${CLAUDE_CODE_OAUTH_TOKEN:-}}")"
+  b="$(claude_fingerprint "${CLAUDE_CODE_OAUTH_TOKEN_B:-}")"
+  if [ -n "$a" ] && [ -n "$b" ]; then printf '%s-%s-%s' "$base" "$a" "$b"
+  elif [ -n "$a" ]; then printf '%s-%s' "$base" "$a"
+  else printf '%s' "$base"; fi
+}
+CLAUDE_ACTIVE_MARKER="${CLAUDE_ACTIVE_MARKER:-$(_claude_active_marker_default)}"
 
 # claude_standby_available — 0 iff a standby token is configured at all.
 claude_standby_available() { [ -n "${CLAUDE_CODE_OAUTH_TOKEN_B:-}" ]; }
@@ -225,19 +310,26 @@ claude_active_account() {
 }
 
 # claude_mark_active <A|B> — stamp the host's active account.
-claude_mark_active() { printf '%s' "$1" > "$CLAUDE_ACTIVE_MARKER"; }
+claude_mark_active() { _claude_marker_dir "$CLAUDE_ACTIVE_MARKER"; printf '%s' "$1" > "$CLAUDE_ACTIVE_MARKER"; }
 
-# claude_select_token — export CLAUDE_CODE_OAUTH_TOKEN per the active account.
-# Call once before the first claude invocation. A no-op on single-account hosts.
-# The primary token is snapshotted on first call so later flips can restore it.
+# claude_select_token — export CLAUDE_CODE_OAUTH_TOKEN per the active account,
+# and export CLAUDE_ACCOUNT_FP (#200), the fingerprint of the selected token —
+# the attribution key for commit trailers and spend rows, computed HERE where
+# the token is chosen so nothing downstream handles the credential. Call once
+# before the first claude invocation. The token selection is a no-op on
+# single-account hosts; the fingerprint is still published there.
 claude_select_token() {
-  claude_standby_available || return 0
+  if ! claude_standby_available; then
+    CLAUDE_ACCOUNT_FP="$(claude_fingerprint "${CLAUDE_CODE_OAUTH_TOKEN:-}")"; export CLAUDE_ACCOUNT_FP
+    return 0
+  fi
   CLAUDE_TOKEN_PRIMARY="${CLAUDE_TOKEN_PRIMARY:-${CLAUDE_CODE_OAUTH_TOKEN:-}}"
   if [ "$(claude_active_account)" = "B" ]; then
     export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN_B"
   else
     export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN_PRIMARY"
   fi
+  CLAUDE_ACCOUNT_FP="$(claude_fingerprint "$CLAUDE_CODE_OAUTH_TOKEN")"; export CLAUDE_ACCOUNT_FP
 }
 
 # claude_failover — flip to the other account, stamp the marker, re-export the

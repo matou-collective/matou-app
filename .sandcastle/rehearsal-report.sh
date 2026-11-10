@@ -203,7 +203,9 @@ claude_auth_announce() { # <who> <run_dir>
   # ticket, Mattermost and the executor log (#1672's fire-1 alert).
   local shown=EMPTY
   [ -n "$tok" ] && shown="${tok:0:14}…"
-  local msg="rehearsal $who: CLAUDE AUTH FAILED on account $acct (token $shown) — $(grep -ihoE "$CLAUDE_AUTH_RE[^\"]*" "$run_dir"/logs/$who-claude.out "$run_dir"/logs/$who-claude.err 2>/dev/null | head -1). Token source is ${HOST_ENV_FILE:-the host's env file (per the host registry's env directive)} (token-sync from the org secret CLAUDE_CODE_OAUTH_TOKEN[_B]); env seen by the call: logs/claude-env.txt in $run_dir"
+  local msg
+  # shellcheck disable=SC1011 # the apostrophes in the ${HOST_ENV_FILE:-…} default confuse SC's quote tracker; this is a correct double-quoted literal.
+  msg="rehearsal $who: CLAUDE AUTH FAILED on account $acct (token $shown) — $(grep -ihoE "${CLAUDE_AUTH_RE}[^\"]*" "$run_dir"/logs/$who-claude.out "$run_dir"/logs/$who-claude.err 2>/dev/null | head -1). Token source is ${HOST_ENV_FILE:-the host's env file (per the host registry's env directive)} (token-sync from the org secret CLAUDE_CODE_OAUTH_TOKEN[_B]); env seen by the call: logs/claude-env.txt in $run_dir"
   echo "$who: $msg" >&2
   drive_issue_set && forgejo_comment "$REHEARSAL_DRIVE_ISSUE" ":rotating_light: @ben $msg" >/dev/null 2>&1
   bash "$here/notify-mattermost.sh" "@ben $msg" >/dev/null 2>&1 || true
@@ -281,8 +283,14 @@ drive \`$stamp\` red at \`$leg\` (sig $sig) — self-fixed on the fast lane, com
   local envelope; envelope="$(mktemp)"
   fast_lane_build_envelope "$num" "$co" "$summary" "$checks" > "$envelope"
   local closed=0
+  # The independent reviewer gate (#197) scopes to the SWARM WORKER's close; the
+  # fast-lane healer close is a different caller — a confident, two-way fix already
+  # fenced by the heal rails (rule 1/3 refusals, the 3-file cap, the product-surface
+  # and loop guards). It does not add a second-agent diff review here, so disable
+  # the gate for this invocation (its absence leaves close-report byte-for-byte the
+  # pre-#197 behaviour the fast lane was written against).
   if ( cd "$co" && CR_MAIN_HEAD=origin/main FORGEJO_API="${FORGEJO_API:-}" \
-         FORGEJO_TOKEN="${FORGEJO_TOKEN:-}" \
+         FORGEJO_TOKEN="${FORGEJO_TOKEN:-}" CR_REVIEW_DISABLE=1 \
          bash "$here/close-report.sh" "$num" "$envelope" ); then
     closed=1
   fi
@@ -313,20 +321,26 @@ try_heal() {
   # below has no cleanup trap of its own) instead of refusing forever — the
   # old shared-checkout dirty-tree refusal was a TOCTOU with no lock; here
   # there is nothing else that can dirty it between the check and the use.
+  # Credential-free origin (#195): clone/push with a bare git.matou.nz origin (no
+  # token in the URL or on argv). git_cred_export injects git-cred-lib's token-free
+  # helper into this process and its git children so the clone below authenticates;
+  # git_cred_persist (after the checkout exists) wires it into the checkout so
+  # heal_push's later `git push origin` authenticates too. (This closes #676 — the
+  # headless username prompt that stranded e920f9e7 — without a token in the URL.)
+  git_cred_export
   if [ ! -d "$co/.git" ]; then
     mkdir -p "$(dirname "$co")"
-    if ! git clone -q "$(rehearsal_heal_authed_url "$REHEARSAL_HEAL_REPO")" "$co" 2>/dev/null; then
+    if ! git clone -q "$(git_cred_strip_url "$REHEARSAL_HEAL_REPO")" "$co" 2>/dev/null; then
       echo "healer: clone of $REHEARSAL_HEAL_REPO to $co failed — filing instead"
       return 1
     fi
   fi
-  # #676: a checkout cloned before this fix (or one whose token rotated) is
-  # still carrying a bare, credential-less git.matou.nz origin — refresh it
-  # every heal so `heal_push`'s later `git push origin` never hits the
-  # headless username prompt that stranded e920f9e7. A no-op for the test
-  # fixtures' local bare origins (rehearsal_heal_authed_url passes them
-  # through unchanged).
-  git -C "$co" remote set-url origin "$(rehearsal_heal_authed_url "$(git -C "$co" remote get-url origin 2>/dev/null)")" 2>/dev/null || true
+  # Normalise any credential still embedded in origin's URL to credential-free
+  # (a checkout cloned before #195, or one whose URL carried a token), then persist
+  # the token-free helper so heal_push's `git push origin` authenticates. No-op for
+  # the test fixtures' local bare origins (git_cred_strip_url passes them through).
+  git -C "$co" remote set-url origin "$(git_cred_strip_url "$(git -C "$co" remote get-url origin 2>/dev/null)")" 2>/dev/null || true
+  git_cred_persist -C "$co" 2>/dev/null || true
   if ! git -C "$co" fetch -q origin 2>/dev/null \
      || ! git -C "$co" reset -q --hard origin/main 2>/dev/null; then
     echo "healer: could not sync dedicated checkout at $co — filing instead"

@@ -49,6 +49,11 @@ const FEATURE_NAV = {
  * fixed entries keep their positions; the toggleable entries' slots are filled
  * left-to-right with the ENABLED features in the kit's `order`; leftover slots
  * drop. `primary` (mobile tab membership) travels with the entry.
+ *
+ * Contributions rides on projects (#620): a contribution belongs to a project's
+ * implementation plan, so with `projects` off the Contributions entry is
+ * orphaned — it is dropped from both navigations. It never joins the `order`
+ * rotation; with projects on it keeps its fixed position unchanged.
  */
 export function applyFeatureNav(meta: readonly NavItemMeta[], features: KitFeatures): NavItemMeta[] {
   const toggleable = new Set<string>(Object.values(FEATURE_NAV));
@@ -60,7 +65,9 @@ export function applyFeatureNav(meta: readonly NavItemMeta[], features: KitFeatu
   const out: NavItemMeta[] = [];
   let next = 0;
   for (const m of meta) {
-    if (!toggleable.has(m.name)) out.push(m);
+    if (m.name === 'contributions') {
+      if (features.projects) out.push(m);
+    } else if (!toggleable.has(m.name)) out.push(m);
     else if (next < ordered.length) out.push(ordered[next++]!);
   }
   return out;

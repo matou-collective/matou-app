@@ -90,24 +90,40 @@ provision_mount_dirs() {
 }
 
 # ── the secret FILES ───────────────────────────────────────────────────────
-# FORGEJO_TOKEN/MATTERMOST_BOT_TOKEN/DIGITALOCEAN_ACCESS_TOKEN are NOT in .env —
-# Sandcastle forwards every key .env declares as a `docker run -e` value, which
-# lands in `docker inspect .Config.Env` (the 2026-07-11 breach vector). They ship
-# into the sandbox as read-only files instead (main.mts's `mounts`, consumed per
-# .sandcastle/secrets/README.md). Materialized from THIS process's own env (CI:
-# Actions secrets; host: whatever the operator exported) so every run picks up
-# the current value, including rotations. Each is optional — a task that never
-# needs one just won't find the file.
+# FORGEJO_TOKEN/MATTERMOST_BOT_TOKEN/DIGITALOCEAN_ACCESS_TOKEN — and, since #198,
+# the SELECTED Claude OAuth token — are NOT forwarded as `docker run -e` values.
+# Sandcastle forwards every key .env declares as a `-e` value, which lands in
+# `docker inspect .Config.Env` (the 2026-07-11 breach vector). They ship into
+# the sandbox as read-only files instead (main.mts's `mounts`, consumed per
+# .sandcastle/secrets/README.md — the Claude token via the claude-fence shim).
+# Materialized from THIS process's own env (CI: Actions secrets; host: whatever
+# the operator exported) so every run picks up the current value, including
+# rotations. Each is optional — a task that never needs one just won't find the
+# file.
 provision_write_secrets() {
   local dir="$1"
   _provision_write_secret "$dir" forgejo_token "${FORGEJO_TOKEN:-}"
   _provision_write_secret "$dir" mattermost_bot_token "${MATTERMOST_BOT_TOKEN:-}"
   _provision_write_secret "$dir" digitalocean_access_token "${DIGITALOCEAN_ACCESS_TOKEN:-}"
+  provision_write_claude_secret "$dir"
 }
 
 _provision_write_secret() { # _provision_write_secret <dir> <file> <value>
   [ -n "$3" ] || return 0
   printf '%s' "$3" >"$1/secrets/$2" && chmod 600 "$1/secrets/$2"
+}
+
+# provision_write_claude_secret <sandcastle-dir> — (re)write the SELECTED Claude
+# OAuth token (#198) as a 0600 secret file the worker's `claude` shim (claude-
+# fence) reads, instead of forwarding it as a `docker run -e` value that lands
+# in `docker inspect .Config.Env` (the 2026-07-11 breach vector — the same one
+# the three tokens above already avoid). The CALLER must have run
+# claude_select_token first so CLAUDE_CODE_OAUTH_TOKEN holds the active account's
+# value (run-swarm.sh selects before this stage). The #510 failover path calls
+# this AGAIN after it flips accounts, so the shim's next worker reads the standby
+# token. An unset token writes nothing — the shim then falls back to its env.
+provision_write_claude_secret() {
+  _provision_write_secret "$1" claude_oauth_token "${CLAUDE_CODE_OAUTH_TOKEN:-}"
 }
 
 # ── the cold pnpm-store guard (#489 / GOTCHAS #20) ────────────────────────

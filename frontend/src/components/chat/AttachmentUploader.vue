@@ -139,7 +139,7 @@ defineExpose({
 
   &.drag-over {
     border-color: var(--matou-primary);
-    background-color: rgba(30, 95, 116, 0.05);
+    background-color: color-mix(in srgb, var(--matou-primary) 5%, transparent);
   }
 }
 

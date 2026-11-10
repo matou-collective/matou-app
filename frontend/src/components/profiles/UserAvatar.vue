@@ -88,7 +88,7 @@ function onClick(e: MouseEvent) {
   &.gradient-1 { background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent)); }
   &.gradient-2 { background: linear-gradient(135deg, var(--matou-accent), var(--matou-chart-2)); }
   &.gradient-3 { background: linear-gradient(135deg, var(--matou-chart-2), var(--matou-primary)); }
-  &.gradient-4 { background: linear-gradient(135deg, rgba(30,95,116,0.8), rgba(74,157,156,0.8)); }
+  &.gradient-4 { background: linear-gradient(135deg, color-mix(in srgb, var(--matou-primary) 80%, transparent), color-mix(in srgb, var(--matou-accent) 80%, transparent)); }
 }
 .user-avatar-img { width: 100%; height: 100%; object-fit: cover; }
 .user-avatar-initials { font-weight: 600; line-height: 1; }

@@ -170,7 +170,7 @@ var capabilityActions = map[Capability][]Action{
 	CapContribute: {
 		ActionCreateContribution, ActionConfirmContribution, ActionRegisterInterest,
 		ActionShareContribution, ActionOfferContribution, ActionAcceptOffer,
-		ActionSubmitEvidence, ActionEditEvidence, ActionAssignContribution,
+		ActionSubmitEvidence, ActionSaveEvidenceDraft, ActionEditEvidence, ActionAssignContribution,
 		ActionTransitionContribution, ActionUpdateContribution,
 		ActionStoreCredential, ActionWriteProfile,
 	},
@@ -195,6 +195,7 @@ var capabilityActions = map[Capability][]Action{
 	CapArchiveWork: {
 		ActionArchiveProject, ActionArchiveMilestone, ActionArchiveContribution,
 		ActionUnassignContribution, ActionEditMilestone, ActionLinkProposal,
+		ActionReorderContribution, ActionPromoteSubContribution,
 	},
 	// adminScope: member roles plus the role-granting bootstrap routes.
 	// save_org_config has moved OUT of manage_members into

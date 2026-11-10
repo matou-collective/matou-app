@@ -6,13 +6,17 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { getOrFetchOrgConfig } from 'src/api/config';
+import { getMembershipSchemaSaid, getMembershipSchemaOobi } from 'src/lib/clientConfig';
 import { useKERINotificationService, type KERINotification } from './useKERINotificationService';
-import { claimNotification, isGrantAlreadyAdmitted } from 'src/lib/keri/notifications';
+import { claimNotification } from 'src/lib/keri/notifications';
+import { admitGrant as admitSharedGrant, type GrantClient } from 'src/lib/keri/grantAdmission';
 import { BACKEND_URL } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { isSelfAgentOobi } from 'src/lib/selfAgentOobi';
 
 const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
+// The coa-shared Mātou Membership schema SAID — the fallback used only until the
+// descriptor's own schemas.membership.said is resolved (issue #615).
 const MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
 const EVENT_ATTENDANCE_SCHEMA_SAID = 'ELhtmIAF5uZp40VJ08P7LJ_A4JH53ybWdvkSA3L-Sw2J';
 
@@ -91,6 +95,11 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   // Internal state
   let stopWatcher: (() => void) | null = null;
   let isProcessingGrant = false;
+  // The Membership schema this community issues under. Resolved from the
+  // descriptor (schemas.membership.said) at startPolling; until then it holds
+  // the coa-shared Mātou fallback. An IDSS credential is of the community's OWN
+  // schema, so matching the hardcoded constant left the founder stranded (#615).
+  let membershipSchema: string = MEMBERSHIP_SCHEMA_SAID;
   // Issuer of the last admitted grant — pollForCredential re-queries its key
   // state while waiting, to unblock the Verifier/Tevery escrow for
   // credentials issued from a (group) AID whose latest anchor we lack.
@@ -190,9 +199,14 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       // resolve exactly as before.
       const ownAgentAid = keriClient.getSignifyClient()?.agent?.pre ?? null;
 
-      // Resolve schema OOBI (required for credential verification)
-      // The schema SAID is defined in the org setup
-      const schemaOOBI = config.schema?.oobi;
+      // Resolve the Membership schema OOBI so KERIA can verify the credential.
+      // Prefer the descriptor's schemas.membership.oobi — an IDSS community
+      // names its OWN schema (ADR 0226 decision 5) and its OOBI is a real
+      // https URL, never the Docker hostname (#615). Fall back to the legacy
+      // org-config schema block, and only for a coa-shared backend that names
+      // neither to the internal Docker schema-server URL.
+      const descriptorSchemaOOBI = await getMembershipSchemaOobi().catch(() => undefined);
+      const schemaOOBI = descriptorSchemaOOBI || config.schema?.oobi;
       if (schemaOOBI) {
         try {
           await keriClient.resolveOOBI(schemaOOBI, undefined, 30000);
@@ -204,7 +218,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         // Fallback: try default schema server URL with known schema SAID
         // Schema server URL is internal to Docker network (KERIA resolves it)
         const schemaServerUrl = 'http://schema-server:7723';
-        const fallbackSchemaOOBI = `${schemaServerUrl}/oobi/${MEMBERSHIP_SCHEMA_SAID}`;
+        const fallbackSchemaOOBI = `${schemaServerUrl}/oobi/${membershipSchema}`;
         try {
           await keriClient.resolveOOBI(fallbackSchemaOOBI, undefined, 30000);
           console.log('[CredentialPolling] Resolved schema OOBI (fallback):', fallbackSchemaOOBI);
@@ -277,7 +291,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
             const sad = cred.sad || cred;
             const schema = (sad as any).s || '';
             const recipient = (sad as any).a?.i || '';
-            if (schema === MEMBERSHIP_SCHEMA_SAID && recipient === myAid && !credentialReceived.value) {
+            if (schema === membershipSchema && recipient === myAid && !credentialReceived.value) {
               // Membership credential issued TO us — existing admission flow
               console.log('[CredentialPolling] Membership credential in wallet (mine):', cred);
               credential.value = cred;
@@ -316,7 +330,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           for (const cred of cachedCredentials) {
             const sad = cred.sad || cred;
             if (
-              ((sad as any).s || '') === MEMBERSHIP_SCHEMA_SAID &&
+              ((sad as any).s || '') === membershipSchema &&
               ((sad as any).a?.i || '') === myAid &&
               ((sad as any).i || '') === orgAid
             ) {
@@ -565,55 +579,30 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     console.log('[CredentialPolling] Admitting grant:', grant.a.d);
 
     try {
-      // Get the grant exchange message to find the sender
-      const grantExn = await client.exchanges().get(grant.a.d);
-      const grantSender = grantExn.exn.i; // Issuer of the grant message
-
-      // Idempotency (issue #470): two signify clients on one agent both see
-      // this grant. If the credential is already in the wallet the other
-      // client (or a prior cycle) has admitted it — a second admit would be a
-      // redundant IPEX admit on an already-admitted grant. Mark read and stop.
-      if (await isGrantAlreadyAdmitted(client, grantExn)) {
-        await client.notifications().mark(grant.i);
+      // The admit itself — idempotent on the credential (issue #470), marked
+      // read only after it succeeds — is shared with the admission that runs
+      // after joining (issue #685).
+      const outcome = await admitSharedGrant(client as unknown as GrantClient, aidName, grant);
+      const grantSender = outcome.grantSender;
+      if (outcome.alreadyAdmitted) {
         console.debug('[CredentialPolling] Grant already admitted — skipping (idempotent)');
         return;
       }
-
-      // Submit admit with empty embeds. KERIA's sendAdmit() for single-sig
-      // AIDs does not process path labels — the Admitter background task
-      // retrieves ACDC/ISS/ANC data from the GRANT's cloned attachments.
-      const hab = await client.identifiers().get(aidName);
-      const [admit, sigs, atc] = await client.exchanges().createExchangeMessage(
-        hab,
-        '/ipex/admit',
-        { m: '' },
-        {},
-        grantSender,
-        undefined,
-        grant.a.d,
-      );
-
-      // Submit the admit
-      await client.ipex().submitAdmit(aidName, admit, sigs, atc, [grantSender]);
-
-      // Mark notification as read
-      await client.notifications().mark(grant.i);
 
       console.log('[CredentialPolling] Grant admitted successfully');
       lastGrantSender = grantSender || null;
       // Diagnostics for issue #51: which KEL event anchors this credential,
       // and how far our agent's copy of the issuer's KEL currently reaches.
-      const anc = (grantExn.exn as { e?: { anc?: { s?: string; d?: string } } }).e?.anc;
-      lastGrantAncSn = anc?.s ?? null;
+      lastGrantAncSn = outcome.ancSn;
       try {
         const ksList = await client.keyStates().get(grantSender);
         const ks = (Array.isArray(ksList) ? ksList[0] : ksList) as { s?: string } | undefined;
         console.log(
-          `[CredentialPolling] Grant anchor: issuer ${grantSender.slice(0, 12)}... anc sn=${anc?.s ?? '?'} d=${(anc?.d ?? '?').slice(0, 12)}; ` +
+          `[CredentialPolling] Grant anchor: issuer ${grantSender.slice(0, 12)}... anc sn=${outcome.ancSn ?? '?'}; ` +
           `our local KEL for issuer at sn=${ks?.s ?? 'none'}`,
         );
       } catch (ksErr) {
-        console.log(`[CredentialPolling] Grant anchor: anc sn=${anc?.s ?? '?'}; issuer key state not in our agent yet (${ksErr instanceof Error ? ksErr.message : ksErr})`);
+        console.log(`[CredentialPolling] Grant anchor: anc sn=${outcome.ancSn ?? '?'}; issuer key state not in our agent yet (${ksErr instanceof Error ? ksErr.message : ksErr})`);
       }
 
       // De-escrow: our agent may not know the grant issuer's key state yet
@@ -679,7 +668,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           // from ACDC edges) — treating one of those as the membership
           // credential syncs an empty role to the backend, which rejects it
           // with "invalid role" (list ordering made this flaky).
-          if (schema !== MEMBERSHIP_SCHEMA_SAID || (myAid && recipient !== myAid)) {
+          if (schema !== membershipSchema || (myAid && recipient !== myAid)) {
             continue;
           }
           console.log('[CredentialPolling] Membership credential received:', cred.sad?.d);
@@ -777,6 +766,16 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     isPolling.value = true;
     error.value = null;
     consecutiveErrors.value = 0;
+
+    // Resolve the community's Membership schema from the descriptor so every
+    // credential check below matches the schema it actually issues under (#615).
+    // Falls back to the coa-shared Mātou constant when the descriptor names none.
+    try {
+      membershipSchema = await getMembershipSchemaSaid();
+    } catch (err) {
+      console.warn('[CredentialPolling] Could not resolve membership schema; using fallback:', err);
+      membershipSchema = MEMBERSHIP_SCHEMA_SAID;
+    }
 
     // Resolve org/admin OOBIs so we can receive messages from them
     await resolveOrgOobis();

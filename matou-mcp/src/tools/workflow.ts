@@ -52,7 +52,71 @@ export async function submitForReview(ctx: ToolContext, args: SubmitArgs): Promi
   }
 }
 
+interface EditArgs {
+  contribution_id: string;
+  title?: string;
+  description?: string;
+  objectives?: string[];
+  deliverables?: string[];
+  acceptance_criteria?: string[];
+  skill_requirements?: string[];
+  estimated_hours?: number;
+  deadline?: string;
+  budget?: string;
+  assignee?: string;
+}
+
+export async function editContribution(ctx: ToolContext, args: EditArgs): Promise<unknown> {
+  const payload: Record<string, unknown> = {};
+  if (args.title !== undefined) payload.title = args.title;
+  if (args.description !== undefined) payload.description = args.description;
+  if (args.objectives !== undefined) payload.objectives = args.objectives;
+  if (args.deliverables !== undefined) payload.deliverables = args.deliverables;
+  if (args.acceptance_criteria !== undefined) payload.acceptance_criteria = args.acceptance_criteria;
+  if (args.skill_requirements !== undefined) payload.skill_requirements = args.skill_requirements;
+  if (args.estimated_hours !== undefined) payload.estimated_duration = args.estimated_hours;
+  if (args.deadline !== undefined) payload.deadline = args.deadline;
+  if (args.budget !== undefined) payload.budget = args.budget;
+  if (args.assignee !== undefined) payload.assigned_contributor_id = ctx.members.resolve(args.assignee);
+  if (Object.keys(payload).length === 0) {
+    throw new Error("Provide at least one field to edit (e.g. title, description, objectives, deliverables, deadline, budget).");
+  }
+  // Permission ("lead/steward/KERI admin, not a terminal-status contribution") is
+  // enforced server-side via { rbac: true } — the acting AID is sent, not re-checked here.
+  return ctx.client.put(`/api/v1/contributions/${args.contribution_id}`, payload, { rbac: true });
+}
+
 export function registerWorkflowTools(server: McpServer, ctx: ToolContext): void {
+  defineTool(
+    server,
+    ctx,
+    {
+      name: "edit_contribution",
+      description:
+        "Edit an existing contribution's general fields by id. Supply the contribution_id plus any fields " +
+        "to change (omitted fields are left unchanged): title, description, objectives, deliverables, " +
+        "acceptance_criteria, skill_requirements, estimated_hours, deadline (YYYY-MM-DD), budget, assignee " +
+        "(name or AID). contribution_type cannot be changed. Permission (project lead/steward or KERI admin, " +
+        "and not a terminal-status contribution) is enforced by the backend; a denied or not-found edit " +
+        "surfaces as an error. NOTE: editing unsigns the project plan — a re-sign-off is then required.",
+      schema: {
+        contribution_id: z.string(),
+        title: z.string().optional(),
+        description: z.string().optional(),
+        objectives: z.array(z.string()).optional(),
+        deliverables: z.array(z.string()).optional(),
+        acceptance_criteria: z.array(z.string()).optional(),
+        skill_requirements: z.array(z.string()).optional(),
+        estimated_hours: z.number().optional(),
+        deadline: z.string().optional(),
+        budget: z.string().optional(),
+        assignee: z.string().optional(),
+      },
+      mutating: true,
+    },
+    (args) => editContribution(ctx, args as unknown as EditArgs),
+  );
+
   defineTool(
     server,
     ctx,

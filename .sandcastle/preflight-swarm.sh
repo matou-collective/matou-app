@@ -229,7 +229,7 @@ guard_secrets_allowlist() {
   # throwaway-fixture pattern — no file on disk for this one).
   local bad="$TMP/env-allowlist-bad" good="$TMP/env-allowlist-good"
   cat > "$bad" <<'EOF'
-CLAUDE_CODE_OAUTH_TOKEN=sk-test-not-real
+ANTHROPIC_API_KEY=sk-test-not-real
 FORGEJO_API=
 FOO_TOKEN=leaked
 EOF
@@ -240,7 +240,7 @@ EOF
     return 1; }
 
   cat > "$good" <<'EOF'
-CLAUDE_CODE_OAUTH_TOKEN=sk-test-not-real
+ANTHROPIC_API_KEY=sk-test-not-real
 FORGEJO_API=
 MATTERMOST_URL=
 MATTERMOST_CHANNEL_ID=
@@ -337,6 +337,47 @@ guard_close_report() {
   bad="$(jq -n '{issue:1,status:"refused",summary:"nope"}')"
   if cr_violations "$bad" "$co" HEAD >/dev/null 2>&1; then
     echo "close-report: cr_violations ACCEPTED a refusal with no reason — a silent refusal is the 165115Z fault"
+    return 1; fi
+
+  # a declared symbol with no implementation in the diff and no owed_by → must
+  # refuse (gate 6, #1934's hole).
+  bad="$(jq -n --arg s "$sha" '{issue:1,status:"success",commits:[$s],changed_files:["src.go"],binds:[{symbol:"mintSealingKey",defined_in:"src/keriweb/sealing.ts"}],summary:"lie"}')"
+  if cr_violations "$bad" "$co" HEAD >/dev/null 2>&1; then
+    echo "close-report: cr_violations ACCEPTED a symbol declared but never defined and not owed — #1934's envelope would sail through (gate 6)"
+    return 1; fi
+
+  # a changed_files entry matching a registry trigger without its mirror → must
+  # refuse (gate 7, #1933's hole). Seed a throwaway registry so the check does
+  # not depend on the shipped file.
+  local reg="$TMP/cr-mirrors.tsv"
+  printf 'src.go\tsrc.golden.json\n' > "$reg"
+  bad="$(jq -n --arg s "$sha" '{issue:1,status:"success",commits:[$s],changed_files:["src.go"],summary:"lie"}')"
+  if CR_MIRRORS_FILE="$reg" cr_violations "$bad" "$co" HEAD >/dev/null 2>&1; then
+    echo "close-report: cr_violations ACCEPTED a trigger touched without its mirror — #1933's envelope would sail through (gate 7)"
+    return 1; fi
+
+  # a status:success touching a required-suite area WITHOUT that suite in tests[]
+  # → must refuse (gate 8, #1943's hole: gate 4 only refutes a LISTED red test,
+  # so an omitted suite sails through). Seed a throwaway registry.
+  local sreg="$TMP/cr-required-suites.tsv"
+  printf 'src.go\tgo test ./src/\n' > "$sreg"
+  bad="$(jq -n --arg s "$sha" '{issue:1,status:"success",commits:[$s],changed_files:["src.go"],tests:[{command:"go test ./other/...",exit_code:0}],summary:"lie"}')"
+  if CR_REQUIRED_SUITES_FILE="$sreg" cr_violations "$bad" "$co" HEAD >/dev/null 2>&1; then
+    echo "close-report: cr_violations ACCEPTED a success touching an area whose required suite was omitted from tests[] — #1943's envelope would sail through (gate 8)"
+    return 1; fi
+
+  # a trigger whose mirror lives in ANOTHER repo, touched with no open foreign
+  # issue named as owing the copy → must refuse (gate 9, #1959's hole: gate 7's
+  # pairing is within one repo by construction, so a golden that only matou-app
+  # copies moves alone and closes green). Seed a throwaway registry, and stub the
+  # foreign tracker so the guard stays offline.
+  local xreg="$TMP/cr-cross-repo-mirrors.tsv" xstub="$TMP/cr-foreign-state.sh"
+  printf 'src.go\tMatou/other\tfixtures/src.golden.json\n' > "$xreg"
+  printf '#!/usr/bin/env bash\necho missing\n' > "$xstub"; chmod +x "$xstub"
+  bad="$(jq -n --arg s "$sha" '{issue:1,status:"success",commits:[$s],changed_files:["src.go"],summary:"lie"}')"
+  if CR_CROSS_REPO_MIRRORS_FILE="$xreg" CR_FOREIGN_ISSUE_STATE_CMD="$xstub" \
+     cr_violations "$bad" "$co" HEAD >/dev/null 2>&1; then
+    echo "close-report: cr_violations ACCEPTED a cross-repo trigger touched with nobody owing the copy — #1959's envelope would sail through (gate 9)"
     return 1; fi
   return 0
 }

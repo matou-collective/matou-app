@@ -62,7 +62,7 @@ function reactionTooltip(reaction: MessageReaction): string {
   }
 
   &.has-reacted {
-    background-color: rgba(30, 95, 116, 0.1);
+    background-color: color-mix(in srgb, var(--matou-primary) 10%, transparent);
     border-color: var(--matou-primary);
   }
 }

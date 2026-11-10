@@ -220,3 +220,29 @@ watchdog_detect() {
       else empty end
   ' "$1"
 }
+
+# watchdog_run_url <runs-json-path> <workflow> — the web URL of the most recent
+# run for <workflow>, folding .workflow_id exactly as watchdog_detect emits its
+# label, so the watchdog can fetch THAT run's own job logs (#188). In watchdog
+# mode there is no RUN_URL env (healer.yml's hourly sweep never sets one), and
+# the only route that serves a job log is the run's WEB url + the job-log path
+# (`<run-url>/jobs/<n>/attempt/1/logs`) — the API url 404s (see the #188 table).
+# The evidence payload is `/actions/tasks` (not `/actions/runs`, which does not
+# scale — GOTCHAS 16), and THAT endpoint's rows carry the web url as `.url`,
+# never `.html_url` — so the old `.html_url`-only projection echoed empty for
+# every workflow on this Forgejo and #188 never fired in watchdog mode (#304).
+# Prefer `.html_url` (a payload shape that does carry it still wins) then fall
+# back to `.url`; both are read as DATA, never a literal `actions/runs` string
+# in the harness source, so the actions-endpoint ratchet stays green. Echoes
+# empty when a row carries neither (an older/foreign shape) — the caller then
+# records that the job log was not fetched (AC4), never a silent empty file.
+watchdog_run_url() {
+  jq -r --arg wf "$2" '
+    [.workflow_runs[]
+      | {wf: (if ((.workflow_id // "") | length) > 0
+              then (.workflow_id | sub("\\.ya?ml$"; "")) else .name end),
+         n: .run_number, url: (.html_url // .url // "")}
+      | select(.wf == $wf and (.url | length) > 0)]
+    | sort_by(-.n) | .[0].url // empty
+  ' "$1" 2>/dev/null
+}

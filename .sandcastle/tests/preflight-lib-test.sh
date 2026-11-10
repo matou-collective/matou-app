@@ -118,13 +118,42 @@ grep -q 'policy: LANDING=pr MERGE_AUTHORITY=agent-after-green' <<<"$out" \
 pass=$((pass+1))
 
 printf 'LANDING=merge\n' > "$tmp/policy-bad.sh"
-: > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
+: > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""; VERDICT_ERROR=""; VERDICT_STAGE=""
 RC=0
 preflight_policy_gate Acme/widget "$tmp/policy-bad.sh" >/dev/null 2>&1 || RC=$?
 [ "$RC" = 1 ] || fail "an invalid policy must abort BEFORE a worker spawns, got $RC"
 [ "$SWARM_EXIT_REASON" = "invalid-policy" ] || fail "the reason must be named, got '$SWARM_EXIT_REASON'"
 grep -q 'invalid' "$NOTIFY_LOG" || fail "an invalid policy must alarm: $(cat "$NOTIFY_LOG")"
 grep -q 'no worker was spawned' "$NOTIFY_LOG" || fail "the alarm must say nothing was started"
+# #9 / GOTCHAS #217 / #2052: the gate must record policy_validate's FATAL as the
+# verdict's error line — a bare `stage=policy validation (#12) exit=1` with an
+# EMPTY block is exactly what run 50573 handed the healer.
+[ -n "${VERDICT_ERROR:-}" ] || fail "an invalid policy must leave the healer a non-empty error line"
+case "${VERDICT_ERROR:-}" in *LANDING*) : ;; *) fail "the verdict error line must name the offending key, got '${VERDICT_ERROR:-}'" ;; esac
+pass=$((pass+1))
+
+# A TRANSPORT fault on the gate's live label GET is NOT an invalid policy (#2052):
+# its own reason, a non-empty error line that names the fault, and a notice that
+# says the policy was not read — never "fix the named policy key" for a valid file.
+mkdir -p "$tmp/failbin"
+cat > "$tmp/failbin/curl" <<'SH'
+#!/usr/bin/env bash
+echo "503 Service Unavailable" >&2
+exit 22
+SH
+chmod +x "$tmp/failbin/curl"
+printf 'HUMAN_LABELS="ready-for-human:one-way-door"\n' > "$tmp/policy-transport.sh"
+: > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""; VERDICT_ERROR=""; VERDICT_STAGE=""
+RC=0
+PATH="$tmp/failbin:$PATH" POLICY_LABELS_GET_RETRIES=1 POLICY_LABELS_GET_BACKOFF=0 \
+  preflight_policy_gate Acme/widget "$tmp/policy-transport.sh" >/dev/null 2>&1 || RC=$?
+[ "$RC" = 1 ] || fail "a tracker-unreachable policy gate must abort, got $RC"
+[ "$SWARM_EXIT_REASON" = "policy-tracker-unreachable" ] || fail "a transport fault must name its own reason, got '$SWARM_EXIT_REASON'"
+[ -n "${VERDICT_ERROR:-}" ] || fail "the transport branch must leave the healer a non-empty error line"
+case "${VERDICT_ERROR:-}" in *TRANSPORT*) : ;; *) fail "the verdict error line must name the TRANSPORT fault, got '${VERDICT_ERROR:-}'" ;; esac
+grep -qi 'unreachable' "$NOTIFY_LOG" || fail "the transport notice must say the tracker was unreachable: $(cat "$NOTIFY_LOG")"
+! grep -qi 'invalid' "$NOTIFY_LOG" || fail "a transport fault must NOT be reported as an invalid policy: $(cat "$NOTIFY_LOG")"
+grep -qi 'no worker was spawned' "$NOTIFY_LOG" || fail "the transport notice must say nothing was started"
 pass=$((pass+1))
 
 # ── 3. the model gate (#448 fail-fast) ────────────────────────────────────

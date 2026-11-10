@@ -206,4 +206,45 @@ grep -q 'deadbee0' "$NOTIFY_LOG" || fail "the alarm must name the SHA the commit
 grep -q 'will NOT retry' "$NOTIFY_LOG" || fail "the alarm must say the issues will not retry"
 pass=$((pass+1))
 
+# --- 9. #193: the HOST lands main only AFTER verify. Two proofs. -------------
+# (a) STATIC ordering: run-swarm.sh calls verify_protected_paths BEFORE
+#     landing_stage, so no push to main can precede the protected-path boundary.
+vp_line="$(grep -n 'verify_protected_paths ' "$sc/run-swarm.sh" | head -1 | cut -d: -f1)"
+ls_line="$(grep -n 'landing_stage "'         "$sc/run-swarm.sh" | head -1 | cut -d: -f1)"
+[ -n "$vp_line" ] && [ -n "$ls_line" ] && [ "$vp_line" -lt "$ls_line" ] \
+  || fail "run-swarm.sh must call verify_protected_paths ($vp_line) BEFORE landing_stage ($ls_line) — verify runs before any push to main (#193)"
+grep -qE 'verify_protected_paths .* \|\| (exit 1|\{)' "$sc/run-swarm.sh" \
+  || fail "a protected-path breach must red the run before landing_stage is ever reached (#193)"
+pass=$((pass+1))
+
+# (a') STATIC #283: a rolled-back land must reconcile the stranded closes — the
+# host reopens every issue a sandbox close-report closed against the worker branch
+# before it exits. Wired on BOTH the verify-breach path and the land-parked path.
+rc_lines="$(grep -c 'landing_reopen_stranded_closes ' "$sc/run-swarm.sh")"
+[ "${rc_lines:-0}" -ge 2 ] \
+  || fail "run-swarm.sh must call landing_reopen_stranded_closes on BOTH the verify-breach and land-rollback exits (#283), found $rc_lines"
+grep -q 'export EXECUTE_ATTEMPTS_FILE=' "$sc/run-swarm.sh" \
+  || fail "run-swarm.sh must wire EXECUTE_ATTEMPTS_FILE so the attempt lines survive the log cleanup (#283)"
+pass=$((pass+1))
+
+# (b) BEHAVIOURAL: when verify flagged a breach (VERIFY_PP_VIOLATION=1), the land
+#     seam refuses to push main and parks a rescue — the boundary gates the push.
+cat > "$tmp/bin/git" <<'SH'
+#!/usr/bin/env bash
+echo "git $*" >> "${GIT_LOG:?}"
+exit 0
+SH
+chmod +x "$tmp/bin/git"
+: > "$GIT_LOG"; : > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
+RC=0
+PATH="$tmp/bin:/usr/bin:/bin" SWARM_POLICY_LANDING=push VERIFY_PP_VIOLATION=1 \
+  landing_stage Matou/matou-app '[{"number":7}]' start || RC=$?
+[ "$RC" = 1 ] || fail "a verify-flagged breach must red the land, got $RC"
+[ "$SWARM_EXIT_REASON" = "protected-path-violation" ] || fail "the reason must name the breach, got '$SWARM_EXIT_REASON'"
+! grep -q 'push origin HEAD:main' "$GIT_LOG" \
+  || fail "a flagged breach must NEVER reach a push to main (verify before land): $(cat "$GIT_LOG")"
+grep -q 'push origin HEAD:refs/heads/sandcastle/rescue-' "$GIT_LOG" \
+  || fail "the breach must park the worker's commits on a rescue branch: $(cat "$GIT_LOG")"
+pass=$((pass+1))
+
 echo "run-swarm-landing: $pass scenarios passed"

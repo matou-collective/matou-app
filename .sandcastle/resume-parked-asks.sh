@@ -53,9 +53,11 @@ fi
 mm() { curl -sf -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" "$@"; }
 fj() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
+# @channel/@all/@here are defused (zero-width space) exactly as in
+# notify-mattermost.sh — an agent-written ask must never page the whole channel.
 mm_post() { # mm_post <message> <root_id>
   jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message "$1" --arg root_id "$2" \
-    '{channel_id: $channel_id, message: $message, root_id: $root_id, props: {remove_link_preview: "true"}}' |
+    '{channel_id: $channel_id, message: ($message | gsub("@(?=(?:channel|all|here)\\b)"; "@\u200b"; "i")), root_id: $root_id, props: {remove_link_preview: "true"}}' |
     mm -X POST -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts"
 }
 

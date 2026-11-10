@@ -97,7 +97,7 @@ const vestingPercent = computed(() => {
 
 /* Balance card */
 .balance-card {
-  background: linear-gradient(135deg, var(--matou-primary, #1e5f74), var(--matou-accent, #4a9d9c));
+  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
   border-radius: var(--matou-radius, 0.75rem);
   padding: 1.75rem;
   color: white;
@@ -130,7 +130,7 @@ const vestingPercent = computed(() => {
 /* Section cards */
 .section-card {
   background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius, 0.75rem);
   padding: 1.25rem;
 }
@@ -141,21 +141,21 @@ const vestingPercent = computed(() => {
   gap: 0.5rem;
   font-size: 0.9375rem;
   font-weight: 600;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   margin: 0 0 1rem;
 }
 
 /* Vesting progress */
 .progress-bar {
   height: 8px;
-  background: var(--matou-secondary, #e8f4f8);
+  background: var(--matou-secondary);
   border-radius: 999px;
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--matou-primary, #1e5f74), var(--matou-accent, #4a9d9c));
+  background: linear-gradient(90deg, var(--matou-primary), var(--matou-accent));
   border-radius: 999px;
   transition: width 0.3s ease;
 }
@@ -163,12 +163,12 @@ const vestingPercent = computed(() => {
 .vesting-details {
   margin-top: 0.5rem;
   font-size: 0.8125rem;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
 }
 
 /* Info box */
 .info-box {
-  background: var(--matou-input-background, #f0f7f9);
+  background: var(--matou-input-background);
   border-radius: 0.5rem;
   padding: 1rem;
 }
@@ -176,7 +176,7 @@ const vestingPercent = computed(() => {
 .info-box p {
   margin: 0 0 0.75rem;
   font-size: 0.8125rem;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   line-height: 1.5;
 }
 
@@ -189,12 +189,12 @@ const vestingPercent = computed(() => {
 .power-value {
   font-size: 1.75rem;
   font-weight: 700;
-  color: var(--matou-primary, #1e5f74);
+  color: var(--matou-primary);
 }
 
 .power-label {
   font-size: 0.8125rem;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
 }
 
 /* Voting history */
@@ -209,7 +209,7 @@ const vestingPercent = computed(() => {
   justify-content: space-between;
   align-items: center;
   padding: 0.625rem 0;
-  border-bottom: 1px solid var(--matou-border, #e5e7eb);
+  border-bottom: 1px solid var(--matou-border);
 }
 
 .voting-item:last-child {
@@ -218,7 +218,7 @@ const vestingPercent = computed(() => {
 
 .vote-proposal {
   font-size: 0.875rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
 }
 
 .vote-choice {
@@ -239,7 +239,7 @@ const vestingPercent = computed(() => {
   align-items: center;
   gap: 0.625rem;
   padding: 1.25rem;
-  color: var(--matou-muted-foreground, #9ca3af);
+  color: var(--matou-muted-foreground);
   font-size: 0.875rem;
 }
 </style>

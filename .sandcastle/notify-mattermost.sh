@@ -34,8 +34,14 @@ if [ -z "${MATTERMOST_URL:-}" ] || [ -z "${MATTERMOST_BOT_TOKEN:-}" ] || [ -z "$
   exit 0
 fi
 root="${2:-}"
+# Never a channel-wide mention: the swarm's channel is shared with people who
+# are not operators, and an agent-written "@channel … parked on a HUMAN gate"
+# page emailed every away member (2026-09-18). A zero-width space after the @
+# keeps @channel/@all/@here readable but inert; @ben and other people's
+# mentions still ping. ask-human.sh, post-issue-ask.sh and
+# resume-parked-asks.sh post through the same filter.
 resp="$(jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message "$msg" --arg root_id "$root" \
-    '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}} + (if $root_id != "" then {root_id: $root_id} else {} end)' |
+    '{channel_id: $channel_id, message: ($message | gsub("@(?=(?:channel|all|here)\\b)"; "@​"; "i")), props: {remove_link_preview: "true"}} + (if $root_id != "" then {root_id: $root_id} else {} end)' |
   curl -sf --max-time 30 -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' \
     -d @- "$MATTERMOST_URL/api/v4/posts")"
 # Print the created post id — heal.sh threads recurrences under it.

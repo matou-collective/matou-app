@@ -237,7 +237,12 @@ export default defineConfig({
     // org and a member and persist tests/e2e/test-accounts.json.
     {
       name: 'features',
-      testMatch: /features\/issue-\d+\.spec\.ts/,
+      // issue-<N> specs plus the named credential-card-parity spec (#633), which
+      // needs the same org/member bootstrap the fixtures provide.
+      testMatch: [
+        /features\/issue-\d+\.spec\.ts/,
+        /features\/credential-card-parity\.spec\.ts/,
+      ],
       use: browserConfig,
       dependencies: ['org-setup', 'registration-member'],
     },
@@ -265,6 +270,7 @@ export default defineConfig({
         /e2e-roles-permissions\.spec\.ts/,
         /e2e-linked-device-android\.spec\.ts/,
         /features\/issue-\d+\.spec\.ts/,
+        /features\/credential-card-parity\.spec\.ts/,
       ],
     },
   ],

@@ -1,0 +1,8 @@
+{
+  "name": "matou-infra-harness",
+  "private": true,
+  "type": "module",
+  "description": "KERIA 0.4.0 integration harness; own deps so the frontend's pinned libsodium 0.7.x (broken ESM) is not picked up",
+  "dependencies": { "signify-ts": "0.3.0" },
+  "devDependencies": { "tsx": "^4.7.0", "typescript": "^5.3.0" }
+}

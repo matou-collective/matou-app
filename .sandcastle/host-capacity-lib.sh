@@ -30,11 +30,72 @@
 # default keeps every consumer counting against the SAME two paths so the
 # pool is actually shared host-wide, not per-repo.
 
-# The pooled heavy slots, in try-order. Slot 1 keeps the name
-# /tmp/matou-swarm.lock on purpose: it predates this pool (the original
-# single-slot lock) and an unmodified caller not yet pool-aware still
-# correctly excludes against slot 1.
-HOST_CAPACITY_SLOTS="${HOST_CAPACITY_SLOTS:-/tmp/matou-swarm.lock /tmp/matou-host-slot-2.lock}"
+# --- Host-global state directory (#205) --------------------------------------
+# Every host-global file this lib owns — the pooled slot LOCKS, their holder
+# sidecars, the drive reservation + skip counter, the drive log — lives under
+# ONE root so it survives a /tmp cleaner and a reboot. In /tmp both silently
+# doubled capacity (a cleaner unlinking a HELD lock left the holder on an
+# orphaned inode; the next acquirer made a fresh file and won) and lost the
+# limit/active-token edges a reboot wiped (#205). Defaults to $HOME/swarm/state,
+# where swarm.db, the cancel markers and the drive log already live.
+# Overridable (tests redirect it; a host may point it elsewhere). An enrolled
+# host's generated host-capacity.env still sets HOST_CAPACITY_SLOTS explicitly,
+# so this default governs only contexts without that override until the
+# companion cutover moves host-capacity.env and the inline workflow guards too.
+HOST_CAPACITY_STATE_DIR="${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}"
+
+# host_capacity_statedir_ensure — create the state dir (best-effort). Called
+# before any writer/acquirer opens a path under it: `exec {fd}>"$slot"` fails
+# the whole (set -e) caller if the parent dir is missing, so we never rely on
+# $HOME/swarm/state pre-existing the way /tmp always did.
+host_capacity_statedir_ensure() { mkdir -p "$HOST_CAPACITY_STATE_DIR" 2>/dev/null || true; }
+
+# The pooled heavy slots, in try-order. Slot 1's real file now lives under the
+# state dir; its historical flat name /tmp/matou-swarm.lock survives one pin
+# cycle as a compatibility SYMLINK (HOST_CAPACITY_SLOT1_COMPAT below) so an
+# unmodified caller not yet on this path — an older pin, or an inline workflow
+# guard still hardcoding the /tmp name — flocks the SAME inode and still
+# excludes correctly against slot 1.
+HOST_CAPACITY_SLOTS="${HOST_CAPACITY_SLOTS:-$HOST_CAPACITY_STATE_DIR/matou-swarm.lock $HOST_CAPACITY_STATE_DIR/matou-host-slot-2.lock}"
+
+# Slot 1's historical /tmp name, kept for one pin cycle (#205) as a
+# compatibility SYMLINK to the real slot-1 lock. Created best-effort at acquire
+# time, and NEVER force-replacing an existing file: a regular file squatting the
+# name (an old pin that opened it before the symlink existed) is left alone
+# rather than unlinked out from under a possible holder — the exact doubling
+# this ticket closes. Retired a cycle later once every pin and the workflow
+# guards read the new path.
+HOST_CAPACITY_SLOT1_COMPAT="${HOST_CAPACITY_SLOT1_COMPAT:-/tmp/matou-swarm.lock}"
+
+# host_capacity_compat_link <old-path> <new-path> — ensure <old-path> is a
+# symlink to <new-path>, best-effort and non-clobbering (see above). No-op when
+# the two are equal, either is empty, or <old-path> already exists (as anything).
+host_capacity_compat_link() {
+  local old="$1" new="$2"
+  [ -n "$old" ] && [ -n "$new" ] || return 0
+  [ "$old" = "$new" ] && return 0
+  { [ -e "$old" ] || [ -L "$old" ]; } && return 0
+  ln -s "$new" "$old" 2>/dev/null || true
+}
+
+# _host_capacity_inode <path> — the inode number the path resolves to, or empty.
+# -L dereferences, so a /proc/self/fd/N magic symlink yields the OPEN FILE's
+# inode (not the proc link's own) and a slot reached via a symlink yields the
+# real lock's inode — exactly what flock itself locks.
+_host_capacity_inode() { stat -L -c %i "$1" 2>/dev/null || true; }
+
+# host_capacity_held_live — 0 iff this process still holds a LIVE heavy slot: a
+# slot is held AND the path still resolves to the very inode we locked
+# (HOST_CAPACITY_HELD_INO). A /tmp cleaner (or any unlink) that removes a held
+# lock file leaves the holder on an orphaned inode while a fresh file squats the
+# path — the next acquirer would make yet another inode and win, DOUBLING
+# capacity (#205). A holder calls this to notice it has lost exclusivity and
+# stand down rather than keep acting as a slot owner.
+host_capacity_held_live() {
+  [ -n "${HOST_CAPACITY_HELD_SLOT:-}" ] || return 1
+  [ -n "${HOST_CAPACITY_HELD_INO:-}" ] || return 1
+  [ "$(_host_capacity_inode "$HOST_CAPACITY_HELD_SLOT")" = "$HOST_CAPACITY_HELD_INO" ]
+}
 
 # host_capacity_acquire_heavy — try each pooled slot in order (non-blocking).
 # On success: 0, HOST_CAPACITY_HELD_SLOT names the winning path, its fd stays
@@ -42,14 +103,27 @@ HOST_CAPACITY_SLOTS="${HOST_CAPACITY_SLOTS:-/tmp/matou-swarm.lock /tmp/matou-hos
 # it; process exit does too). On exhaustion: 1, nothing held — the caller
 # must yield, never camp.
 host_capacity_acquire_heavy() {
-  local slot
+  local slot fd_ino path_ino first="${HOST_CAPACITY_SLOTS%% *}"
   HOST_CAPACITY_HELD_SLOT=""
   HOST_CAPACITY_HELD_FD=""
+  HOST_CAPACITY_HELD_INO=""
+  host_capacity_statedir_ensure
   for slot in $HOST_CAPACITY_SLOTS; do
     exec {HOST_CAPACITY_HELD_FD}>"$slot"
     if flock -n "$HOST_CAPACITY_HELD_FD"; then
-      HOST_CAPACITY_HELD_SLOT="$slot"
-      return 0
+      # Inode guard (#205): confirm the file we locked is still the file at the
+      # path. If an unlink raced between our open and our flock, the path now
+      # resolves to a different (or no) inode — our lock is on an orphan, so
+      # refuse this slot rather than hold doubled capacity.
+      fd_ino="$(_host_capacity_inode "/proc/self/fd/$HOST_CAPACITY_HELD_FD")"
+      path_ino="$(_host_capacity_inode "$slot")"
+      if [ -n "$path_ino" ] && [ "$fd_ino" = "$path_ino" ]; then
+        HOST_CAPACITY_HELD_SLOT="$slot"
+        HOST_CAPACITY_HELD_INO="$fd_ino"
+        [ "$slot" = "$first" ] && \
+          host_capacity_compat_link "$HOST_CAPACITY_SLOT1_COMPAT" "$slot"
+        return 0
+      fi
     fi
     exec {HOST_CAPACITY_HELD_FD}>&-
     HOST_CAPACITY_HELD_FD=""
@@ -64,6 +138,7 @@ host_capacity_release_heavy() {
   [ -n "${HOST_CAPACITY_HELD_FD:-}" ] && exec {HOST_CAPACITY_HELD_FD}>&-
   HOST_CAPACITY_HELD_FD=""
   HOST_CAPACITY_HELD_SLOT=""
+  HOST_CAPACITY_HELD_INO=""
 }
 
 # HOST_CAPACITY_DRIVE_MODE — how a drive's exclusive acquire sizes itself
@@ -119,17 +194,25 @@ _host_capacity_is_pool_slot() {
 # knob's doc above; the acquire is otherwise unchanged.
 host_capacity_acquire_exclusive() {
   local path fd mode="${HOST_CAPACITY_DRIVE_MODE:-exclusive}"
+  local first="${HOST_CAPACITY_SLOTS%% *}"
   HOST_CAPACITY_EXCLUSIVE_FDS=""
   HOST_CAPACITY_EXCLUSIVE_SLOTS=""
+  host_capacity_statedir_ensure
   for path in "$@"; do
     if [ "$mode" = single-slot ] && _host_capacity_pool_slot_past_first "$path"; then
       continue
     fi
     exec {fd}>"$path"
-    if flock -n "$fd"; then
+    # Inode guard (#205): refuse a lock whose path was swapped out from under us
+    # between open and flock (an orphaned inode doubles capacity) — same posture
+    # as a busy lock: release everything grabbed this call and yield.
+    if flock -n "$fd" && [ -n "$(_host_capacity_inode "$path")" ] \
+        && [ "$(_host_capacity_inode "/proc/self/fd/$fd")" = "$(_host_capacity_inode "$path")" ]; then
       HOST_CAPACITY_EXCLUSIVE_FDS="$HOST_CAPACITY_EXCLUSIVE_FDS $fd"
       if _host_capacity_is_pool_slot "$path"; then
         HOST_CAPACITY_EXCLUSIVE_SLOTS="${HOST_CAPACITY_EXCLUSIVE_SLOTS:+$HOST_CAPACITY_EXCLUSIVE_SLOTS }$path"
+        [ "$path" = "$first" ] && \
+          host_capacity_compat_link "$HOST_CAPACITY_SLOT1_COMPAT" "$path"
       fi
     else
       exec {fd}>&-
@@ -224,12 +307,12 @@ host_capacity_holder_clear_held() {
 }
 
 # every consumer sees the SAME reservation the drive declared.
-HOST_CAPACITY_DRIVE_WANTED="${HOST_CAPACITY_DRIVE_WANTED:-/tmp/matou-drive-wanted}"
+HOST_CAPACITY_DRIVE_WANTED="${HOST_CAPACITY_DRIVE_WANTED:-$HOST_CAPACITY_STATE_DIR/matou-drive-wanted}"
 # Consecutive-skip counter, persisted across the */2 executor ticks (each tick
 # is a fresh process). Its whole point is that "skipped N consecutive ticks"
 # distinguishes tick 3 from tick 50 — the observability gap that let the first
 # occurrence starve ~100 minutes across ~50 ticks unnoticed.
-HOST_CAPACITY_DRIVE_SKIPS="${HOST_CAPACITY_DRIVE_SKIPS:-/tmp/matou-drive-skip-count}"
+HOST_CAPACITY_DRIVE_SKIPS="${HOST_CAPACITY_DRIVE_SKIPS:-$HOST_CAPACITY_STATE_DIR/matou-drive-skip-count}"
 # First-post marker for the CURRENT reservation episode (#93). WANTED's mtime is
 # deliberately refreshed on every re-declaring tick (that is the TTL freshness
 # mechanism), so it can only report the per-tick age (#30), never the full
@@ -247,6 +330,7 @@ HOST_CAPACITY_DRIVE_WANTED_SINCE="${HOST_CAPACITY_DRIVE_WANTED_SINCE:-${HOST_CAP
 # — a re-declaring tick refreshes freshness without disturbing the episode's
 # first-post time, so the reservation WINDOW survives across ticks (#93).
 host_capacity_drive_reserve() {
+  host_capacity_statedir_ensure
   : >"$HOST_CAPACITY_DRIVE_WANTED"
   [ -e "$HOST_CAPACITY_DRIVE_WANTED_SINCE" ] || : >"$HOST_CAPACITY_DRIVE_WANTED_SINCE"
 }
@@ -362,6 +446,7 @@ host_capacity_drive_wanted_window() {
 # carries a running count.
 host_capacity_drive_skip_bump() {
   local n
+  host_capacity_statedir_ensure
   n="$(cat "$HOST_CAPACITY_DRIVE_SKIPS" 2>/dev/null || echo 0)"
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
   n=$((n + 1))
@@ -383,10 +468,12 @@ host_capacity_drive_skip_reset() { rm -f "$HOST_CAPACITY_DRIVE_SKIPS"; }
 # would conflate three unrelated streaks. Takes the counter PATH directly
 # (not just a consumer name) — same reason HOST_CAPACITY_DRIVE_WANTED/_SKIPS
 # above are overridable rather than hard-coded: an offline test must be able
-# to point this at a throwaway file instead of real host-global /tmp state.
-# The convention every real caller uses is /tmp/matou-<name>-drive-defer-count
-# (session-runner.sh, and the swarm.yml/triage.yml inline guards which cannot
-# source this file but mirror the same naming and message shape).
+# to point this at a throwaway file instead of real host-global state.
+# The convention every real caller uses is
+# $HOST_CAPACITY_STATE_DIR/matou-<name>-drive-defer-count (off /tmp since
+# #205/#218 — session-runner.sh, and the swarm.yml/triage.yml inline guards
+# which cannot source this file but source the host's generated host-capacity.env
+# for the same state dir and mirror the same naming and message shape).
 host_capacity_consumer_defer_bump() { # <path> -> prints the new count
   local f="$1" n
   n="$(cat "$f" 2>/dev/null || echo 0)"
@@ -433,7 +520,7 @@ host_capacity_consumer_defer_reset() { rm -f "$1"; }
 # the drive stands up (CONTEXT.md **Box**), a different
 # thing from the repo (#118) — it lands in the holder's `target` and the start
 # line's `target`, never in `repo`.
-HOST_CAPACITY_DRIVE_LOG="${HOST_CAPACITY_DRIVE_LOG:-$HOME/swarm/state/drive-log.jsonl}"
+HOST_CAPACITY_DRIVE_LOG="${HOST_CAPACITY_DRIVE_LOG:-$HOST_CAPACITY_STATE_DIR/drive-log.jsonl}"
 
 # _host_capacity_drive_log_append <json-line> — append one line, creating the
 # parent dir. Best-effort: an unwritable path is swallowed (never reds a drive).

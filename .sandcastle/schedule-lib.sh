@@ -10,7 +10,7 @@
 # Everything between "a trigger fired" and "this run has a ready set, a
 # debounce ruling and a model":
 #
-#   drive yield → janitor re-arm → list ready → debounce → per-run model
+#   drive yield → janitor re-arm → list ready → fleet pick → debounce → per-run model
 #
 # All of it was inline in run-swarm.sh, and the debounce coalescer's only test
 # was a byte-for-byte COPY of the block kept in tests/debounce-test.sh — the
@@ -35,6 +35,13 @@ _SCHEDULE_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The lister this seam reads its ready set from. Overridable so an offline test
 # never needs a tracker.
 SCHEDULE_LIST_READY="${SCHEDULE_LIST_READY:-$_SCHEDULE_HERE/list-ready-tasks.sh}"
+
+# The fleet queue (#301): the host cache + the recent-closes record live in
+# fleet-queue-lib.sh; the generated host tick (onboarding/host-state-lib.sh)
+# is what a leg looks for to know this host runs the watcher at all.
+# shellcheck source=fleet-queue-lib.sh
+. "$_SCHEDULE_HERE/fleet-queue-lib.sh"
+FLEET_QUEUE_TICK="${FLEET_QUEUE_TICK:-$HOME/factory-cron/fleet-queue-tick.sh}"
 
 # Coalescing window, seconds. See schedule_debounce_decide.
 SWARM_DEBOUNCE="${SWARM_DEBOUNCE:-600}"
@@ -153,25 +160,36 @@ schedule_ready_listing() { jq -r '.[] | "  #\(.number) \(.title)"' <<<"$1"; }
 # is the backstop either way.
 
 # schedule_stamp_path <repo-tag> -> the per-repo debounce stamp path.
-# Per-repo (#238): a shared /tmp/matou-swarm-lastready let each repo overwrite
-# the other's stamp, defeating the coalescing entirely. SWARM_DEBOUNCE_STAMP
-# overrides (tests, and an operator forcing a run).
+# Per-repo (#238): a shared matou-swarm-lastready let each repo overwrite the
+# other's stamp, defeating the coalescing entirely. Lives under the host state
+# dir off /tmp (#205/#218), the same root schedule-backstop.sh's order-repos
+# reads it from, so a tmp-clean/reboot no longer silently resets fairness.
+# SWARM_DEBOUNCE_STAMP overrides (tests, and an operator forcing a run).
 schedule_stamp_path() {
-  printf '%s' "${SWARM_DEBOUNCE_STAMP:-/tmp/matou-swarm-lastready-$1}"
+  printf '%s' "${SWARM_DEBOUNCE_STAMP:-${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}/matou-swarm-lastready-$1}"
 }
 
-# schedule_ready_hash <ready-json> -> the short digest the stamp is keyed on.
-schedule_ready_hash() { printf '%s' "$1" | sha1sum | cut -c1-16; }
+# schedule_ready_hash <ready-json> [head-sha] -> the short digest the stamp is
+# keyed on. #213: the optional head SHA is folded in so a landed fix on an
+# UNCHANGED ready-set re-arms the debounce immediately instead of coalescing
+# away for the whole window — the ready-set alone could not tell "the same
+# tickets, nothing landed" (coalesce) from "the same tickets, a fix just landed
+# on main" (run now). Empty/absent head keeps the historical ready-only digest
+# shape, so a caller that passes no head (or one with no origin/main ref) is
+# unchanged.
+schedule_ready_hash() { printf '%s\n%s' "$1" "${2:-}" | sha1sum | cut -c1-16; }
 
-# schedule_debounce_decide <ready-json> <stamp-path> <window-seconds>
+# schedule_debounce_decide <ready-json> <stamp-path> <window-seconds> [head-sha]
 #   -> "run"                 this trigger is genuine; the stamp is REWRITTEN
 #   -> "coalesce <age-secs>" the identical set was attempted <age>s ago
 # The caller records that it wrote a fresh stamp (run-swarm's stamp_written), so
 # a run that dies quietly without a worker can invalidate it on the way out
-# (#435) instead of coalescing away the very next genuine retry.
+# (#435) instead of coalescing away the very next genuine retry. #213: the
+# head SHA (origin/main at the start of this run) joins the digest so a landed
+# fix on a byte-identical ready-set is a genuine trigger, not a duplicate.
 schedule_debounce_decide() {
-  local ready="$1" stamp="$2" window="$3" ready_hash last_hash last_at now
-  ready_hash="$(schedule_ready_hash "$ready")"
+  local ready="$1" stamp="$2" window="$3" head="${4:-}" ready_hash last_hash last_at now
+  ready_hash="$(schedule_ready_hash "$ready" "$head")"
   now="$(date +%s)"
   if [ -s "$stamp" ]; then
     read -r last_hash last_at < "$stamp" || true
@@ -183,6 +201,80 @@ schedule_debounce_decide() {
   fi
   printf '%s %s\n' "$ready_hash" "$now" > "$stamp"
   echo run
+}
+
+# ── the fleet pick (#301) ──────────────────────────────────────────────────
+# A run is ONE ticket, and WHICH ticket is a fleet-wide decision, not this
+# repo's: `priority` first, then the filing date, across every consumer repo —
+# with a closed ticket's dependants ahead of both (Ben's ruling, 2026-10-22).
+# Three ways a leg learns its ticket, in precedence order:
+#   1. inputs.ticket (SWARM_TICKET) — the fleet queue watcher dispatched THIS
+#      run for THAT ticket. It is the pick, or — when it is no longer ready
+#      here (claimed by another host, closed, handed off) — the run stands
+#      down rather than drift onto this repo's next ticket ahead of an older
+#      one elsewhere.
+#   2. the host cache the watcher's tick writes (fleet-queue.json): a `closed`
+#      or cron leg reads where the fleet stands. Head in another repo → stand
+#      down (the watcher dispatches it); head here and still ready → the pick.
+#   3. neither (a host not yet enrolled with the tick, or a stale cache) →
+#      the pre-#301 behaviour: this repo's own order, no pick signal.
+# A `closed` leg additionally RECORDS the close on the host, so the next tick
+# promotes that ticket's dependants (a human's close, not only the swarm's).
+#
+# schedule_fleet_pick <ready-json> <repo-slug> <out-file>
+#   rc 0  <out-file> holds the ready JSON to proceed with — exactly the pick
+#         when one was found (SCHEDULE_FLEET_PICK=<n>), else the input;
+#         SCHEDULE_FLEET_NOTE is the one job-log line.
+#   rc 1  the leg must stand down: SCHEDULE_FLEET_REASON is the runlog reason
+#         (fleet-pick-gone | fleet-head-elsewhere), SCHEDULE_FLEET_NOTE says why.
+# Takes an out-file (never `$(...)`) for the same reason as
+# schedule_list_ready_or_verdict: the three SCHEDULE_FLEET_* results must land
+# in the run's own shell.
+schedule_fleet_pick() {
+  local ready="$1" slug="$2" out="$3" pick="" head hslug hn
+  SCHEDULE_FLEET_PICK=""; SCHEDULE_FLEET_NOTE=""; SCHEDULE_FLEET_REASON=""
+  if [ -n "${SWARM_TICKET:-}" ]; then
+    if jq -e --arg n "$SWARM_TICKET" 'any(.[]; (.number | tostring) == $n)' <<<"$ready" >/dev/null 2>&1; then
+      pick="$SWARM_TICKET"
+      SCHEDULE_FLEET_NOTE="fleet pick #$pick (dispatched by the fleet queue, #301) — this run works it and nothing else"
+    else
+      SCHEDULE_FLEET_REASON=fleet-pick-gone
+      SCHEDULE_FLEET_NOTE="the fleet pick #$SWARM_TICKET is no longer ready here (claimed elsewhere, closed or handed off) — standing down; the fleet queue picks again next tick (#301)"
+      return 1
+    fi
+  else
+    if [ -n "${SWARM_CLOSED_ISSUE:-}" ] && [ -f "$FLEET_QUEUE_TICK" ]; then
+      fleet_queue_recent_close_record "$slug" "$SWARM_CLOSED_ISSUE"
+    fi
+    if head="$(fleet_queue_cache_head)"; then
+      hslug="${head% *}"; hn="${head#* }"
+      if [ "$hslug" != "$slug" ]; then
+        SCHEDULE_FLEET_REASON=fleet-head-elsewhere
+        SCHEDULE_FLEET_NOTE="the fleet head is $hslug#$hn, not a ticket of this repo — standing down; the fleet queue dispatches it (#301)"
+        return 1
+      fi
+      if jq -e --arg n "$hn" 'any(.[]; (.number | tostring) == $n)' <<<"$ready" >/dev/null 2>&1; then
+        pick="$hn"
+        SCHEDULE_FLEET_NOTE="fleet head #$pick is this repo's (#301) — this run works it and nothing else"
+      fi
+    fi
+  fi
+  if [ -n "$pick" ]; then
+    jq --arg n "$pick" 'map(select((.number | tostring) == $n))' <<<"$ready" >"$out"
+    SCHEDULE_FLEET_PICK="$pick"
+  else
+    printf '%s' "$ready" >"$out"
+    [ -n "$SCHEDULE_FLEET_NOTE" ] || SCHEDULE_FLEET_NOTE="no fleet view on this host (fleet-queue cache absent or stale) — this repo's own order (#301)"
+  fi
+  return 0
+}
+
+# schedule_fleet_pick_signal <host-signals-dir> — drop the pick where every
+# sandbox sees it read-only (/run/host-signals/fleet-pick, the start-sha
+# pattern). No pick → no file → the in-sandbox lister's own order. Best-effort.
+schedule_fleet_pick_signal() {
+  [ -n "${SCHEDULE_FLEET_PICK:-}" ] || return 0
+  mkdir -p "$1" 2>/dev/null && printf '%s\n' "$SCHEDULE_FLEET_PICK" >"$1/fleet-pick" 2>/dev/null || true
 }
 
 # ── the per-run model (#448) ───────────────────────────────────────────────
@@ -209,6 +301,39 @@ schedule_model_note() {
   first="$(schedule_first_model "$ready")"
   printf 'run-swarm: model for this run: %s%s\n' "$model" \
     "${first:+ (from label model-$first on #$(schedule_first_number "$ready"))}"
+}
+
+# ── the per-run landing (idss ADR 0267) ─────────────────────────────────────
+# A ticket may carry ONE additive `landing-<suffix>` label that overrides the
+# repo's LANDING for that ticket (policy-lib.sh). list-ready-tasks.sh surfaces
+# it as `.landing_label` (raw) and `.landing` (resolved). Like the model, the
+# run's landing follows the FIRST ready ticket — but for a harder reason: one
+# run shares one worktree across its iterations, so a push-ticket iteration
+# after a PR-ticket iteration would push the PR ticket's commit to main.
+
+# schedule_bad_landing_labels <ready-json> -> "<N> landing-<suffix>" per ticket
+# whose label is off the allowlist (EVERY ticket, not just the head: a later
+# iteration's lister would otherwise have to guess). Empty when clean.
+schedule_bad_landing_labels() {
+  local allowed
+  allowed="$(printf '%s\n' ${POLICY_TICKET_LANDING_LABELS:-pr} | jq -Rn '[inputs | select(length > 0)]')"
+  jq -r --argjson ok "$allowed" '
+    .[] | select(.landing_label != null)
+    | select(.landing_label as $l | ($ok | index($l)) == null)
+    | "\(.number) landing-\(.landing_label)"' <<<"$1" 2>/dev/null || true
+}
+
+# schedule_run_landing <ready-json> -> this run's landing:
+#   repo-pr   the repo default is already pr — every ticket has its own branch
+#   pr <N>    the head ticket lands by PR: the run works #N and nothing else
+#   push      the run never sees a ticket that lands by PR
+schedule_run_landing() {
+  if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then echo repo-pr; return 0; fi
+  if [ "$(jq -r '.[0].landing // "push"' <<<"$1" 2>/dev/null)" = pr ]; then
+    printf 'pr %s\n' "$(schedule_first_number "$1")"
+  else
+    echo push
+  fi
 }
 
 fi

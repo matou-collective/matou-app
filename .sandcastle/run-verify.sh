@@ -22,6 +22,8 @@ set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=verdict-lib.sh
 . "$here/verdict-lib.sh"
+# shellcheck source=git-cred-lib.sh
+. "$here/git-cred-lib.sh"
 : "${FORGEJO_TOKEN:?}"
 : "${FORGEJO_API:?}"
 repo_slug="${REPO_SLUG:-${FORGEJO_API##*/repos/}}"
@@ -41,7 +43,15 @@ verdict_stage "git sync (fetch/checkout/reset)" "$git_log"
 # no-hardcoded-remote fix, as in triage.yml's fallback) rather than baking in
 # git.matou.nz; the test seam points at a local fixture repo offline.
 host="${SERVER_URL#https://}"; host="${host:-git.matou.nz}"
-url="${GIT_VERIFY_REMOTE_URL:-https://swarm:${FORGEJO_TOKEN}@${host}/${repo_slug}.git}"
+# The remote is CREDENTIAL-FREE (#195/#222): the org-wide FORGEJO_TOKEN never
+# rides in the URL (where it would persist in the workdir's .git/config and in
+# argv). git_cred_export hands git the token per invocation via a token-free
+# credential helper, covering the fetch/clone in the subshell below (which
+# inherits the exported GIT_CONFIG_*). git_cred_strip_url normalises an
+# explicitly-passed credentialed override; the test seam (GIT_VERIFY_REMOTE_URL,
+# a local fixture path with no userinfo) passes through unchanged.
+url="$(git_cred_strip_url "${GIT_VERIFY_REMOTE_URL:-https://${host}/${repo_slug}.git}")"
+git_cred_export
 # A real subshell with its OWN `set -e`, so the first failing git command aborts
 # the sequence immediately — mirrors git-setup.sh: without it, a failed `git
 # fetch` would leave `git checkout -f`/`git reset --hard` to run against stale

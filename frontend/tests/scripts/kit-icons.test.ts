@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
-import { renderIcons } from '../../scripts/kit/icons.mjs';
+import { renderIcons, logoBackground } from '../../scripts/kit/icons.mjs';
 
 const REPO = join(__dirname, '..', '..', '..');
 
@@ -30,6 +30,111 @@ describe('kit icons', () => {
     await renderIcons({ logo: svg, primary: '#0A5C6B', root });
     const m = await sharp(join(root, 'src/assets/kit/logo.png')).metadata();
     expect([m.width, m.height]).toEqual([512, 512]);
+    // A transparent logo keeps the brand primary behind the mark.
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/ic_launcher_background.xml'), 'utf8')).toContain('#0A5C6B');
+    const edge = await sharp(join(root, 'src-electron/icons/256x256.png')).extract({ left: 40, top: 128, width: 1, height: 1 }).raw().toBuffer();
+    expect([edge[0], edge[1], edge[2], edge[3]]).toEqual([0x0a, 0x5c, 0x6b, 255]);
+    await rm(root, { recursive: true, force: true });
+  }, 60_000);
+  it('fills the tile with an opaque logo on its own background colour', async () => {
+    // A white-background wordmark (the common case: a PNG export with no alpha)
+    // must not become a small white square on the brand primary — the tile takes
+    // the logo's background colour and the logo fills it.
+    const root = await mkdtemp(join(tmpdir(), 'kit-icons-'));
+    const logo = join(root, 'logo.png');
+    const mark = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#ffffff"/><rect x="24" y="24" width="16" height="16" fill="#102030"/></svg>');
+    await sharp(mark).png().toFile(logo);
+    await renderIcons({ logo, primary: '#0A5C6B', root });
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/ic_launcher_background.xml'), 'utf8')).toContain('#ffffff');
+    const px = async (rel: string, left: number, top: number) => {
+      const b = await sharp(join(root, rel)).extract({ left, top, width: 1, height: 1 }).raw().toBuffer();
+      return [b[0], b[1], b[2], b[3]];
+    };
+    // Legacy/electron tile: logo background reaches the tile edge, corner stays rounded, mark in the centre.
+    expect(await px('src-electron/icons/256x256.png', 40, 128)).toEqual([255, 255, 255, 255]);
+    expect(await px('src-electron/icons/256x256.png', 128, 128)).toEqual([0x10, 0x20, 0x30, 255]);
+    expect((await px('src-electron/icons/256x256.png', 2, 2))[3]).toBe(0);
+    // Adaptive foreground: the logo sits on transparent inside the safe zone (the matching background colour fills the rest).
+    expect((await px('src-capacitor/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png', 10, 10))[3]).toBe(0);
+    expect(await px('src-capacitor/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png', 216, 216)).toEqual([0x10, 0x20, 0x30, 255]);
+    expect(await px('src-capacitor/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png', 90, 216)).toEqual([255, 255, 255, 255]);
+    await rm(root, { recursive: true, force: true });
+  }, 60_000);
+  it('fills the tile with a round logo on its disc colour, not the brand primary', async () => {
+    // The Coa/whakatohea-demo case (#651): the kit logo is a round logo — an
+    // opaque white disc inscribed in a 512×512 square with transparent corners.
+    // The founder chose white behind it, so the icon plate must be white, never
+    // the brand primary floated behind a white circle.
+    const root = await mkdtemp(join(tmpdir(), 'kit-icons-'));
+    const logo = join(root, 'logo.png');
+    const disc = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512">' +
+        '<circle cx="256" cy="256" r="256" fill="#ffffff"/>' +
+        '<circle cx="256" cy="256" r="90" fill="#102030"/></svg>',
+    );
+    await sharp(disc).png().toFile(logo);
+    // Detection reads the disc's rim colour, the founder's chosen background.
+    expect(await logoBackground(logo)).toBe('#ffffff');
+    await renderIcons({ logo, primary: '#404040', root });
+    const { readFile } = await import('node:fs/promises');
+    const xml = await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/ic_launcher_background.xml'), 'utf8');
+    expect(xml).toContain('>#ffffff<');
+    expect(xml).not.toContain('#404040');
+    const px = async (rel: string, left: number, top: number) => {
+      const b = await sharp(join(root, rel)).extract({ left, top, width: 1, height: 1 }).raw().toBuffer();
+      return [b[0], b[1], b[2], b[3]];
+    };
+    // Icon corner pixels are white (the disc colour), not #404040.
+    expect(await px('src-electron/icons/256x256.png', 40, 128)).toEqual([255, 255, 255, 255]);
+    expect(await px('src-electron/icons/256x256.png', 128, 40)).toEqual([255, 255, 255, 255]);
+    await rm(root, { recursive: true, force: true });
+  }, 60_000);
+  it('honours kit brand.logoBackground over detection', async () => {
+    // When IDSS sends brand.logoBackground (Coa #156), every tile fills with
+    // that colour even if the logo would otherwise detect a different one.
+    const root = await mkdtemp(join(tmpdir(), 'kit-icons-'));
+    const logo = join(root, 'logo.png');
+    // A floating mark whose own detection would return null (brand primary).
+    const mark = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect x="3" y="3" width="4" height="4" fill="#102030"/></svg>');
+    await sharp(mark).png().toFile(logo);
+    expect(await logoBackground(logo)).toBeNull();
+    await renderIcons({ logo, primary: '#404040', root, brandBackground: '#1e5f74' });
+    const { readFile } = await import('node:fs/promises');
+    const xml = await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/ic_launcher_background.xml'), 'utf8');
+    expect(xml).toContain('>#1e5f74<');
+    expect(xml).not.toContain('#404040');
+    const b = await sharp(join(root, 'src-electron/icons/256x256.png')).extract({ left: 40, top: 128, width: 1, height: 1 }).raw().toBuffer();
+    expect([b[0], b[1], b[2], b[3]]).toEqual([0x1e, 0x5f, 0x74, 255]);
+    await rm(root, { recursive: true, force: true });
+  }, 60_000);
+  it('adaptive background layer equals the detected logo background even when the wordmark touches the plate edge', async () => {
+    // The whakatohea-demo case (#635): a wordmark on white whose dark glyphs
+    // reach the left/right edges. A strict "every border pixel matches" check
+    // gave up and the icon fell back to the brand primary; the background is the
+    // dominant border colour, so the adaptive icon fills with the logo's own white.
+    const root = await mkdtemp(join(tmpdir(), 'kit-icons-'));
+    const logo = join(root, 'logo.png');
+    const mark = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512">' +
+        '<rect width="512" height="512" fill="#ffffff"/>' +
+        // glyph slabs that touch the left and right plate edges
+        '<rect x="0" y="230" width="70" height="52" fill="#203040"/>' +
+        '<rect x="442" y="230" width="70" height="52" fill="#203040"/>' +
+        '<rect x="180" y="230" width="152" height="52" fill="#203040"/></svg>',
+    );
+    await sharp(mark).png().toFile(logo);
+    // Detection sees past the edge-touching glyphs to the white plate.
+    const detected = await logoBackground(logo);
+    expect(detected).toBe('#ffffff');
+    await renderIcons({ logo, primary: '#404040', root });
+    const { readFile } = await import('node:fs/promises');
+    // The adaptive-icon background layer colour equals the detected logo background.
+    const xml = await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/ic_launcher_background.xml'), 'utf8');
+    expect(xml).toContain(`>${detected}<`);
+    // Not the brand primary — the pre-fix fallback.
+    expect(xml).not.toContain('#404040');
     await rm(root, { recursive: true, force: true });
   }, 60_000);
 });

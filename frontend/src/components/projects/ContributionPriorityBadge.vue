@@ -39,18 +39,18 @@ const label = computed(
   }
 
   &.medium {
-    background: rgba(74, 157, 156, 0.12);
-    color: var(--matou-chart-2, #4a9d9c);
+    background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
+    color: var(--matou-chart-2);
   }
 
   &.high {
-    background: rgba(30, 95, 116, 0.1);
-    color: var(--matou-chart-1, #1e5f74);
+    background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
+    color: var(--matou-chart-1);
   }
 
   &.critical {
     background: rgba(200, 70, 58, 0.1);
-    color: var(--matou-destructive, #c8463a);
+    color: var(--matou-destructive);
   }
 
   &:not(.low):not(.medium):not(.high):not(.critical) {

@@ -16,7 +16,7 @@ func TestEveryActionHasExactlyOneCapability(t *testing.T) {
 		ActionSaveOrgConfig, ActionGrantStewardAdmin, ActionSetIdentity,
 		ActionOpenCommunitySettings,
 		ActionShareContribution, ActionOfferContribution, ActionAcceptOffer,
-		ActionSubmitEvidence, ActionReviewContribution, ActionSignOffPlan,
+		ActionSubmitEvidence, ActionSaveEvidenceDraft, ActionReviewContribution, ActionSignOffPlan,
 		ActionApproveSubContrib,
 		ActionSignOffProposal, ActionRejectProposal, ActionEditProposal, ActionWithdrawProposal,
 		ActionCreateProposal, ActionSubmitProposal,

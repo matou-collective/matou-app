@@ -49,12 +49,17 @@ root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 # git's pre-push ref lines arrive on stdin; consume once and replay to both gates.
 _prepush_stdin="$(cat)"
 
-# ── Gate 1: factory-drift (all workdirs; fail-open) ──────────────────────────
-# The whole gate is a function whose ONLY blocking signal is the token
-# DRIFT_BLOCK on stdout, emitted solely after check-harness-drift.sh CONFIRMS
-# drift. Any earlier return (missing files, no manifest path touched, an infra
-# error) yields no token — so the push proceeds. This is what makes the gate
-# fail-open regardless of how it fails.
+# ── Gate 1: factory-drift (all workdirs; fail-open EXCEPT an unverified
+#            vendored-file push — #1965) ──────────────────────────────────────
+# The gate is a function whose blocking signals are two stdout tokens:
+# DRIFT_BLOCK (check-harness-drift.sh CONFIRMED drift) and VERIFY_BLOCK (a
+# vendored file is in THIS push but the check could not return a CLEAN verdict —
+# a TRANSPORT fault, exit 3, or any other non-zero without a drift marker).
+# Every EARLIER return (missing files, no manifest path touched) yields no token,
+# so an ORDINARY push still fails open regardless of how the check would fault:
+# the fail-CLOSED posture below is reached ONLY once a manifest path is confirmed
+# in the push, so it never touches the reconcile rail or an offline workdir that
+# carries no vendored edit (#1965 — see the tail).
 _drift_gate() {
   local mf="$root/.sandcastle/FACTORY_MANIFEST"
   local drift="$root/.sandcastle/check-harness-drift.sh"
@@ -77,26 +82,51 @@ _drift_gate() {
   done <"$mf"
   [ "$touched" -eq 1 ] || return 0
 
-  # A vendored file is in this push — confirm actual byte-drift from FACTORY_REF.
-  # A DRIFT marker in the output is the only thing that blocks; a non-zero exit
-  # without one (network/tooling failure) falls through to a push (fail-open).
+  # A vendored file is in this push. It may proceed ONLY on a CLEAN verdict
+  # (exit 0) from check-harness-drift.sh. Anything else blocks, because none of
+  # them clears the edit against FACTORY_REF:
+  #   * CONFIRMED drift (exit 1 with a DRIFT:/FAILED marker) -> DRIFT_BLOCK;
+  #   * a TRANSPORT fault (exit 3) or any other non-zero WITHOUT a marker — the
+  #     check RAN but could not READ drift -> VERIFY_BLOCK (#1965).
+  # A guard that could not reach the code it guards must never be mistaken for a
+  # clean result (GOTCHAS #30) — and check-harness-drift.sh already rides out a
+  # transient blip (retry+backoff) before it exits 3, so only a SUSTAINED outage
+  # lands here. This is the gate's ONLY fail-CLOSED path and it is unreachable
+  # unless the push edits a vendored file, so an ordinary push and run-swarm.sh's
+  # reconcile push (no vendored edit, returned above) are untouched.
   local out rc
   out="$(bash "$drift" 2>&1)"; rc=$?
-  if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q '^DRIFT:\|^check-harness-drift: FAILED'; then
+  if [ "$rc" -eq 0 ]; then
+    return 0
+  fi
+  if printf '%s\n' "$out" | grep -q '^DRIFT:\|^check-harness-drift: FAILED'; then
     echo "DRIFT_BLOCK"
+  else
+    echo "VERIFY_BLOCK"
   fi
   return 0
 }
 
-if [ "$(_drift_gate 2>/dev/null | tail -1)" = "DRIFT_BLOCK" ]; then
-  # Re-run the drift check visibly so the operator sees the divergent file(s),
-  # the diff and the pinned ref (the token-capture run above swallowed them).
+_drift_verdict="$(_drift_gate 2>/dev/null | tail -1)"
+if [ "$_drift_verdict" = "DRIFT_BLOCK" ] || [ "$_drift_verdict" = "VERIFY_BLOCK" ]; then
+  # Re-run the drift check visibly so the operator sees the divergent file(s)
+  # and the diff, or the transport/fault reason (the token-capture run above
+  # swallowed them).
   bash "$root/.sandcastle/check-harness-drift.sh" >&2 || true
   {
     echo ""
-    echo "pre-push BLOCKED (#932): this push edits a factory-vendored file (ADR 0180)"
-    echo "that has DRIFTED from FACTORY_REF. Vendored .sandcastle/ files are read-only"
-    echo "here — a direct edit only reds the seam drift stage AFTER it lands on main."
+    if [ "$_drift_verdict" = "DRIFT_BLOCK" ]; then
+      echo "pre-push BLOCKED (#932): this push edits a factory-vendored file (ADR 0180)"
+      echo "that has DRIFTED from FACTORY_REF. Vendored .sandcastle/ files are read-only"
+      echo "here — a direct edit only reds the seam drift stage AFTER it lands on main."
+    else
+      echo "pre-push BLOCKED (#1965): this push edits a factory-vendored file (ADR 0180)"
+      echo "but the drift check could NOT verify it against FACTORY_REF (the factory was"
+      echo "unreachable, or the check faulted — see its output above). A vendored-file"
+      echo "edit that was never checked must not land unread (GOTCHAS #30): an offline"
+      echo "workdir cannot safely author a factory-owned file. Retry once the factory is"
+      echo "reachable."
+    fi
     echo "To change a vendored file:"
     echo "  1. land the fix in Matou/dev-factory,"
     echo "  2. bump .sandcastle/FACTORY_REF and re-vendor (onboarding/onboard.sh vendor),"

@@ -77,23 +77,35 @@
 
       <!-- Contribution cards -->
       <div v-else class="contributions-list">
-        <ContributionCardCompact
-          v-for="contribution in contributions"
+        <div
+          v-for="(contribution, index) in orderedContributions"
           :key="contribution.id"
-          :contribution="contribution"
-          :can-confirm="canConfirm"
-          :can-edit="canEdit"
-          :is-plan-signed-off="isPlanSignedOff"
-          :user-role="userRole"
-          :current-user-id="currentUserId"
-          :all-contributions="allContributions"
-          @update="$emit('update-contribution', $event)"
-          @view-detail="$emit('view-contribution', $event)"
-          @create-child="$emit('create-child-contribution', $event)"
-          @assign="(c: Contribution) => emit('assign-contribution', c)"
-          @edit="(c: Contribution) => emit('edit-contribution', c)"
-          @archive="(c: Contribution) => emit('archive-contribution', c)"
-        />
+          class="reorder-row"
+          :class="{ 'is-dragging': dragIndex === index, 'drag-over': dragOverIndex === index }"
+          :draggable="canReorder"
+          @dragstart="onDragStart(index)"
+          @dragover.prevent="onDragOver(index)"
+          @drop="onDrop(index)"
+          @dragend="onDragEnd"
+        >
+          <GripVertical v-if="canReorder" class="drag-handle" aria-label="Drag to reorder" />
+          <ContributionCardCompact
+            class="reorder-card"
+            :contribution="contribution"
+            :can-confirm="canConfirm"
+            :can-edit="canEdit"
+            :is-plan-signed-off="isPlanSignedOff"
+            :user-role="userRole"
+            :current-user-id="currentUserId"
+            :all-contributions="allContributions"
+            @update="$emit('update-contribution', $event)"
+            @view-detail="$emit('view-contribution', $event)"
+            @create-child="$emit('create-child-contribution', $event)"
+            @assign="(c: Contribution) => emit('assign-contribution', c)"
+            @edit="(c: Contribution) => emit('edit-contribution', c)"
+            @archive="(c: Contribution) => emit('archive-contribution', c)"
+          />
+        </div>
       </div>
 
       <!-- Add contribution (always available to those with edit perms; adding a
@@ -109,9 +121,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
-import { ChevronDown, CheckCircle, Lock, AlertCircle, AlertTriangle, Plus } from 'lucide-vue-next';
+import { ref, computed, watch } from 'vue';
+import { ChevronDown, CheckCircle, Lock, AlertCircle, AlertTriangle, Plus, GripVertical } from 'lucide-vue-next';
 import type { Milestone, Contribution } from 'src/types/projects';
+import { parseBudget, formatCurrency } from 'src/lib/milestoneBudget';
+import { sortSiblings } from 'src/lib/contributions/ordering';
+import { topLevelContributions } from 'src/lib/contributions/nesting';
 import ContributionCardCompact from './ContributionCardCompact.vue';
 
 interface Props {
@@ -120,6 +135,7 @@ interface Props {
   projectId?: string;
   canEdit?: boolean;
   canConfirm?: boolean;
+  canReorder?: boolean;
   isPlanSignedOff?: boolean;
   userRole?: string;
   currentUserId?: string;
@@ -130,6 +146,7 @@ const props = withDefaults(defineProps<Props>(), {
   projectId: undefined,
   canEdit: false,
   canConfirm: false,
+  canReorder: false,
   isPlanSignedOff: false,
   userRole: 'member',
   currentUserId: '',
@@ -146,14 +163,56 @@ const emit = defineEmits<{
   (e: 'archive-milestone', milestone: Milestone): void;
   (e: 'edit-contribution', contribution: Contribution): void;
   (e: 'archive-contribution', contribution: Contribution): void;
+  (e: 'reorder-contributions', orderedIds: string[]): void;
 }>();
 
 const isExpanded = ref(true);
 
 const contributions = computed<Contribution[]>(
-  () => ((props.milestone.contributions ?? []) as Contribution[])
-    .filter(c => c.status !== 'archived'),
+  () => sortSiblings(
+    // Skip subs drawn nested under their parent so a sub that also carries a
+    // milestone_id does not show (and count) twice — once nested, once as its
+    // own top-level card (#773).
+    topLevelContributions(
+      ((props.milestone.contributions ?? []) as Contribution[]).filter(c => c.status !== 'archived'),
+    ),
+  ),
 );
+
+// Local, drag-mutable mirror of the canonical order so a drag reorders
+// immediately (optimistic) before the backend round-trip refreshes the plan.
+const orderedContributions = ref<Contribution[]>([]);
+watch(contributions, (val) => { orderedContributions.value = [...val]; }, { immediate: true });
+
+const dragIndex = ref<number | null>(null);
+const dragOverIndex = ref<number | null>(null);
+
+function onDragStart(index: number) {
+  if (!props.canReorder) return;
+  dragIndex.value = index;
+}
+
+function onDragOver(index: number) {
+  if (!props.canReorder || dragIndex.value === null) return;
+  dragOverIndex.value = index;
+}
+
+function onDragEnd() {
+  dragIndex.value = null;
+  dragOverIndex.value = null;
+}
+
+function onDrop(index: number) {
+  const from = dragIndex.value;
+  onDragEnd();
+  if (!props.canReorder || from === null || from === index) return;
+  const arr = [...orderedContributions.value];
+  const [moved] = arr.splice(from, 1);
+  if (!moved) return;
+  arr.splice(index, 0, moved);
+  orderedContributions.value = arr;
+  emit('reorder-contributions', arr.map(c => c.id));
+}
 
 const allConfirmed = computed(
   () =>
@@ -173,16 +232,6 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-// Parse a free-form budget string ("$1,234.50", "1234", "USD 500") to a number.
-// Returns 0 when nothing parseable is found.
-function parseBudget(s: string | undefined): number {
-  if (!s) return 0;
-  const cleaned = s.replace(/[^0-9.-]/g, '');
-  if (!cleaned) return 0;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : 0;
-}
-
 const actualCost = computed(() =>
   contributions.value.reduce((sum, c) => sum + parseBudget(c.budget), 0),
 );
@@ -192,14 +241,6 @@ const hasBudget = computed(() => (props.milestone.budget_allocation ?? 0) > 0);
 const isOverBudget = computed(
   () => hasBudget.value && actualCost.value > (props.milestone.budget_allocation ?? 0),
 );
-
-function formatCurrency(n: number): string {
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  }).format(n);
-}
 </script>
 
 <style scoped lang="scss">
@@ -322,8 +363,8 @@ function formatCurrency(n: number): string {
 }
 
 .badge-confirmed {
-  background: rgba(74, 157, 156, 0.12);
-  color: var(--matou-accent, #4a9d9c);
+  background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
+  color: var(--matou-accent);
 }
 
 .badge-icon {
@@ -350,7 +391,7 @@ function formatCurrency(n: number): string {
 // Body
 .contributions-body {
   padding: 12px 16px 16px;
-  background: var(--matou-background, #fafbfc);
+  background: var(--matou-background);
   border-top: 1px solid var(--matou-border);
 }
 
@@ -375,6 +416,40 @@ function formatCurrency(n: number): string {
   flex-direction: column;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.reorder-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.reorder-row[draggable='true'] {
+  cursor: grab;
+}
+
+.reorder-row.is-dragging {
+  opacity: 0.5;
+}
+
+.reorder-row.drag-over {
+  outline: 2px dashed var(--q-primary, #1976d2);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.drag-handle {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 18px;
+  height: 18px;
+  color: #9ca3af;
+  cursor: grab;
+}
+
+.reorder-card {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .add-contribution-row {
@@ -434,8 +509,8 @@ function formatCurrency(n: number): string {
   font-size: 0.75rem;
   padding: 3px 10px;
   border-radius: 12px;
-  background: rgba(74, 157, 156, 0.12);
-  color: var(--matou-accent, #4a9d9c);
+  background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
+  color: var(--matou-accent);
   font-weight: 500;
   white-space: nowrap;
 

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# claude-fence — deliver the Claude OAuth token to the sandboxed `claude` CLI
+# from a read-only mounted secret FILE, never a `docker run -e` env var (#198).
+#
+# Installed as the `claude` FIRST on PATH in the worker sandbox image (ahead of
+# the real CLI, which lands in /home/agent/.local/bin — see .sandcastle/
+# Dockerfile). The token used to ride CLAUDE_CODE_OAUTH_TOKEN as a `docker run
+# -e` value, which lands in `docker inspect .Config.Env` — readable by anyone
+# with Docker API access (the 2026-07-11 breach vector, the #578 leak class).
+# run-swarm.sh now writes the SELECTED account's token to a 0600 file
+# (main.mts mounts .sandcastle/secrets at /run/secrets, the same mechanism the
+# forgejo/mattermost/digitalocean tokens already use). This shim reads it and
+# execs the real CLI with the token in the child env ONLY, so it never appears
+# in the container's inspectable env.
+#
+# Falls back to the ambient CLAUDE_CODE_OAUTH_TOKEN when the file is absent (or
+# empty), so a bare `pnpm run sandcastle` outside the sandbox — no mount — still
+# works off the operator's own exported token.
+#
+# CLAUDE_FENCE_REAL overrides the real CLI path (default its install location)
+# and CLAUDE_FENCE_SECRET the secret file — the tests point both at stubs. This
+# shim is exercised directly by .sandcastle/tests/claude-fence-test.sh, so its
+# logic cannot drift from a copy.
+set -euo pipefail
+
+real="${CLAUDE_FENCE_REAL:-/home/agent/.local/bin/claude}"
+secret="${CLAUDE_FENCE_SECRET:-/run/secrets/claude_oauth_token}"
+
+# #200: announce the account FINGERPRINT (sha256(token)[:12], NEVER the token)
+# as a protocol line record-run-result.sh zips per iteration to attribute token
+# spend to the account that actually ran it. Emitted on STDERR, never stdout:
+# stdout is the CLI's own (stream-json) channel a stray line would corrupt, and
+# Sandcastle captures the worker's stderr into the combined run output the
+# recorder reads. Empty token / no sha256sum → nothing announced (attribution
+# falls back to NULL downstream), never a failure of the call.
+_claude_fence_fp() {
+  [ -n "${1:-}" ] || return 0
+  command -v sha256sum >/dev/null 2>&1 || return 0
+  printf 'claude-account-fp=%s\n' "$(printf '%s' "$1" | sha256sum | cut -c1-12)" >&2
+}
+
+if [ -s "$secret" ]; then
+  tok="$(cat "$secret")"
+  _claude_fence_fp "$tok"
+  exec env CLAUDE_CODE_OAUTH_TOKEN="$tok" "$real" "$@"
+fi
+_claude_fence_fp "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+exec "$real" "$@"

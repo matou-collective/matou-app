@@ -18,6 +18,14 @@ export REHEARSAL_DRIVE_ISSUE=378
 export CLAUDE_LIMIT_MARKER="$tmp/claude-limit"
 export CURL_LOG="$tmp/curl.log" ISSUE_FIXTURE="$tmp/issues.json" LIST_COUNT="$tmp/list-count"
 export CLAUDE_CALLS="$tmp/claude-calls"
+# #186: pin a test-controlled PUSH policy — the healer's fast lane closes its
+# ticket through the close-report gate, which sources the HOST repo's real
+# swarm-policy.sh when the seam is unset. Vendored into a LANDING=pr consumer
+# that flips close-report onto the PR path (no direct PATCH-closed), so the
+# `"state":"closed"` assertion RED'd. This whole suite is push (it pushes to
+# origin/main and closes tickets directly).
+printf 'LANDING=push\n' > "$tmp/push-policy.sh"
+export SWARM_POLICY_FILE="$tmp/push-policy.sh"
 # The rendered rehearsal prompts live at the harness root. Factory-side the suite
 # runs from <factory>/tests and the rendered copies are the self-pin under
 # .sandcastle/; consumer-side the suite is vendored into <repo>/.sandcastle/tests/

@@ -114,8 +114,10 @@ export FORGEJO_TOKEN FORGEJO_API
 . "$here/landing-lib.sh"
 policy_load "${SWARM_POLICY_FILE:-}"
 
-print_landing() { # print_landing <issue-number>
-  if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
+print_landing() { # print_landing <issue-number> [ticket-landing]
+  # The ticket's OWN landing (list-ready-tasks.sh's `.landing`, idss ADR 0267)
+  # wins over the repo default; absent (an older lister) falls back to it.
+  if [ "${2:-${SWARM_POLICY_LANDING:-push}}" = pr ]; then
     echo "landing: PR from $(landing_branch_for "$1")" >&2
   else
     echo "landing: push to main" >&2
@@ -233,7 +235,7 @@ for i in $(seq 0 $((n - 1))); do
   cid="$(claim_post "$num" "$host" "$run")" || continue
   if claim_won "$num" "$cid" "$alive"; then
     claim_mark_working "$num" || true
-    print_landing "$num"
+    print_landing "$num" "$(jq -r ".[$i].landing // empty" <<<"$ready")"
     jq -c "[.[$i]]" <<<"$ready"
     exit 0
   fi

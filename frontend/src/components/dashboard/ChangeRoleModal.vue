@@ -39,6 +39,11 @@
               </label>
             </div>
 
+            <!-- Steward not ready (spec §3.6): role changes wait, naming the step -->
+            <p v-if="stewardBlockedReason" class="mt-4 text-xs text-black/60">
+              {{ stewardBlockedReason }}
+            </p>
+
             <!-- Error -->
             <div v-if="error" class="mt-4 p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
               <p class="text-sm text-destructive">{{ error }}</p>
@@ -97,7 +102,8 @@
               v-if="!upgradeStarted"
               @click="handleConfirm"
               class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors disabled:opacity-50"
-              :disabled="selectedRole === currentRole"
+              :disabled="selectedRole === currentRole || !!stewardBlockedReason"
+              :title="stewardBlockedReason || undefined"
             >
               Confirm
             </button>
@@ -120,6 +126,7 @@ import { ref, reactive, watch, computed } from 'vue';
 import { X, Loader2, CheckCircle2, Circle, XCircle } from 'lucide-vue-next';
 import { updateMemberRole } from 'src/lib/api/client';
 import { useAdminActions } from 'src/composables/useAdminActions';
+import { StewardRefusal } from 'src/lib/keri/steward/errors';
 import { useRolePolicyStore } from 'src/stores/rolePolicy';
 
 interface Props {
@@ -127,16 +134,18 @@ interface Props {
   memberName: string;
   memberAid: string;
   currentRole: string;
+  /** Why this steward cannot change roles yet (not joined / behind / registry not adopted); null = ready. */
+  stewardBlockedReason?: string | null;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), { stewardBlockedReason: null });
 
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'role-updated', role: string): void;
 }>();
 
-const { upgradeMemberToSteward, reissueMembershipCredential } = useAdminActions();
+const { upgradeMemberToSteward, reissueMembershipCredential, error: adminError } = useAdminActions();
 
 const rolePolicyStore = useRolePolicyStore();
 void rolePolicyStore.load();
@@ -275,7 +284,7 @@ watch(() => props.show, (isOpen) => {
 });
 
 async function handleConfirm() {
-  if (selectedRole.value === props.currentRole) return;
+  if (selectedRole.value === props.currentRole || props.stewardBlockedReason) return;
 
   isUpdating.value = true;
   error.value = null;
@@ -306,9 +315,10 @@ async function handleConfirm() {
       for (const step of upgradeSteps) {
         if (step.status === 'active') step.status = 'error';
       }
-      error.value = isStewardRole
+      // A steward refusal (e.g. not joined / behind the witnesses) says why.
+      error.value = adminError.value ?? (isStewardRole
         ? 'Steward upgrade failed. No role change was applied — the member keeps their previous role and credential.'
-        : 'Credential re-issue failed. No role change was applied — the member keeps their previous role and credential.';
+        : 'Credential re-issue failed. No role change was applied — the member keeps their previous role and credential.');
       return;
     }
 
@@ -330,7 +340,9 @@ async function handleConfirm() {
     for (const step of upgradeSteps) {
       if (step.status === 'active') step.status = 'error';
     }
-    error.value = err instanceof Error ? err.message : 'Failed to update role';
+    error.value = err instanceof StewardRefusal
+      ? err.userMessage
+      : err instanceof Error ? err.message : 'Failed to update role';
   } finally {
     isUpdating.value = false;
   }

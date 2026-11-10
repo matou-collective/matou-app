@@ -97,6 +97,25 @@ forgejo_attach_issue_asset() { # forgejo_attach_issue_asset <issue-num> <file-pa
     "$FORGEJO_API/issues/$1/assets"
 }
 
+forgejo_attach_issue_asset_url() { # forgejo_attach_issue_asset_url <issue-or-pr-num> <file-path> [display-name] -> the attachment's browser_download_url on stdout (empty on ANY failure); rc 0 always
+  # forgejo_attach_issue_asset answers with an HTTP code — enough for "did the
+  # evidence land", not for EMBEDDING it where a reviewer reads (idss ADR 0267:
+  # a landing-pr PR shows its screenshots). PRs share the issue number space, so
+  # the issue-level asset endpoint takes a PR number unchanged. Raw-capture then
+  # filter (never curl|jq). The mime type follows the extension; png by default.
+  local file="$2" name="${3:-$(basename "$2")}" mime resp
+  [ -f "$file" ] || return 0
+  case "${name,,}" in
+    *.jpg|*.jpeg) mime=image/jpeg ;;
+    *.webp)       mime=image/webp ;;
+    *.gif)        mime=image/gif ;;
+    *)            mime=image/png ;;
+  esac
+  resp="$(_forgejo_get -X POST -F "attachment=@${file};filename=${name};type=${mime}" \
+    "$FORGEJO_API/issues/$1/assets" 2>/dev/null)" || return 0
+  jq -r '.browser_download_url // empty' <<<"$resp" 2>/dev/null || true
+}
+
 forgejo_add_labels() { # forgejo_add_labels <issue-num> <label-ids-csv> -> HTTP code
   # POST /labels ADDS to the set (only PUT replaces) — the label-PATCH-ignored
   # lesson every caller used to re-learn: a `labels` field in a PATCH on the
@@ -209,6 +228,17 @@ forgejo_close_pr() { # forgejo_close_pr <pr-number> -> HTTP code on stdout, rc 0
   # get" shape as forgejo_post_code — the caller tolerates the outcome.
   _forgejo_code -X PATCH -H 'Content-Type: application/json' \
     "$FORGEJO_API/pulls/$1" -d '{"state":"closed"}'
+}
+
+forgejo_reopen_issue() { # forgejo_reopen_issue <issue-num> -> HTTP code on stdout, rc 0 always
+  # PATCH the issue state back to open. The false-green reconcile (#283) reopens
+  # an issue a push-mode close-report closed against the worker branch when the
+  # host's later land rolled back and `main` never carried the commits — the
+  # inverse of forgejo_close_pr, same "what code did it get" tolerate-the-outcome
+  # shape (a `labels` field here would be ignored — GOTCHAS 2 — so the relabel is
+  # a separate /labels call).
+  _forgejo_code -X PATCH -H 'Content-Type: application/json' \
+    "$FORGEJO_API/issues/$1" -d '{"state":"open"}'
 }
 
 forgejo_pr_combined_status() { # forgejo_pr_combined_status <pr-number> -> CombinedStatus JSON on stdout; rc non-zero if the head sha is unknown or the GET fails

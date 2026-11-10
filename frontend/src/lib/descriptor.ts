@@ -27,6 +27,16 @@ export const KNOWN_DESCRIPTOR_MAJOR = 1;
 /** `backend_kind` for a gateway-served descriptor (ADR 0226 decision 5). */
 export const BACKEND_KIND_IDSS = 'idss';
 
+/**
+ * The Mātou (coa-shared) Membership schema SAID. This is the built-in fallback
+ * for a descriptor that names no membership schema — a coa-shared backend, with
+ * no `schemas` block, whose one shared schema every community issues under. An
+ * IDSS community names its OWN Membership schema in `schemas.membership.said`
+ * (ADR 0226 decision 5) and that always wins; this constant is used only in its
+ * absence (issue #615).
+ */
+export const MATOU_MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
+
 export interface DescriptorCommunity {
   name: string;
   slug: string;
@@ -262,6 +272,28 @@ export function recordedSpaces(d: CommunityDescriptor): RecordedSpaces | null {
   const adminSpaceId = typeof a.adminSpaceId === 'string' ? a.adminSpaceId : '';
   if (!communitySpaceId || !readOnlySpaceId || !adminSpaceId) return null;
   return { communitySpaceId, readOnlySpaceId, adminSpaceId };
+}
+
+/**
+ * The Membership schema SAID this community issues under: the one the
+ * descriptor names in `schemas.membership.said`, falling back to the Mātou
+ * constant only for a descriptor that names no membership schema (a coa-shared
+ * backend with no `schemas` block). This is the schema every membership check
+ * must match — a correctly issued IDSS credential is of the community's own
+ * schema, never the Mātou one (issue #615).
+ */
+export function membershipSchemaSaid(d: CommunityDescriptor): string {
+  return d.schemas.membership?.said || MATOU_MEMBERSHIP_SCHEMA_SAID;
+}
+
+/**
+ * The Membership schema OOBI from the descriptor's `schemas` block, or
+ * `undefined` when the document names none (a coa-shared backend, whose schema
+ * OOBI comes from the legacy org config or the dev schema server instead).
+ */
+export function membershipSchemaOobi(d: CommunityDescriptor): string | undefined {
+  const oobi = d.schemas.membership?.oobi;
+  return oobi && oobi.length > 0 ? oobi : undefined;
 }
 
 /**

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# prepare-commit-msg: stamp the Factory-Account attribution trailer (#223,
+# follow-up to #200).
+#
+# #200 fingerprinted the active Claude token (`sha256(token)[:12]`), exported it
+# as CLAUDE_ACCOUNT_FP from claude_select_token, and keyed the limit/active
+# markers + swarm.db `spend.account_fp` by it — but the one piece it did NOT land
+# was carrying that fingerprint into `git log`, so which account produced a
+# commit was recoverable only from the db mirror, never from the commits
+# themselves. This hook closes that: every commit made with CLAUDE_ACCOUNT_FP in
+# the environment gains a `Factory-Account: <fp>` trailer, so per-account
+# attribution survives into the history the way #19's GIT_* identity does.
+#
+# Why a hook rather than a prompt instruction: #200 deferred this as "spans the
+# protected prompt/attribution-injection" because the obvious route was telling
+# the worker agent (and every other swarm_git_identity caller's prompt) to type
+# the trailer by hand. An LLM copying a 12-hex fingerprint into every commit is
+# unreliable, and it would have touched the five protected prompt skeletons. A
+# hook stamps it MECHANICALLY, from the env var the harness already forwards, in
+# EVERY workdir that wires `core.hooksPath .sandcastle/git-hooks` — the worker
+# sandbox (main.mts, which now also forwards CLAUDE_ACCOUNT_FP into the
+# container), the host swarm/triage workdir (git-setup.sh), and the
+# session-runner checkout (session-runner.sh) — so no prompt, and none of the
+# protected skeletons, need change. Ruled a two-way door under ADR 0174 (#223).
+#
+# Inert, byte-for-byte as before #223, whenever CLAUDE_ACCOUNT_FP is empty or not
+# a bare fingerprint: a token-less host, a human commit, or an interactive
+# session with no account selected gets no trailer — the same conditional-on-a-
+# non-empty-fingerprint discipline #200's limit-lib fp paths keep.
+#
+# FAIL OPEN always: stamping the trailer must never block or fail a commit. Any
+# error here (no interpret-trailers, an unwritable msgfile) leaves the message
+# untouched and exits 0 — losing an attribution trailer is never worth losing a
+# commit.
+set -uo pipefail
+
+msgfile="${1:-}"
+[ -n "$msgfile" ] && [ -f "$msgfile" ] || exit 0
+
+fp="${CLAUDE_ACCOUNT_FP:-}"
+# A fingerprint is lowercase hex (sha256[:12]); anything else is not an account
+# fingerprint and must not be injected into a commit message. Mirrors
+# record-run-result.sh's own `*[!0-9a-f]*` guard on the per-iteration fp line.
+[ -n "$fp" ] || exit 0
+case "$fp" in *[!0-9a-f]*) exit 0 ;; esac
+
+# addIfDifferent keeps it idempotent: an amend (rehearsal-heal's scrub, a reword)
+# re-runs the hook, and the trailer is not duplicated when the fingerprint is
+# unchanged; a mid-run failover that amends with a DIFFERENT account records both,
+# which is the honest history. In-place edit; never the commit's exit status.
+git interpret-trailers --if-exists addIfDifferent \
+  --trailer "Factory-Account: $fp" --in-place "$msgfile" 2>/dev/null || true
+exit 0

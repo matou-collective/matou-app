@@ -35,6 +35,7 @@ drive="$tmp/drive-wanted"
 defer="$tmp/swarm-defer-count"
 verdict="$tmp/swarm-verdict.txt"
 curl_log="$tmp/curl.log"
+runlog="$tmp/runlog.log"
 
 run_swarm() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
@@ -43,14 +44,14 @@ run_swarm() {
     FORGEJO_TOKEN=dummy FORGEJO_API=http://x/api/v1/repos/x/y \
     REPO_SLUG=Acme/widget SWARM_HOST=box1 \
     HOST_CAPACITY_DRIVE_WANTED="$drive" SWARM_DRIVE_DEFER_COUNT="$defer" \
-    SWARM_VERDICT_PATH="$verdict" \
+    SWARM_VERDICT_PATH="$verdict" SWARM_RUNLOG="$runlog" \
     CURL_LOG="$curl_log" \
     "$@" bash "$here/../run-swarm.sh"
 }
 
 # --- 1. a FRESH reservation makes run-swarm yield: exit 0, before any claim,
 #        leaving no verdict, and climbing its own consecutive-defer count. ---
-rm -f "$defer" "$verdict"; : > "$curl_log"; : > "$drive"
+rm -f "$defer" "$verdict" "$runlog"; : > "$curl_log"; : > "$drive"
 out="$(run_swarm 2>&1)" || fail "a drive-yield must exit 0 (got: $out)"
 grep -q "yielding this run to a ready drive" <<<"$out" || fail "a standing reservation must be reported (got: $out)"
 grep -q "reservation age" <<<"$out" || fail "the yield must log the reservation's age (got: $out)"
@@ -58,6 +59,18 @@ grep -q "skipped 1 consecutive tick(s)" <<<"$out" || fail "the first deferred ti
 [ -s "$curl_log" ] && fail "yielding to the drive must stop before ANY API call / claim (curl log: $(cat "$curl_log"))"
 [ ! -f "$verdict" ] || fail "a drive-yield is a clean exit — no verdict, got: $(cat "$verdict")"
 [ "$(cat "$defer")" = 1 ] || fail "the first deferred tick must leave a defer count of 1, got: $(cat "$defer" 2>/dev/null)"
+# #1733: the pre-work yield is now a traced exit path — it leaves EXACTLY ONE
+# always-on runlog line (#435) so a host that stood down for a drive is no longer
+# invisible on disk (the elitebook-03 blind spot that made #1732 hard to see). It
+# is a runlog line, NOT a verdict (asserted absent just above): the yield stays a
+# clean exit that keys no healer signature.
+[ -s "$runlog" ] || fail "the pre-work drive-yield must leave a runlog line (#1733); runlog is empty"
+[ "$(wc -l <"$runlog")" -eq 1 ] || fail "the yield must leave EXACTLY one runlog line, got: $(cat "$runlog")"
+grep -q "reason=yielded-to-drive" "$runlog" || fail "the yield runlog line must carry reason=yielded-to-drive, got: $(cat "$runlog")"
+grep -q "exit=0" "$runlog" || fail "the yield is a clean exit — the runlog line must read exit=0, got: $(cat "$runlog")"
+grep -qF "ready=[]" "$runlog" || fail "nothing is listed before the yield — the runlog line must read ready=[], got: $(cat "$runlog")"
+grep -q "repo=Acme/widget" "$runlog" || fail "the yield runlog line must name the run's repo, got: $(cat "$runlog")"
+grep -q "host=box1" "$runlog" || fail "the yield runlog line must name the yielding host, got: $(cat "$runlog")"
 pass=$((pass+1))
 
 # --- 2. the consecutive-defer count climbs on a second consecutive defer. ---
@@ -65,6 +78,10 @@ pass=$((pass+1))
 out2="$(run_swarm 2>&1)" || fail "a second drive-yield must exit 0 (got: $out2)"
 grep -q "skipped 2 consecutive tick(s)" <<<"$out2" || fail "the count must climb on a second consecutive defer (got: $out2)"
 [ "$(cat "$defer")" = 2 ] || fail "the second deferred tick must leave a defer count of 2, got: $(cat "$defer" 2>/dev/null)"
+# #1733: every yield is traced — the second consecutive yield APPENDS, so the
+# runlog now holds two yielded-to-drive lines (one recorded trace per stood-down tick).
+[ "$(wc -l <"$runlog")" -eq 2 ] || fail "the second yield must append a second runlog line, got: $(cat "$runlog")"
+[ "$(grep -c "reason=yielded-to-drive" "$runlog")" -eq 2 ] || fail "both stood-down ticks must record reason=yielded-to-drive, got: $(cat "$runlog")"
 pass=$((pass+1))
 
 # --- 3. an EXPIRED reservation (mtime older than the TTL) does NOT yield: the
@@ -86,13 +103,16 @@ grep -q "yielding this run to a ready drive" <<<"$out4" && fail "no reservation 
 [ -f "$defer" ] && fail "an absent reservation must reset the consecutive-defer counter (still present: $(cat "$defer"))"
 pass=$((pass+1))
 
-# --- ticket holder: written at start from HOST_CAPACITY_HELD_SLOT, cleared by on_exit ---
-# The suite has no fake pnpm/docker on this host — every prior case here dies
-# BEFORE the toolchain, at preflight_gate's ONE live network call
-# (guard_issue_write_permission -> forgejo_issue_write_probe -> curl), which is
-# the earliest point reached after the ticket holder is written (right after
-# swarmdb_run_start) and before on_exit clears it. Snapshot there instead of
-# in a fake pnpm. Overwriting curl here is safe: tests 1-4 above already ran
+# --- ticket holder (#301): written only once the run HAS a ticket — after the
+# ready set and the fleet pick — never at start. The suite has no fake
+# pnpm/docker on this host, so every case here dies at preflight_gate's ONE live
+# network call (guard_issue_write_permission -> forgejo_issue_write_probe ->
+# curl), which comes BEFORE the listing: a holder seen there would mean a leg
+# that lists nothing, or stands down for the fleet, painted a ticket-shaped
+# card on the Floor for its ten-second slot (the "empty ticket" noise #301
+# removed). Snapshot at that call; the stages test pins the write site's
+# position after schedule_fleet_pick, and host-capacity-lib's test pins the
+# holder's shape. Overwriting curl here is safe: tests 1-4 above already ran
 # with the original fake.
 slot="$tmp/held-slot"; : > "$slot"
 seen="$tmp/holder-seen.json"
@@ -103,17 +123,10 @@ echo '[]'
 SH
 chmod +x "$tmp/bin/curl"
 run_swarm HOST_CAPACITY_HELD_SLOT="$slot" HELD_HOLDER="$slot.holder" HOLDER_SEEN="$seen" >/dev/null 2>&1 || true
-[ -s "$seen" ] || fail "ticket holder must exist by the time run-swarm reaches its toolchain"
-[ "$(jq -r .kind "$seen")" = ticket ]        || fail "ticket holder kind: $(cat "$seen")"
-[ "$(jq -r .ref "$seen")" = run ]            || fail "ticket holder ref must be 'run': $(cat "$seen")"
-[ "$(jq -r .worker "$seen")" = swarm-worker ] || fail "ticket holder worker: $(cat "$seen")"
-[ "$(jq -r .repo "$seen")" = Acme/widget ]   || fail "ticket holder repo must be the run's REPO_SLUG: $(cat "$seen")"
-jq -e '.run_id | type == "string" and length > 0' "$seen" >/dev/null || fail "ticket holder must carry the run id: $(cat "$seen")"
-[ ! -e "$slot.holder" ] || fail "on_exit must clear the ticket holder"
-# Unset → nothing written, no error.
-rm -f "$seen"
-run_swarm HELD_HOLDER="$slot.holder" HOLDER_SEEN="$seen" >/dev/null 2>&1 || true
-[ ! -e "$seen" ] && [ ! -e "$slot.holder" ] || fail "no HOST_CAPACITY_HELD_SLOT → no holder written"
+[ ! -s "$seen" ] || fail "a run that never reached its ticket must write NO slot holder (#301), saw: $(cat "$seen")"
+[ ! -e "$slot.holder" ] || fail "no holder may be left behind on exit"
+grep -q '^host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket run "$repo_slug" swarm-worker "$run_db_id"$' "$here/../run-swarm.sh" \
+  || fail "run-swarm.sh must still write the ticket/run holder once it has a ticket"
 pass=$((pass+1))
 
 echo "run-swarm-drive-yield: $pass scenarios passed"

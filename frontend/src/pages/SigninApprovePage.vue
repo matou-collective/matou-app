@@ -6,18 +6,39 @@
         v-if="signin.phase.value === 'first-contact' && signin.view.value"
         :address="signin.view.value.siteAddress"
         :claimed-name="signin.ask.value?.community ?? ''"
+        :credential-name="shownKomitiName"
         @trust="signin.trust"
         @dont="onDont"
       />
+      <!-- The wallet holds nothing this door asks for (#683): a screen of its
+           own, with no Approve. -->
+      <NoCredential
+        v-else-if="signin.phase.value === 'no-credential' && signin.view.value"
+        :service="signin.view.value.service"
+        :community="signin.view.value.community"
+        :credential-name="signin.view.value.askedName"
+        :posted="signin.posted.value"
+        @close="onClose"
+      />
+      <!-- A code that says it is an unlock, opened by an identity that is not a
+           steward (PU-A4n, #688): said by the app, and nothing is sent. -->
+      <NotASteward v-else-if="signin.phase.value === 'not-a-steward'" @close="onClose" />
+      <!-- The approve card — in its unlock form when the code says it is an
+           unlock (PU-A4, #688). -->
       <ApproveCard
         v-else
         :view="signin.view.value"
         :phase="signin.phase.value"
         :refusal="signin.refusal.value"
-        :can-approve="canApprove"
+        :can-approve="signin.canApprove.value"
+        :unlock-on="signin.unlockOn.value"
+        :form="signin.form.value"
+        :armed="signin.armed.value"
         @approve="signin.approve"
         @not-now="onNotNow"
         @try-again="signin.tryAgain"
+        @retry="signin.retry"
+        @toggle-unlock="signin.setUnlock"
         @close="onClose"
       />
       <p v-if="notALink" class="text-center text-sm text-muted-foreground mt-6">
@@ -32,10 +53,12 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import ApproveCard from 'src/components/signin/ApproveCard.vue';
 import FirstContact from 'src/components/signin/FirstContact.vue';
+import NoCredential from 'src/components/signin/NoCredential.vue';
+import NotASteward from 'src/components/signin/NotASteward.vue';
 import { useSignin } from 'src/composables/useSignin';
 import { useKnownDoorsStore } from 'src/stores/knownDoors';
 import { getCommunityDescriptor } from 'src/lib/clientConfig';
-import type { SigninAsk } from 'src/lib/signin/link';
+import { signinAskFromQuery, type SigninAsk } from 'src/lib/signin/link';
 
 const route = useRoute();
 const router = useRouter();
@@ -43,12 +66,39 @@ const signin = useSignin();
 const knownDoors = useKnownDoorsStore();
 
 const notALink = ref(false);
-const canApprove = computed(() => !!signin.chosen.value?.sad?.d);
-
-/** Close the card after a beat once the door answers VERIFIED (WS-A2d). */
-watch(signin.phase, (p) => {
-  if (p === 'done') setTimeout(onClose, 1500);
+/** The name of the komiti credential about to be shown (e.g. "Administrator"),
+ *  for the first-contact disclosure; blank when it is a Membership (#683). */
+const shownKomitiName = computed(() => {
+  const shown = signin.view.value?.credential;
+  return shown?.slug ? shown.name : '';
 });
+
+/**
+ * Close the card after a beat once the door answers VERIFIED (WS-A2d). Not
+ * after an unlock (PU-A4d) or a sign-in that armed (PU-A2u, the line on): that
+ * face carries the one instruction that matters — keep this app open until
+ * Members appears — so it stays until it is closed.
+ */
+watch(signin.phase, (p) => {
+  if (p === 'done' && !signin.keepOpen.value) setTimeout(onClose, 1500);
+});
+
+/**
+ * A fresh sign-in code that arrives while the card is already mounted routes
+ * here again with a new `c=` (a re-scan, a new deep link, or the member opening
+ * a freshly-minted `matou://signin?c=…`). Vue reuses this component for the
+ * same route, so `onMounted` does not fire again — without this the wallet would
+ * keep presenting the FIRST challenge it saw. Rebuild the card from the new ask
+ * so the newest challenge always wins (#675).
+ */
+watch(
+  () => route.query.c,
+  (c) => {
+    if (!c) return;
+    const ask = askFromRoute();
+    if (ask && ask.challenge !== signin.ask.value?.challenge) void signin.prepare(ask);
+  },
+);
 
 onMounted(async () => {
   // Seed the home community's sign-in site from the descriptor so it is
@@ -73,31 +123,13 @@ onMounted(async () => {
 
 /**
  * Build the ask from the route query. The OS deep-link handler and the scanner
- * both route here with the `matou://signin` params (`door`, `present`, `c`,
- * `s`, `name`, `service`) carried as query params. A missing `present` is a
- * door this app cannot answer, so the ask is refused (never a guessed path).
+ * both route here with the `matou://signin` params carried as query params —
+ * what the code offers among them, which is what makes this an unlock (#688).
+ * A missing `present` is a door this app cannot answer, so the ask is refused
+ * (never a guessed path).
  */
 function askFromRoute(): SigninAsk | null {
-  const q = route.query;
-  const door = str(q.door);
-  const present = str(q.present);
-  const challenge = str(q.c);
-  if (!door || !present || !challenge) return null;
-  return {
-    door,
-    present,
-    challenge,
-    schemas: str(q.s)
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0),
-    community: str(q.name),
-    service: str(q.service) || str(q.svc),
-  };
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : Array.isArray(v) && typeof v[0] === 'string' ? v[0] : '';
+  return signinAskFromQuery(route.query);
 }
 
 function onNotNow(): void {

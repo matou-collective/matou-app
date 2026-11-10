@@ -7,6 +7,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true,
   platform: process.platform,
+  // CPU architecture of this build (arm64 | x64): the update notice picks the matching DMG.
+  arch: process.arch,
   getBackendPort: () => ipcRenderer.invoke('get-backend-port'),
   getDataDir: () => ipcRenderer.invoke('get-data-dir'),
   getApiToken: () => ipcRenderer.invoke('get-api-token'),

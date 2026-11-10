@@ -68,12 +68,29 @@ def poller(entry, spend_since, cache):
     return {"ok": True, "blob": blob, "registry": {"heavy_slots": 2},
             "capacity": {"HOST_HEAVY_SLOTS": "2"}}
 
+# A ready-for-agent row and a ready-for-session row (the board keeps both, with
+# the v5 per-row fields); the session row's host affinity is joined by the
+# session_fn mock, matched by (repo, number).
 q = [{"repo": "Acme/widget", "number": 5, "state": "ready-for-agent",
-      "blocked": False, "title": "t", "labels": []}]
+      "blocked": False, "blocked_by": [], "priority": True, "title": "t",
+      "labels": ["ready-for-agent", "priority"],
+      "created_at": "2026-10-10T00:00:00Z", "updated_at": "2026-10-14T00:00:00Z"},
+     {"repo": "Acme/beta", "number": 11, "state": "ready-for-session",
+      "blocked": False, "blocked_by": [], "priority": False, "title": "s",
+      "labels": ["ready-for-session"],
+      "created_at": "2026-10-05T00:00:00Z", "updated_at": "2026-10-08T00:00:00Z"}]
+session = [{"repo": "Acme/beta", "number": 11, "title": "s",
+            "labels": ["ready-for-session"], "body": "", "affinity": "box-b"}]
 asks = [{"repo": "Acme/widget", "number": 9, "state": "ready-for-human"}]
+# The Done column: issues closed in the last 24 h (#238). Mocked here (offline),
+# the same shape repostats.fleet_done emits: {repo,number,title,closed_at}.
+done = [{"repo": "Acme/widget", "number": 40, "title": "shipped",
+         "closed_at": "2023-11-14T18:00:00Z"}]
 doc = collector.build_document(conf, "tok", {}, NOW, poller=poller,
                                queue_fn=lambda *a, **k: q,
-                               asks_fn=lambda *a, **k: asks)
+                               asks_fn=lambda *a, **k: asks,
+                               session_fn=lambda *a, **k: session,
+                               done_fn=lambda *a, **k: done)
 json.dump(doc, sys.stdout)
 PY
 check "build_document emitted a document" '[ -s "$work/doc.json" ]'
@@ -112,7 +129,19 @@ check "slot 1 is a busy ticket holder" 'assert_json "d[\"hosts\"][0][\"slot_stat
 check "holder carries its worker class id" 'assert_json "d[\"hosts\"][0][\"holder\"][\"worker\"]" "'"'"'healer'"'"'"'
 check "unreachable host is a broken machine, not a blank floor" 'assert_json "d[\"hosts\"][2][\"host_state\"]" "'"'"'error'"'"'"'
 check "runs are live busy-ticket attempts" 'assert_json "d[\"runs\"][0][\"issue\"]" "42"'
-check "repos carry per-state counts" 'assert_json "d[\"repos\"][0][\"ready\"]" "1"'
+# v5 (#237): queue keeps every state with per-row board fields; the session row
+# carries its host affinity joined by (repo, number).
+check "queue keeps both the agent and the session row" 'assert_json "sorted(r[\"number\"] for r in d[\"queue\"])" "[5, 11]"'
+check "queue row carries labels/priority/blocked_by/age" \
+  'assert_json "[r for r in d[\"queue\"] if r[\"number\"]==5][0][\"priority\"]" "True" && assert_json "[r for r in d[\"queue\"] if r[\"number\"]==5][0][\"created_at\"]" "'"'"'2026-10-10T00:00:00Z'"'"'"'
+check "session row carries host affinity" \
+  'assert_json "[r for r in d[\"queue\"] if r[\"number\"]==11][0][\"affinity\"]" "'"'"'box-b'"'"'"'
+# #238: the Done column rides the document, one row per closed-in-24h issue
+# shaped {repo,number,title,closed_at}.
+check "done column rides the document" 'assert_json "d[\"done\"][0][\"number\"]" "40"'
+check "done row is shaped {repo,number,title,closed_at}" \
+  'assert_json "sorted(d[\"done\"][0].keys())" "['"'"'closed_at'"'"', '"'"'number'"'"', '"'"'repo'"'"', '"'"'title'"'"']"'
+check "repos carry per-state counts" 'assert_json "[s for s in d[\"repos\"] if s[\"repo\"]==\"Acme/widget\"][0][\"ready\"]" "1"'
 check "inwards-goods total_ready is emitted" 'assert_json "d[\"total_ready\"]" "1"'
 check "asks carry the parked ready-for-human threads" 'assert_json "d[\"asks\"][0][\"number\"]" "9"'
 check "invisible_failure rides the healer class row (never re-derived)" \

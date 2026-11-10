@@ -18,7 +18,12 @@ import {
   parseDescriptor,
   UnsupportedDescriptorVersionError,
   schemaOobis as descriptorSchemaOobis,
+  membershipSchemaSaid as descriptorMembershipSchemaSaid,
+  membershipSchemaOobi as descriptorMembershipSchemaOobi,
   signinUrl as descriptorSigninUrl,
+  recordedSpaces as descriptorRecordedSpaces,
+  BACKEND_KIND_IDSS,
+  type RecordedSpaces,
   type CommunityDescriptor,
   type DescriptorCommunity,
   type DescriptorSteward,
@@ -345,6 +350,46 @@ export async function getSchemaOobis(): Promise<string[]> {
 export async function getSchemaOobi(kind: string): Promise<string | undefined> {
   const config = await fetchClientConfig();
   return config.schemas?.[kind]?.oobi;
+}
+
+/**
+ * The Membership schema SAID this community issues under (issue #615): the one
+ * the descriptor names in `schemas.membership.said`, falling back to the Mātou
+ * constant only for a descriptor with no `schemas` block (coa-shared). Every
+ * membership check reads this so a correctly issued IDSS credential — of the
+ * community's OWN schema — is recognised as membership.
+ */
+export async function getMembershipSchemaSaid(): Promise<string> {
+  const config = await fetchClientConfig();
+  return descriptorMembershipSchemaSaid(parseDescriptor(config));
+}
+
+/**
+ * The three space IDs an IDSS descriptor records (#645), or null when the
+ * backend is not IDSS or the record is not whole yet (the #1867 ceremony state).
+ */
+export async function getRecordedSpaces(): Promise<RecordedSpaces | null> {
+  const d = parseDescriptor(await fetchClientConfig());
+  if (d.backend_kind !== BACKEND_KIND_IDSS) return null;
+  return descriptorRecordedSpaces(d);
+}
+
+/**
+ * The community group AID the descriptor names (`community.aid`), the issuer of
+ * every credential on an IDSS community; empty when the document names none.
+ */
+export async function getCommunityAid(): Promise<string> {
+  const config = await fetchClientConfig();
+  return parseDescriptor(config).community?.aid ?? '';
+}
+
+/**
+ * The Membership schema OOBI from the descriptor's `schemas` block, or
+ * undefined when the document names none (a coa-shared backend).
+ */
+export async function getMembershipSchemaOobi(): Promise<string | undefined> {
+  const config = await fetchClientConfig();
+  return descriptorMembershipSchemaOobi(parseDescriptor(config));
 }
 
 /**

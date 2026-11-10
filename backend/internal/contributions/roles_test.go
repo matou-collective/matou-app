@@ -21,6 +21,43 @@ func TestMapKERIRole(t *testing.T) {
 	}
 }
 
+// TestMapKERIRole_Administrator proves the Administrator credential slug
+// (idss#1948, ADR 0286 d.13) resolves to the same founding-member bundle the
+// legacy "operator"/"Founding Member" role string yields — so an IDSS founder
+// keeps their any-sync community-scope write rights once IDSS deletes the role
+// string. The "Founding Member" string itself is unchanged (Coa-hosted path).
+func TestMapKERIRole_Administrator(t *testing.T) {
+	admin := MapKERIRole(KERIRoleAdministrator)
+	operator := MapKERIRole("operator")
+	founding := MapKERIRole("Founding Member")
+
+	// Administrator grants exactly the six-role bundle the legacy strings yield.
+	want := []Role{
+		RoleMember, RoleContributor, RoleFoundingMember,
+		RoleOperationsSteward, RoleProjectSteward, RoleProjectLead,
+	}
+	for _, r := range want {
+		if !HasRole(admin, r) {
+			t.Errorf("administrator credential must grant %s, got %v", r, admin)
+		}
+	}
+	if len(admin) != len(operator) || len(admin) != len(founding) {
+		t.Errorf("administrator bundle %v must match operator %v and Founding Member %v", admin, operator, founding)
+	}
+
+	// It is admin-scope — the tier any-sync's write rules let change a member's
+	// role, exactly as an Operations Steward / Founding Member.
+	if !IsAdminScope(admin) {
+		t.Errorf("administrator must be admin-scope (may change member roles), got %v", admin)
+	}
+
+	// Coa-hosted communities have no Administrator credential; the "Founding
+	// Member" string still resolves as before.
+	if !HasRole(founding, RoleFoundingMember) {
+		t.Errorf("Founding Member string must be unchanged, got %v", founding)
+	}
+}
+
 func TestCanPerformAction_CreateContribution(t *testing.T) {
 	// Operations stewards can create any contribution
 	if !CanPerformAction([]Role{RoleOperationsSteward}, ActionCreateContribution) {

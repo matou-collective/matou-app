@@ -22,6 +22,7 @@ import {
   performOrgSetup,
   TestAccounts,
 } from './utils/test-helpers';
+import { credentialTelState, orgIssuedCredentialSaid, revokeInPage } from './utils/keria-page';
 
 // --- KEL / witness helpers (shared by the steward-promotion tests) ----------
 // A GROUP AID's key state must be read from a WITNESS, never from KERIA's bare
@@ -859,7 +860,7 @@ test.describe.serial('Registration Approval Flow', () => {
   // for now — the ChangeRoleModal needs investigation.
   // ------------------------------------------------------------------
   test('register and approve a second member', async ({ browser }) => {
-    test.setTimeout(480_000); // 8 min: registration + endorsements + attendance + steward upgrade + approval (group-AID credential escrow clear can take ~2 min before User2 joins)
+    test.setTimeout(600_000); // 10 min: registration + endorsements + attendance + steward upgrade + approval (group-AID credential escrow clear can take ~2 min before User2 joins)
 
     // Reload accounts saved by test 1 (includes member mnemonic).
     // Skip gracefully when running standalone without test 1.
@@ -1121,7 +1122,7 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log('[Test] Step: Promoting steward to signer (round 2) visible');
 
       // Final: Done button appears when upgrade is complete
-      await expect(changeRoleModal.getByRole('button', { name: /^Done$/i })).toBeVisible({ timeout: 2 * 60_000 });
+      await expect(changeRoleModal.getByRole('button', { name: /^Done$/i })).toBeVisible({ timeout: 4 * 60_000 });
       console.log('[Test] User1 upgrade to Community Steward complete');
 
       // #520: the promotion rotated the org group twice (round 1 + round 2),
@@ -1233,6 +1234,30 @@ test.describe.serial('Registration Approval Flow', () => {
       };
       saveAccounts(accounts);
       console.log(`[Test] Saved member2 account: ${user2Name} (${member2Aid.slice(0, 12)}...)`);
+
+      // ================================================================
+      // I. The Membership User1 issued came from the ORG GROUP, not User1
+      // ================================================================
+      // A steward approves on the org's behalf: the credential must be issued
+      // by the org group AID (getOrgAidName no longer falls back to the
+      // steward's personal AID). Read what User2's backend cached from its own
+      // wallet — the sync posts each credential with issuer = sad.i. User2 also
+      // holds endorsement/attendance credentials issued by personal AIDs, so
+      // the check is that the org-issued one is among them.
+      await expect
+        .poll(async () => {
+          const resp = await user2Page.request.get(`http://localhost:${user2Backend.port}/api/v1/credentials`);
+          if (resp.status() !== 200) return [] as string[];
+          const list = ((await resp.json()).credentials ?? []) as Array<{ issuer: string; recipient: string }>;
+          const issuers = list.filter(c => c.recipient === member2Aid).map(c => c.issuer);
+          console.log(`[Test] member2 credential issuers: ${issuers.map(i => i.slice(0, 12)).join(', ') || '(none yet)'}`);
+          return issuers;
+        }, {
+          timeout: TIMEOUT.long,
+          message: 'member2 Membership must be issued by the ORG GROUP AID, not a steward personal AID',
+        })
+        .toContain(orgAidT2);
+      console.log(`[Test] member2 Membership issued by the org group ${orgAidT2.slice(0, 12)}...`);
 
       console.log('[Test] PASS - User1 promoted to steward and issued User2 membership credential');
     } finally {
@@ -1466,7 +1491,7 @@ test.describe.serial('Registration Approval Flow', () => {
   // is the failure mode this test exists to catch.
   // ------------------------------------------------------------------
   test('admin sees the steward-approved member as a member and promotes them to Community Steward', async ({ browser }) => {
-    test.setTimeout(600_000); // 10 min: login + two multisig rounds
+    test.setTimeout(720_000); // 12 min: login + two multisig rounds (up to 4 min for the promotion to finish)
 
     accounts = loadAccounts();
     if (!accounts.member?.mnemonic || !accounts.member2?.mnemonic) {
@@ -1616,7 +1641,7 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log('[Test] Step: Waiting for steward to accept visible');
       await expect(adminPage.locator('text=Promoting steward to signer (round 2)')).toBeVisible({ timeout: 5 * 60_000 });
       console.log('[Test] Step: Promoting steward to signer (round 2) visible');
-      await expect(changeRoleModal.getByRole('button', { name: /^Done$/i })).toBeVisible({ timeout: 2 * 60_000 });
+      await expect(changeRoleModal.getByRole('button', { name: /^Done$/i })).toBeVisible({ timeout: 4 * 60_000 });
       console.log('[Test] member2 upgrade to Community Steward complete');
       await changeRoleModal.getByRole('button', { name: /^Done$/i }).click();
       await expect(changeRoleModal).not.toBeVisible({ timeout: TIMEOUT.short });
@@ -1652,6 +1677,215 @@ test.describe.serial('Registration Approval Flow', () => {
       await member2Context?.close();
       await backends.stop('member1-steward');
       await backends.stop('member2-steward');
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // Test 6: Stewards revoke each other's issuances.
+  //
+  // Every steward's agent adopts the ONE org registry, and every issue/revoke
+  // from the org group is sent to the other stewards as a native
+  // `/multisig/iss` / `/multisig/rev` exn that their app's OrgActInbox
+  // replays. So a Membership the admin issued must be revocable by member1
+  // (it needs the credential in its own agent to revoke it), and the admin's
+  // agent must learn of that revocation — and the same the other way round.
+  // ------------------------------------------------------------------
+  test('stewards revoke each other\'s issuances', async ({ browser }) => {
+    test.setTimeout(900_000); // 15 min: two register → endorse → attend → approve → replay → remove → replay cycles
+
+    accounts = loadAccounts();
+    if (!accounts.member?.mnemonic || !accounts.member2?.mnemonic) {
+      test.skip(true, 'Tests 1-5 must run first (member1 and member2 must be stewards)');
+      return;
+    }
+
+    const REPLAY_TIMEOUT = 120_000; // an OrgActInbox poll + sync + replay of one peer act
+
+    const orgConfig = await (await adminPage.request.get('http://localhost:9080/api/v1/org/config')).json();
+    const orgAid: string = orgConfig.organization.aid;
+    const registryId: string = orgConfig.registry?.id ?? '';
+    expect(registryId, 'org config must name the one org registry (registry.id)').toBeTruthy();
+
+    const closeModal = async (page: Page) => {
+      const modal = page.locator('.modal-content');
+      await modal.locator('button').filter({ has: page.locator('svg') }).first().click();
+      await expect(modal).not.toBeVisible({ timeout: TIMEOUT.short });
+    };
+
+    const openProfile = async (page: Page, name: string) => {
+      await page.locator('.members-card').locator('.profile-card').filter({ hasText: name }).click();
+      const modal = page.locator('.modal-content');
+      await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(modal.locator('h4').first()).toContainText(name, { timeout: TIMEOUT.short });
+      return modal;
+    };
+
+    // A fresh registrant endorsed, onboarded and approved by ONE steward —
+    // the single steward endorsement meets the approval gate (test 1). Returns
+    // once the registrant has the credential, with its name and AID.
+    const approveFreshRegistrant = async (
+      stewardPage: Page,
+      key: string,
+    ): Promise<{ name: string; aid: string }> => {
+      const backend = await backends.start(key);
+      const context = await browser.newContext();
+      try {
+        await setupTestConfig(context);
+        await setupBackendRouting(context, backend.port);
+        const page = await context.newPage();
+        setupPageLogging(page, key);
+        const name = `Revoke_${uniqueSuffix()}`;
+        console.log(`[Test] Registering ${name} (${key})...`);
+        await registerUser(page, name);
+
+        await expect(
+          stewardPage.locator('.members-card').locator('.card-name', { hasText: name }),
+        ).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+
+        let modal = await openProfile(stewardPage, name);
+        await modal.getByRole('button', { name: /^Endorse$/i }).click();
+        await modal.locator('textarea[placeholder="Why do you endorse this person?"]').fill('Steward endorsement for cross-steward revoke test');
+        await modal.getByRole('button', { name: /confirm endorsement/i }).click();
+        await expect(modal.getByRole('button', { name: /^Endorsed$/i })).toBeVisible({ timeout: TIMEOUT.aidCreation });
+        await closeModal(stewardPage);
+
+        modal = await openProfile(stewardPage, name);
+        await modal.getByRole('button', { name: /onboarded/i }).click();
+        await expect(modal.locator('button:disabled', { hasText: /onboarded/i })).toBeVisible({ timeout: TIMEOUT.aidCreation });
+        await closeModal(stewardPage);
+        console.log(`[Test] ${name} endorsed and onboarded`);
+
+        // The steward's view of the endorsement/attendance can lag a re-open,
+        // and [StewardReadiness] keeps Approve disabled (with a
+        // steward-blocked-reason) until this steward's agent is caught up.
+        await expect(async () => {
+          const m = await openProfile(stewardPage, name);
+          const approve = m.getByRole('button', { name: /^Approve$/i });
+          try {
+            await expect(approve).toBeEnabled({ timeout: 15_000 });
+          } catch (err) {
+            const reason = await m.locator('[data-testid="steward-blocked-reason"]').textContent({ timeout: 2_000 }).catch(() => null);
+            if (reason) console.log(`[Test] Approve blocked: ${reason}`);
+            await closeModal(stewardPage);
+            throw err;
+          }
+        }).toPass({ timeout: REPLAY_TIMEOUT });
+
+        const joinResponse = page.waitForResponse(
+          resp => resp.url().includes('/api/v1/spaces/community/join') && resp.request().method() === 'POST',
+          { timeout: TIMEOUT.groupCredentialJoin },
+        );
+        await stewardPage.locator('.modal-content').getByRole('button', { name: /^Approve$/i }).click();
+        console.log(`[Test] ${name} approved`);
+        expect((await joinResponse).status()).toBe(200);
+        await expect(page.locator('.welcome-overlay')).toBeVisible({ timeout: TIMEOUT.long });
+
+        const aid: string = (await (await page.request.get(`http://localhost:${backend.port}/api/v1/identity`)).json()).aid || '';
+        expect(aid, `${name} should have an AID`).toBeTruthy();
+        console.log(`[Test] ${name} (${aid.slice(0, 12)}...) holds its Membership`);
+        return { name, aid };
+      } finally {
+        await context.close().catch(() => {});
+        await backends.stop(key).catch(() => {});
+      }
+    };
+
+    // Remove a member through the ProfileModal (as e2e-member-removal does) —
+    // the admin (Founding Member) path. Remove Member appears only once the
+    // remover sees the profile approved.
+    const removeViaUI = async (stewardPage: Page, name: string) => {
+      await expect(async () => {
+        const m = await openProfile(stewardPage, name);
+        try {
+          await expect(m.getByRole('button', { name: /remove member/i })).toBeVisible({ timeout: 10_000 });
+        } catch (err) {
+          await closeModal(stewardPage);
+          throw err;
+        }
+      }).toPass({ timeout: REPLAY_TIMEOUT });
+      const modal = stewardPage.locator('.modal-content');
+      await modal.getByRole('button', { name: /remove member/i }).click();
+      await modal.locator('textarea[placeholder="Provide a reason for removing this member..."]').fill('Cross-steward revoke test');
+      const removeResponse = stewardPage.waitForResponse(
+        resp => resp.url().includes('/api/v1/members/') && resp.request().method() === 'DELETE',
+        { timeout: TIMEOUT.aidCreation },
+      );
+      await modal.getByRole('button', { name: /confirm removal/i }).click();
+      const resp = await removeResponse;
+      expect(resp.status(), `removing ${name} should succeed (revoke + soft-delete)`).toBe(200);
+      await expect(modal).not.toBeVisible({ timeout: TIMEOUT.short });
+    };
+
+    const telState = (page: Page, said: string, who: string) =>
+      expect.poll(async () => {
+        const et = await credentialTelState(page, registryId, said);
+        console.log(`[Test] ${who} agent: ${said.slice(0, 12)}... et=${et ?? '(no TEL)'}`);
+        return et;
+      }, { timeout: REPLAY_TIMEOUT, intervals: [5_000] });
+
+    const issuedSaid = async (page: Page, recipientAid: string, who: string): Promise<string> => {
+      let said = '';
+      await expect
+        .poll(async () => {
+          said = (await orgIssuedCredentialSaid(page, orgAid, registryId, recipientAid)) ?? '';
+          return said;
+        }, {
+          timeout: TIMEOUT.long,
+          message: `${who}'s agent should hold the Membership it issued to ${recipientAid.slice(0, 12)}...`,
+        })
+        .not.toBe('');
+      return said;
+    };
+
+    // member1 (steward since test 2) signs in: its app must be on the
+    // dashboard for its OrgActInbox to replay the admin's acts.
+    const member1Backend = await backends.start('member1-revoke');
+    const member1Context = await browser.newContext();
+    await setupTestConfig(member1Context);
+    await setupBackendRouting(member1Context, member1Backend.port);
+    const member1Page = await member1Context.newPage();
+    setupPageLogging(member1Page, 'Member1');
+
+    try {
+      await loginWithMnemonic(member1Page, accounts.member!.mnemonic);
+      console.log('[Test] member1 (steward) on dashboard');
+
+      // ================================================================
+      // A. Admin issues → member1 replays it → member1 revokes → admin sees rev
+      // ================================================================
+      const a = await approveFreshRegistrant(adminPage, 'revoke-a');
+      const saidA = await issuedSaid(adminPage, a.aid, 'admin');
+      await telState(adminPage, saidA, 'admin').toBe('iss');
+      await telState(member1Page, saidA, 'member1').toBe('iss');
+      console.log('[Test] member1\'s agent replayed the admin\'s issuance');
+
+      // member1 is a Community Steward: RBAC gives it no Remove Member button
+      // (canManageMembers is Operations Steward / Founding Member only), so it
+      // revokes through the app's own client — the exact call member removal
+      // makes, including the group preflight and /multisig/rev replication.
+      await revokeInPage(member1Page, orgAid, saidA);
+      console.log(`[Test] member1 revoked ${a.name}'s Membership`);
+      await telState(member1Page, saidA, 'member1').toBe('rev');
+      await telState(adminPage, saidA, 'admin').toBe('rev');
+      console.log('[Test] PASS (A) - admin\'s agent shows member1\'s revocation of the admin\'s issuance');
+
+      // ================================================================
+      // B. member1 issues → admin replays it → admin revokes → member1 sees rev
+      // ================================================================
+      const b = await approveFreshRegistrant(member1Page, 'revoke-b');
+      const saidB = await issuedSaid(member1Page, b.aid, 'member1');
+      await telState(member1Page, saidB, 'member1').toBe('iss');
+      await telState(adminPage, saidB, 'admin').toBe('iss');
+      console.log('[Test] admin\'s agent replayed member1\'s issuance');
+
+      await removeViaUI(adminPage, b.name);
+      console.log(`[Test] admin removed ${b.name}`);
+      await telState(adminPage, saidB, 'admin').toBe('rev');
+      await telState(member1Page, saidB, 'member1').toBe('rev');
+      console.log('[Test] PASS (B) - member1\'s agent shows the admin\'s revocation of member1\'s issuance');
+    } finally {
+      await member1Context?.close();
+      await backends.stop('member1-revoke');
     }
   });
 });

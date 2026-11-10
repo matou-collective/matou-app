@@ -8,7 +8,7 @@
         </div>
         <UserAvatar v-if="assignedAid" :aid="assignedAid" :name="assignedName ?? undefined" :size="36" class="assigned-avatar" />
         <h2 class="header-title">
-          <span>{{ contribution.title }}</span>
+          <span><span v-if="contribution.reference" class="contribution-ref">{{ contribution.reference }}</span>{{ contribution.title }}</span>
           <q-btn
             v-if="canEditContribution"
             flat
@@ -274,15 +274,29 @@
 
           <div v-else class="sub-list">
             <div
-              v-for="child in childContributions"
+              v-for="(child, childIndex) in orderedChildren"
               :key="child.id"
               class="sub-item clickable"
+              :class="{ 'is-dragging': subDragIndex === childIndex, 'drag-over': subDragOverIndex === childIndex }"
+              :draggable="canReorderSubs"
               @click="selectedChildContribution = child"
+              @dragstart="onSubDragStart(childIndex)"
+              @dragover.prevent="onSubDragOver(childIndex)"
+              @drop="onSubDrop(childIndex)"
+              @dragend="onSubDragEnd"
             >
+              <q-icon
+                v-if="canReorderSubs"
+                name="drag_indicator"
+                class="sub-drag-handle"
+                @click.stop
+              >
+                <q-tooltip>Drag to reorder</q-tooltip>
+              </q-icon>
               <div class="sub-item-badges">
                 <ContributionStatusBadge :status="child.status" />
               </div>
-              <span class="sub-item-title">{{ child.title }}</span>
+              <span class="sub-item-title"><span v-if="child.reference" class="contribution-ref">{{ child.reference }}</span>{{ child.title }}</span>
               <span v-if="childAssignee(child)" class="sub-item-assignee" @click.stop>
                 <q-tooltip>Will be assigned to {{ assigneeName(child) }}</q-tooltip>
                 <span class="sub-item-assignee-name">{{ assigneeName(child) }}</span>
@@ -304,6 +318,15 @@
                   @click.stop="emit('edit-sub-contribution', child)"
                 >
                   <q-tooltip>Edit Sub-Contribution</q-tooltip>
+                </q-btn>
+                <q-btn
+                  flat round dense size="sm"
+                  icon="upgrade"
+                  class="promote-sub-btn"
+                  :loading="actionLoading === `promote-sub-${child.id}`"
+                  @click.stop="handlePromoteSub(child)"
+                >
+                  <q-tooltip>Promote to top-level Contribution</q-tooltip>
                 </q-btn>
               </template>
             </div>
@@ -327,7 +350,13 @@
 
         <!-- Evidence submission / edit form (toggled by footer button) -->
         <div v-if="(canSubmitEvidenceNow || canEditEvidenceNow) && showEvidenceForm" class="submit-completion-form">
-          <h3 class="completion-form-title">{{ isEditingEvidence ? 'Edit Submission' : 'Submit Completion' }}</h3>
+          <h3 class="completion-form-title">
+            {{ isEditingEvidence ? 'Edit Submission' : (hasDraftEvidence ? 'Continue Draft' : 'Submit Completion') }}
+          </h3>
+          <div v-if="!isEditingEvidence && hasDraftEvidence" class="evidence-draft-note">
+            <FileEdit class="evidence-draft-icon" />
+            Resuming your saved draft. Keep saving as a draft, or submit it for review when ready.
+          </div>
 
           <!-- Completion Notes -->
           <div class="completion-field">
@@ -487,7 +516,7 @@
             </div>
           </div>
 
-          <!-- Submit / Cancel -->
+          <!-- Submit / Save draft / Cancel -->
           <div class="dialog-btn-row q-mt-md">
             <q-btn
               unelevated
@@ -501,7 +530,21 @@
               @click="handleSubmitEvidence"
             />
             <q-btn
+              v-if="!isEditingEvidence"
               outline
+              no-caps
+              color="primary"
+              icon="save"
+              label="Save Draft"
+              class="dialog-btn-half"
+              :loading="actionLoading === 'save-draft'"
+              :disable="!canSaveDraft"
+              @click="handleSaveDraft"
+            >
+              <q-tooltip>Save your progress and come back to submit it later.</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat
               no-caps
               label="Cancel"
               color="primary"
@@ -511,13 +554,22 @@
           </div>
         </div>
 
-        <!-- Existing evidence (read-only) -->
-        <div v-if="hasEvidence" class="content-section">
+        <!-- Existing evidence (read-only). A draft is owner-private — it is
+             rendered only to the evidence owner and labelled as a draft, never
+             shown to other members as "submitted" until it is submitted. -->
+        <div
+          v-if="hasEvidence && !showEvidenceForm && (!hasDraftEvidence || isEvidenceOwner)"
+          class="content-section"
+        >
           <h3 class="section-title">
             <Paperclip class="section-icon" />
-            Submitted Evidence
+            {{ hasDraftEvidence ? 'Draft Evidence (not yet submitted)' : 'Submitted Evidence' }}
           </h3>
-          <div v-if="contribution.evidence_edited_at" class="evidence-edited-note">
+          <div v-if="hasDraftEvidence" class="evidence-draft-note">
+            <FileEdit class="evidence-draft-icon" />
+            This evidence is a draft — it has not been submitted for review yet.
+          </div>
+          <div v-if="!hasDraftEvidence && contribution.evidence_edited_at" class="evidence-edited-note">
             <Pencil class="evidence-edited-icon" />
             Edited by the contributor on {{ formatDateTime(contribution.evidence_edited_at) }}
             <span v-if="contribution.status === 'needs_review'"> — needs re-review</span>
@@ -858,8 +910,8 @@
             unelevated
             no-caps
             color="primary"
-            label="Submit Evidence & Complete"
-            icon="check_circle"
+            :label="hasDraftEvidence ? 'Continue Draft Evidence' : 'Submit Evidence & Complete'"
+            :icon="hasDraftEvidence ? 'edit_note' : 'check_circle'"
             class="footer-action-btn"
             @click="openSubmitEvidence"
           />
@@ -969,6 +1021,7 @@ import {
   AlertTriangle,
   Paperclip,
   Pencil,
+  FileEdit,
   ClipboardCheck,
   GitBranch,
   UserCheck,
@@ -993,6 +1046,7 @@ import { useProfilesStore } from 'stores/profiles';
 import { uploadFile, getFileUrl } from 'src/lib/api/client';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
 import { buildEvidenceRequest as buildEvidencePayload, round2 } from 'src/lib/evidenceRequest';
+import { sortSiblings } from 'src/lib/contributions/ordering';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
 import UserAvatar from 'src/components/profiles/UserAvatar.vue';
@@ -1064,7 +1118,7 @@ const attachmentInput = ref<HTMLInputElement | null>(null);
 // Forms
 const evidenceForm = ref({
   completion_notes: '',
-  evidence_urls: [''],
+  evidence_urls: [] as string[],
   actual_duration: undefined as number | undefined,
   actual_cost: undefined as number | undefined,
   acceptance_notes: [] as string[],
@@ -1198,6 +1252,9 @@ const role = computed(() => props.userRole as ProjectRole);
 const isSteward = computed(() => ['community_admin', 'project_steward'].includes(props.userRole));
 const isLead = computed(() => ['community_admin', 'project_lead'].includes(props.userRole));
 const isSubContribution = computed(() => !!props.contribution.parent_contribution);
+// Lead/steward (and admin) may drag to re-order sub-contributions, mirroring
+// the backend ActionReorderContribution gate. #754
+const canReorderSubs = computed(() => isLead.value || isSteward.value);
 
 // Child contributions — from allContributions prop + locally fetched children
 const localChildren = ref<Contribution[]>([]);
@@ -1209,11 +1266,14 @@ const childContributions = computed<Contribution[]>(() => {
   // to localChildren only when a child id is missing from allContributions
   // (e.g. just-created sub not yet in the parent fetch).
   const localMap = new Map((localChildren.value || []).map(c => [c.id, c]));
-  return ids
+  const resolved = ids
     .map(id => props.allContributions.find(c => c.id === id) ?? localMap.get(id))
     .filter((c): c is Contribution => !!c)
     // Hide archived sub-contributions from the active sub-list.
     .filter(c => c.status !== 'archived');
+  // Canonical sibling order (sort_order, else natural title), consistent with
+  // the milestone list and the compact card.
+  return sortSiblings(resolved);
 });
 
 // Fetch children that aren't in allContributions
@@ -1235,6 +1295,43 @@ watch(
   },
   { immediate: true },
 );
+
+// Local, drag-mutable mirror of the canonical child order so a drag reorders
+// immediately before the backend round-trip + parent refresh lands.
+const orderedChildren = ref<Contribution[]>([]);
+watch(childContributions, (val) => { orderedChildren.value = [...val]; }, { immediate: true });
+
+const subDragIndex = ref<number | null>(null);
+const subDragOverIndex = ref<number | null>(null);
+
+function onSubDragStart(index: number) {
+  if (!canReorderSubs.value) return;
+  subDragIndex.value = index;
+}
+function onSubDragOver(index: number) {
+  if (!canReorderSubs.value || subDragIndex.value === null) return;
+  subDragOverIndex.value = index;
+}
+function onSubDragEnd() {
+  subDragIndex.value = null;
+  subDragOverIndex.value = null;
+}
+async function onSubDrop(index: number) {
+  const from = subDragIndex.value;
+  onSubDragEnd();
+  if (!canReorderSubs.value || from === null || from === index) return;
+  const arr = [...orderedChildren.value];
+  const [moved] = arr.splice(from, 1);
+  if (!moved) return;
+  arr.splice(index, 0, moved);
+  orderedChildren.value = arr;
+  try {
+    await store.reorder(arr.map(c => c.id));
+    emit('update', props.contribution);
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to reorder sub-contributions' });
+  }
+}
 
 const allChildrenSignedOff = computed(() =>
   childContributions.value.every(
@@ -1380,6 +1477,35 @@ const hasEvidence = computed(
     !!props.contribution.actual_duration,
 );
 const hasReview = computed(() => !!props.contribution.review_outcome);
+
+// True when the current viewer is the assigned contributor (the evidence owner).
+const isEvidenceOwner = computed(
+  () => !!props.currentUserId && !!assignedAid.value && assignedAid.value === props.currentUserId,
+);
+
+// Unsubmitted draft evidence exists on this still-assigned contribution
+// (issue #722). The draft is owner-private: only the owner sees it, and it
+// does not make the contribution reviewable.
+const hasDraftEvidence = computed(
+  () => !!props.contribution.evidence_draft_saved_at && props.contribution.status === 'assigned',
+);
+
+// Save Draft is allowed from the first-submission form (not the edit path) as
+// long as the form carries at least some content — a draft may be partial, so
+// completion notes are not required, but a fully-empty draft is pointless.
+const canSaveDraft = computed(() => {
+  if (isEditingEvidence.value) return false;
+  const f = evidenceForm.value;
+  return (
+    !!f.completion_notes.trim() ||
+    f.evidence_urls.some((u) => u.trim()) ||
+    f.acceptance_notes.some((n) => n.trim()) ||
+    f.time_report_files.length > 0 ||
+    f.attachment_files.length > 0 ||
+    f.actual_duration !== undefined ||
+    f.actual_cost !== undefined
+  );
+});
 
 
 const outcomeOptions: { value: '' | 'approved' | 'incomplete' | 'declined'; label: string; icon: typeof ThumbsUp }[] = [
@@ -1529,7 +1655,7 @@ function fromBackendFileRef(f: AttachedFile): AttachedFile {
 
 const emptyEvidenceForm = () => ({
   completion_notes: '',
-  evidence_urls: [''],
+  evidence_urls: [] as string[],
   actual_duration: undefined as number | undefined,
   actual_cost: undefined as number | undefined,
   acceptance_notes: [] as string[],
@@ -1537,10 +1663,25 @@ const emptyEvidenceForm = () => ({
   attachment_files: [] as AttachedFile[],
 });
 
-// Open the evidence form for a first submission (status assigned).
+// Open the evidence form for a first submission (status assigned). If the
+// owner previously saved a draft, prefill the form from it so they can resume
+// (issue #722).
 function openSubmitEvidence() {
   isEditingEvidence.value = false;
-  evidenceForm.value = emptyEvidenceForm();
+  const c = props.contribution;
+  if (hasDraftEvidence.value) {
+    evidenceForm.value = {
+      completion_notes: c.completion_notes ?? '',
+      evidence_urls: c.evidence_urls?.length ? [...c.evidence_urls] : [''],
+      actual_duration: c.actual_duration,
+      actual_cost: c.actual_cost,
+      acceptance_notes: c.acceptance_notes ? [...c.acceptance_notes] : [],
+      time_report_files: c.time_report_file ? [fromBackendFileRef(c.time_report_file)] : [],
+      attachment_files: c.attachment_files ? c.attachment_files.map(fromBackendFileRef) : [],
+    };
+  } else {
+    evidenceForm.value = emptyEvidenceForm();
+  }
   showEvidenceForm.value = true;
 }
 
@@ -1551,7 +1692,7 @@ function openEditEvidence() {
   isEditingEvidence.value = true;
   evidenceForm.value = {
     completion_notes: c.completion_notes ?? '',
-    evidence_urls: c.evidence_urls?.length ? [...c.evidence_urls] : [''],
+    evidence_urls: c.evidence_urls?.length ? [...c.evidence_urls] : [],
     actual_duration: c.actual_duration,
     actual_cost: c.actual_cost,
     acceptance_notes: c.acceptance_notes ? [...c.acceptance_notes] : [],
@@ -1638,6 +1779,21 @@ async function handleSubmitEvidence() {
     emit('update', updated as unknown as Contribution);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Submission failed' });
+  } finally {
+    actionLoading.value = null;
+  }
+}
+
+async function handleSaveDraft() {
+  if (!canSaveDraft.value) return;
+  actionLoading.value = 'save-draft';
+  try {
+    const updated = await store.saveEvidenceDraft(props.contribution.id, buildEvidenceRequest());
+    $q.notify({ type: 'positive', message: 'Draft saved — you can come back and submit later.' });
+    closeEvidenceForm();
+    emit('update', updated as unknown as Contribution);
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Saving draft failed' });
   } finally {
     actionLoading.value = null;
   }
@@ -1736,6 +1892,36 @@ async function handleApproveSub(subId: string) {
   }
 }
 
+// Promote a sub-contribution to a top-level contribution in the parent chain's
+// milestone. Confirm first: it restructures the plan and (on a signed-off plan)
+// requires re-signoff. On success, emit update so the page refetches and the
+// child drops out of this parent's sub-list. #778
+function handlePromoteSub(child: Contribution) {
+  $q.dialog({
+    title: 'Promote to Contribution',
+    message: `Promote "${child.title}" to a top-level contribution? It will no longer be a sub-contribution of "${props.contribution.title}" and will appear directly under the milestone.`,
+    cancel: true,
+    persistent: true,
+    ok: { label: 'Promote', color: 'primary', noCaps: true },
+  }).onOk(() => {
+    void doPromoteSub(child.id);
+  });
+}
+
+async function doPromoteSub(subId: string) {
+  actionLoading.value = `promote-sub-${subId}`;
+  try {
+    await store.promoteSub(subId);
+    localChildren.value = localChildren.value.filter(c => c.id !== subId);
+    $q.notify({ type: 'positive', message: 'Promoted to a top-level contribution.' });
+    emit('update', props.contribution);
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Promote failed' });
+  } finally {
+    actionLoading.value = null;
+  }
+}
+
 function computeDiff(updates: Record<string, unknown>): { field: string; old_value: string; new_value: string }[] {
   const diffs: { field: string; old_value: string; new_value: string }[] = [];
   const c = props.contribution;
@@ -1803,6 +1989,9 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 </script>
 
 <style scoped lang="scss">
+@import 'src/css/contribution-status.scss';
+@include contribution-reference;
+
 .detail-dialog {
   width: 100%;
   max-width: 800px;
@@ -1929,7 +2118,7 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 }
 
 .shared-panel {
-  background: rgba(74, 157, 156, 0.06);
+  background: color-mix(in srgb, var(--matou-accent) 6%, transparent);
   border-color: var(--matou-accent);
 }
 
@@ -2146,8 +2335,8 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 
 // Sub-contributions
 .sub-contributions-section {
-  background: rgba(74, 157, 156, 0.04);
-  border: 1px solid rgba(74, 157, 156, 0.15);
+  background: color-mix(in srgb, var(--matou-accent) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--matou-accent) 15%, transparent);
   border-radius: var(--matou-radius);
   padding: 14px 18px;
 }
@@ -2186,6 +2375,22 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
       background-color: rgba(0, 0, 0, 0.04);
     }
   }
+
+  &.is-dragging {
+    opacity: 0.5;
+  }
+
+  &.drag-over {
+    outline: 2px dashed var(--matou-primary, #1976d2);
+    outline-offset: 1px;
+  }
+}
+
+.sub-drag-handle {
+  flex-shrink: 0;
+  color: #9ca3af;
+  cursor: grab;
+  font-size: 18px;
 }
 
 .sub-item-badges {
@@ -2300,13 +2505,13 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   transition: all 0.12s ease;
 
   &.approved.active {
-    background: rgba(74, 157, 156, 0.12);
+    background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
     color: var(--matou-accent);
     border-color: var(--matou-accent);
   }
 
   &.incomplete.active {
-    background: rgba(30, 95, 116, 0.1);
+    background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
     color: var(--matou-primary);
     border-color: var(--matou-primary);
   }
@@ -2368,12 +2573,12 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   text-transform: capitalize;
 
   &.approved {
-    background: rgba(74, 157, 156, 0.12);
+    background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
     color: var(--matou-accent);
   }
 
   &.incomplete {
-    background: rgba(30, 95, 116, 0.1);
+    background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
     color: var(--matou-primary);
   }
 
@@ -2393,12 +2598,12 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 
 .sign-off-panel {
   border-color: var(--matou-accent);
-  background: rgba(74, 157, 156, 0.04);
+  background: color-mix(in srgb, var(--matou-accent) 4%, transparent);
 }
 
 .signed-off-panel {
   border-color: var(--matou-accent);
-  background: rgba(74, 157, 156, 0.08);
+  background: color-mix(in srgb, var(--matou-accent) 8%, transparent);
 }
 
 .sign-off-icon {
@@ -2691,6 +2896,21 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   flex-shrink: 0;
 }
 
+.evidence-draft-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--matou-warning, #b26a00);
+  margin-bottom: 12px;
+}
+
+.evidence-draft-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
 .evidence-field-label {
   font-size: 0.8rem;
   font-weight: 600;
@@ -2804,9 +3024,9 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   }
 
   &.declined.active {
-    border-color: var(--matou-destructive, #c8463a);
+    border-color: var(--matou-destructive);
     background: rgba(200, 70, 58, 0.08);
-    color: var(--matou-destructive, #c8463a);
+    color: var(--matou-destructive);
   }
 }
 
@@ -2963,7 +3183,7 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   max-width: 80%;
 
   &--mine {
-    background: var(--matou-primary-light, rgba(37, 99, 235, 0.08));
+    background: var(--matou-primary-light);
     border-color: rgba(37, 99, 235, 0.15);
     border-radius: 12px 12px 4px 12px;
   }

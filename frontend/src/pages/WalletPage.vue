@@ -5,7 +5,7 @@
       <aside class="wallet-sidebar">
         <div class="wallet-sidebar-header">
           <h2 class="wallet-sidebar-title">Wallet</h2>
-          <p class="wallet-sidebar-subtitle">Your identity credentials and community tokens stored in your wallet</p>
+          <p class="wallet-sidebar-subtitle">{{ subtitle }}</p>
         </div>
         <nav class="wallet-sidebar-nav">
           <button
@@ -18,48 +18,64 @@
               <span class="wallet-nav-badge">ID</span>
             </span>
           </button>
-          <button
-            class="wallet-nav-item disabled"
-            disabled
-          >
-            <span class="wallet-nav-text">
-              <span class="wallet-nav-label">Governance Tokens</span>
-              <span class="wallet-nav-badge">GOV</span>
-            </span>
-            <span class="wallet-nav-coming-soon">Coming soon</span>
-          </button>
-          <button
-            class="wallet-nav-item disabled"
-            disabled
-          >
-            <span class="wallet-nav-text">
-              <span class="wallet-nav-label">Transaction Tokens</span>
-              <span class="wallet-nav-badge">UTIL</span>
-            </span>
-            <span class="wallet-nav-coming-soon">Coming soon</span>
-          </button>
+          <!-- Governance/Transaction tokens are Mātou roadmap placeholders — a
+               Coa-built community app never promised them, so they show only in
+               stock Mātou (#619). -->
+          <template v-if="showCommunityTokens">
+            <button
+              class="wallet-nav-item disabled"
+              disabled
+            >
+              <span class="wallet-nav-text">
+                <span class="wallet-nav-label">Governance Tokens</span>
+                <span class="wallet-nav-badge">GOV</span>
+              </span>
+              <span class="wallet-nav-coming-soon">Coming soon</span>
+            </button>
+            <button
+              class="wallet-nav-item disabled"
+              disabled
+            >
+              <span class="wallet-nav-text">
+                <span class="wallet-nav-label">Transaction Tokens</span>
+                <span class="wallet-nav-badge">UTIL</span>
+              </span>
+              <span class="wallet-nav-coming-soon">Coming soon</span>
+            </button>
+          </template>
         </nav>
       </aside>
 
       <!-- Tab content -->
       <div class="tab-content">
         <CredentialsTab v-if="activeTab === 'credentials'" />
-        <GovernanceTokensTab v-if="activeTab === 'governance'" />
-        <TransactionTokensTab v-if="activeTab === 'tokens'" />
+        <GovernanceTokensTab v-if="showCommunityTokens && activeTab === 'governance'" />
+        <TransactionTokensTab v-if="showCommunityTokens && activeTab === 'tokens'" />
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { ShieldCheck, Vote, Coins } from 'lucide-vue-next';
 import { useWalletStore } from 'stores/wallet';
+import { KIT } from 'src/generated/kit';
 import CredentialsTab from 'src/components/wallet/CredentialsTab.vue';
 import GovernanceTokensTab from 'src/components/wallet/GovernanceTokensTab.vue';
 import TransactionTokensTab from 'src/components/wallet/TransactionTokensTab.vue';
 
 const walletStore = useWalletStore();
+
+// Governance/Transaction tokens are stock Mātou's roadmap placeholders. A
+// Coa build (kit slug ≠ 'matou') never chose a token economy, so it sees only
+// Credentials — no token tabs, no "Coming soon" rows (#619).
+const showCommunityTokens = computed(() => KIT.slug === 'matou');
+const subtitle = computed(() =>
+  showCommunityTokens.value
+    ? 'Your identity credentials and community tokens stored in your wallet'
+    : 'Your identity credentials stored in your wallet',
+);
 
 const activeTab = ref<'credentials' | 'governance' | 'tokens'>('credentials');
 

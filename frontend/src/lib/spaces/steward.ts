@@ -59,3 +59,13 @@ export function findStewardCredential(
 ): HeldCredential | null {
   return creds.find((c) => isStewardCredential(c, match)) ?? null;
 }
+
+/**
+ * The app role an IDSS steward (`role: operator`) holds in the app. The gateway
+ * knows two membership roles, operator and member, and the operator is the
+ * community's steward with every steward power (idss #1876, Ben 2026-09-25:
+ * the app's steward role matches the panel's operator). Mapped to the app's
+ * most-privileged community role so every steward surface (pending
+ * registrations, approve/decline, member management) opens for them.
+ */
+export const IDSS_STEWARD_APP_ROLE = 'Founding Member';

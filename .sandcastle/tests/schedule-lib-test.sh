@@ -124,6 +124,33 @@ SWARM_DEBOUNCE_STAMP="$tmp/injected" schedule_stamp_path any | grep -qx "$tmp/in
   || fail "SWARM_DEBOUNCE_STAMP must override the derived path"
 pass=$((pass+1))
 
+# ── 3b. #213: the head SHA re-arms the debounce on a landed fix ─────────────
+# A fix lands on main while the ready-set is byte-identical (the fixed ticket is
+# still open, still ready): the ready-set alone cannot tell "nothing landed"
+# (coalesce) from "a fix just landed" (run now). Folding origin/main's head SHA
+# into the digest makes the second case a genuine trigger.
+hstamp="$tmp/headstamp"; rm -f "$hstamp"
+SET_H='[{"number":213}]'
+SHA1=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SHA2=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[ "$(schedule_debounce_decide "$SET_H" "$hstamp" 600 "$SHA1")" = "run" ] \
+  || fail "a cold stamp must run (with a head SHA)"
+d="$(schedule_debounce_decide "$SET_H" "$hstamp" 600 "$SHA1")"
+[ "${d%% *}" = coalesce ] || fail "unchanged head + unchanged ready-set must still coalesce, got: $d"
+[ "$(schedule_debounce_decide "$SET_H" "$hstamp" 600 "$SHA2")" = "run" ] \
+  || fail "a changed head SHA on a byte-identical ready-set must RE-ARM (run), not coalesce"
+d="$(schedule_debounce_decide "$SET_H" "$hstamp" 600 "$SHA2")"
+[ "${d%% *}" = coalesce ] || fail "the new head should debounce in turn, got: $d"
+pass=$((pass+1))
+
+# the digest itself changes with the head SHA even on a byte-identical set, and
+# an absent head keeps the historical ready-only shape (back-compatible).
+[ "$(schedule_ready_hash "$SET_H" "$SHA1")" != "$(schedule_ready_hash "$SET_H" "$SHA2")" ] \
+  || fail "the digest must change when the head SHA changes on a byte-identical set"
+[ "$(schedule_ready_hash "$SET_H")" = "$(schedule_ready_hash "$SET_H" "")" ] \
+  || fail "an omitted head must equal an empty head (the historical ready-only digest)"
+pass=$((pass+1))
+
 # ── 4. the per-run model (#448) ────────────────────────────────────────────
 # The swarm works the FIRST ready ticket, so the run's model follows THAT
 # ticket's model-<name> label; an unknown one fails LOUD here, never a silent
@@ -255,6 +282,59 @@ schedule_list_ready_or_verdict "$of" || fail "a healthy lister must succeed"
 verdict_write 0
 [ ! -f "$vp" ] || fail "a healthy list must leave no verdict behind"
 [ "$(jq 'length' "$of")" = 2 ] || fail "the ready JSON must land in the out-file"
+pass=$((pass+1))
+
+# ── 7. the fleet pick (#301) ───────────────────────────────────────────────
+# Three ways a leg learns its ticket, in precedence order, plus the legacy
+# fall-through; every host path pinned at tmp.
+export FLEET_QUEUE_CACHE="$tmp/fleet-queue.json" FLEET_QUEUE_RECENT_CLOSES="$tmp/recent-closes"
+FLEET_QUEUE_TICK="$tmp/fleet-queue-tick.sh"
+READY='[{"number":7,"title":"seven"},{"number":9,"title":"nine"}]'
+pf="$tmp/pick.json"
+unset SWARM_TICKET SWARM_CLOSED_ISSUE
+
+# 1. inputs.ticket names a ready ticket → exactly that ticket is the run
+SWARM_TICKET=9 schedule_fleet_pick "$READY" Acme/widget "$pf" || fail "a ready fleet pick must proceed"
+[ "$(jq -c 'map(.number)' "$pf")" = "[9]" ] || fail "the run must be filtered to the pick (got $(cat "$pf"))"
+[ "$SCHEDULE_FLEET_PICK" = 9 ] || fail "SCHEDULE_FLEET_PICK must be the pick"
+grep -q "fleet pick #9" <<<"$SCHEDULE_FLEET_NOTE" || fail "the note must name the pick: $SCHEDULE_FLEET_NOTE"
+# 1b. inputs.ticket names a ticket that is GONE → stand down, never the next one
+if SWARM_TICKET=42 schedule_fleet_pick "$READY" Acme/widget "$pf"; then fail "a gone fleet pick must stand down"; fi
+[ "$SCHEDULE_FLEET_REASON" = fleet-pick-gone ] || fail "reason must be fleet-pick-gone (got $SCHEDULE_FLEET_REASON)"
+grep -q "#42 is no longer ready" <<<"$SCHEDULE_FLEET_NOTE" || fail "the note must name the gone pick: $SCHEDULE_FLEET_NOTE"
+pass=$((pass+1))
+
+# 2. the host cache: head elsewhere → stand down; head here → the pick
+fleet_queue_cache_write '[{"repo":"Acme/other","number":3},{"repo":"Acme/widget","number":9}]'
+if schedule_fleet_pick "$READY" Acme/widget "$pf"; then fail "a fleet head in another repo must stand this leg down"; fi
+[ "$SCHEDULE_FLEET_REASON" = fleet-head-elsewhere ] || fail "reason must be fleet-head-elsewhere (got $SCHEDULE_FLEET_REASON)"
+grep -q "Acme/other#3" <<<"$SCHEDULE_FLEET_NOTE" || fail "the note must name the head: $SCHEDULE_FLEET_NOTE"
+fleet_queue_cache_write '[{"repo":"Acme/widget","number":9},{"repo":"Acme/other","number":3}]'
+schedule_fleet_pick "$READY" Acme/widget "$pf" || fail "a fleet head in this repo must proceed"
+[ "$(jq -c 'map(.number)' "$pf")" = "[9]" ] && [ "$SCHEDULE_FLEET_PICK" = 9 ] || fail "the head here must be the pick (got $(cat "$pf"))"
+# 2b. head here but no longer in the ready set → legacy order, no pick
+fleet_queue_cache_write '[{"repo":"Acme/widget","number":99}]'
+schedule_fleet_pick "$READY" Acme/widget "$pf" || fail "a stale head must fall through, not stand down"
+[ "$(jq -c 'map(.number)' "$pf")" = "[7,9]" ] && [ -z "$SCHEDULE_FLEET_PICK" ] || fail "a head not in the ready set must leave the repo order"
+# 2c. a stale cache → legacy order, no pick, and the note says so
+touch -d '-1 hour' "$FLEET_QUEUE_CACHE"
+schedule_fleet_pick "$READY" Acme/widget "$pf" || fail "a stale cache must fall through"
+[ "$(jq -c 'map(.number)' "$pf")" = "[7,9]" ] && [ -z "$SCHEDULE_FLEET_PICK" ] || fail "a stale cache must leave the repo order"
+grep -q "no fleet view" <<<"$SCHEDULE_FLEET_NOTE" || fail "the legacy note must say there is no fleet view: $SCHEDULE_FLEET_NOTE"
+pass=$((pass+1))
+
+# 3. a `closed` leg records the close for the host's ticks — only when the host runs the tick
+rm -f "$FLEET_QUEUE_CACHE" "$FLEET_QUEUE_RECENT_CLOSES"
+SWARM_CLOSED_ISSUE=5 schedule_fleet_pick "$READY" Acme/widget "$pf" || fail "a closed leg with no cache must fall through"
+[ ! -f "$FLEET_QUEUE_RECENT_CLOSES" ] || fail "no tick on this host → no close record"
+: > "$FLEET_QUEUE_TICK"
+SWARM_CLOSED_ISSUE=5 schedule_fleet_pick "$READY" Acme/widget "$pf" || fail "a closed leg must fall through with no cache"
+grep -q " Acme/widget 5$" "$FLEET_QUEUE_RECENT_CLOSES" || fail "a closed leg must record the close for the host's ticks"
+# the mirror: a pick lands as <signals-dir>/fleet-pick, no pick leaves nothing
+SCHEDULE_FLEET_PICK=9 schedule_fleet_pick_signal "$tmp/sig"
+[ "$(cat "$tmp/sig/fleet-pick")" = 9 ] || fail "the pick must be mirrored into the host-signals dir"
+rm -rf "$tmp/sig"; SCHEDULE_FLEET_PICK="" schedule_fleet_pick_signal "$tmp/sig"
+[ ! -e "$tmp/sig/fleet-pick" ] || fail "no pick must leave no signal"
 pass=$((pass+1))
 
 echo "schedule-lib: $pass groups passed"
