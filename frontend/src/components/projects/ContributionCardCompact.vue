@@ -8,7 +8,10 @@
     <!-- Top row: title (+ inline meta) left, status + assignment right -->
     <div class="compact-header">
       <div class="compact-title-wrap">
-        <div class="compact-title">{{ contribution.title }}</div>
+        <div class="compact-title-row">
+          <span v-if="contribution.reference" class="contribution-ref">{{ contribution.reference }}</span>
+          <div class="compact-title">{{ contribution.title }}</div>
+        </div>
         <div
           v-if="contribution.estimated_duration || (contribution.budget && canSeeBudgetForThis) || contribution.deadline"
           class="compact-title-meta"
@@ -236,6 +239,7 @@ function formatDeadline(iso: string): string {
 
 <style scoped lang="scss">
 @import 'src/css/contribution-status.scss';
+@include contribution-reference;
 
 .contribution-compact {
   position: relative;
@@ -313,6 +317,14 @@ function formatDeadline(iso: string): string {
     align-items: stretch;
     gap: 4px;
   }
+}
+
+.compact-title-row {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .compact-title {

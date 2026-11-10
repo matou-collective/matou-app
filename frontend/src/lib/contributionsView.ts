@@ -136,12 +136,17 @@ export function filterByType(list: Contribution[], type: string): Contribution[]
   return list.filter((c) => c.contribution_type === type);
 }
 
-/** Case-insensitive substring match against title and description. */
+/**
+ * Case-insensitive substring match against the derived reference (e.g.
+ * "1.2.3"), title, and description. Matching the reference lets people find a
+ * contribution by the number shown beside its title (issue #753).
+ */
 export function searchContributions(list: Contribution[], query: string): Contribution[] {
   const q = query.trim().toLowerCase();
   if (!q) return list;
   return list.filter(
     (c) =>
+      (c.reference ?? '').toLowerCase().includes(q) ||
       (c.title ?? '').toLowerCase().includes(q) ||
       (c.description ?? '').toLowerCase().includes(q),
   );

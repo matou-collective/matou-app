@@ -49,6 +49,11 @@ export interface Contribution {
   acceptance_criteria: string[];
   skill_requirements: string[];
   sort_order?: number;
+  // Derived "M.C.S" display reference (milestone.contribution.sub, e.g. "1.2.0"
+  // for a top-level contribution, "1.2.1" for its first sub). Computed by the
+  // backend from the contribution's position at read time; never part of the
+  // title text. See issue #753.
+  reference?: string;
   parent_contribution?: string;
   child_contributions?: string[];
   estimated_duration?: number;
