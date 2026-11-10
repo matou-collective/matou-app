@@ -78,15 +78,28 @@
       </div>
     </div>
 
-    <!-- Filters (apply to both list and timeline) -->
+    <!-- Filters (apply to both list and timeline). Ownership and status are
+         independent axes that combine with AND (issue #809). -->
     <div class="filter-row">
       <div class="filter-group">
         <button
-          v-for="f in scopeFilters"
+          v-for="f in ownershipFilters"
           :key="f.value"
           class="filter-pill"
-          :class="{ active: activeScopeFilter === f.value }"
-          @click="activeScopeFilter = f.value"
+          :class="{ active: activeOwnershipFilter === f.value }"
+          @click="activeOwnershipFilter = f.value"
+        >
+          {{ f.label }}
+        </button>
+      </div>
+
+      <div class="filter-group">
+        <button
+          v-for="f in statusFilters"
+          :key="f.value"
+          class="filter-pill status-pill"
+          :class="{ active: activeStatusFilter === f.value }"
+          @click="activeStatusFilter = f.value"
         >
           {{ f.label }}
         </button>
@@ -166,10 +179,12 @@ import type { Contribution, CreateContributionRequest } from 'src/lib/api/contri
 import {
   applyContributionsView,
   resolveInitialViewMode,
-  SCOPE_FILTERS,
+  OWNERSHIP_FILTERS,
+  STATUS_FILTERS,
   TYPE_FILTERS,
   SORT_FIELDS,
-  type ScopeFilter,
+  type OwnershipFilter,
+  type StatusFilter,
   type SortField,
   type SortDirection,
   type ViewMode,
@@ -199,17 +214,41 @@ watch(viewMode, (v) => {
   localStorage.setItem(VIEW_MODE_STORAGE_KEY, v);
 });
 
-const SCOPE_STORAGE_KEY = 'matou:contributions:scope';
-const storedScope = localStorage.getItem(SCOPE_STORAGE_KEY) as ScopeFilter | null;
-const validScopes: ScopeFilter[] = SCOPE_FILTERS.map((f) => f.value);
-const activeScopeFilter = ref<ScopeFilter>(
-  storedScope && validScopes.includes(storedScope) ? storedScope : 'all',
-);
-watch(activeScopeFilter, (v) => {
-  localStorage.setItem(SCOPE_STORAGE_KEY, v);
+// Ownership axis (All / Mine / Offered to me), persisted independently.
+// Reads the legacy 'matou:contributions:scope' key as a one-time migration so a
+// stored 'mine' preference carries over (other legacy scopes were status-based).
+const OWNERSHIP_STORAGE_KEY = 'matou:contributions:ownership';
+const LEGACY_SCOPE_STORAGE_KEY = 'matou:contributions:scope';
+const validOwnership: OwnershipFilter[] = OWNERSHIP_FILTERS.map((f) => f.value);
+function initialOwnership(): OwnershipFilter {
+  const stored = localStorage.getItem(OWNERSHIP_STORAGE_KEY) as OwnershipFilter | null;
+  if (stored && validOwnership.includes(stored)) return stored;
+  if (localStorage.getItem(LEGACY_SCOPE_STORAGE_KEY) === 'mine') return 'mine';
+  return 'all';
+}
+const activeOwnershipFilter = ref<OwnershipFilter>(initialOwnership());
+watch(activeOwnershipFilter, (v) => {
+  localStorage.setItem(OWNERSHIP_STORAGE_KEY, v);
 });
 
-const scopeFilters = SCOPE_FILTERS;
+// Status axis (All / Open / Assigned / … / Overdue), persisted independently.
+const STATUS_STORAGE_KEY = 'matou:contributions:status';
+const validStatuses: StatusFilter[] = STATUS_FILTERS.map((f) => f.value);
+function initialStatus(): StatusFilter {
+  const stored = localStorage.getItem(STATUS_STORAGE_KEY) as StatusFilter | null;
+  if (stored && validStatuses.includes(stored)) return stored;
+  // Migrate a legacy status-based scope selection (e.g. 'assigned').
+  const legacy = localStorage.getItem(LEGACY_SCOPE_STORAGE_KEY) as StatusFilter | null;
+  if (legacy && validStatuses.includes(legacy)) return legacy;
+  return 'all';
+}
+const activeStatusFilter = ref<StatusFilter>(initialStatus());
+watch(activeStatusFilter, (v) => {
+  localStorage.setItem(STATUS_STORAGE_KEY, v);
+});
+
+const ownershipFilters = OWNERSHIP_FILTERS;
+const statusFilters = STATUS_FILTERS;
 const typeFilters = TYPE_FILTERS;
 const sortFields = SORT_FIELDS;
 
@@ -239,7 +278,8 @@ function toggleSortDirection() {
 
 const filteredContributions = computed(() =>
   applyContributionsView(store.contributions, {
-    scope: activeScopeFilter.value,
+    ownership: activeOwnershipFilter.value,
+    status: activeStatusFilter.value,
     type: activeTypeFilter.value,
     search: searchQuery.value ?? '',
     sortField: sortField.value,
@@ -341,6 +381,11 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
     background: var(--matou-primary);
     color: white;
     border-color: var(--matou-primary);
+  }
+
+  &.status-pill.active {
+    background: var(--matou-accent-warm);
+    border-color: var(--matou-accent-warm);
   }
 
   &.type-pill.active {

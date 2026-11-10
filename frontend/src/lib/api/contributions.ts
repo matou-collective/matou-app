@@ -63,6 +63,9 @@ export interface Contribution {
   deadline?: string;
   budget?: string;
   assigned_contributor_id?: string;
+  // Set when the contribution has been privately offered to a specific user.
+  offered_to?: string;
+  offered_at?: string;
   signed_off_by?: string;
   signed_off_at?: string;
   rewarded_by?: string;
