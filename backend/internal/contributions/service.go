@@ -1471,6 +1471,13 @@ func (s *Service) HydratePlan(ctx context.Context, spaceID string, plan *Impleme
 		// order rather than raw ContributionIDs (creation) order.
 		SortSiblings(ms.Contributions)
 	}
+	// Stamp derived "M.C.S" references onto the hydrated top-level
+	// contributions so plan-driven views (milestone cards) show them.
+	var hydrated []*Contribution
+	for i := range plan.Milestones {
+		hydrated = append(hydrated, plan.Milestones[i].Contributions...)
+	}
+	s.StampReferences(ctx, spaceID, hydrated)
 }
 
 // --- Contributions ---

@@ -30,6 +30,9 @@ const (
 	// NotifyContributionEvidenceEdited fires when the assigned contributor amended a
 	// submission before sign-off (lead + voided reviewer are the recipients).
 	NotifyContributionEvidenceEdited NotificationType = "contribution:evidence_edited"
+	// NotifyContributionMentioned fires when a person is @-mentioned in a
+	// contribution (or sub-task) comment; the mentioned person is the recipient.
+	NotifyContributionMentioned NotificationType = "contribution:mentioned"
 	// NotifyDecisionPlanSubmitted fires when a decision plan is submitted.
 	NotifyDecisionPlanSubmitted NotificationType = "decision_plan:submitted"
 	// NotifyDecisionPlanSignedOff fires when a decision plan is signed off.

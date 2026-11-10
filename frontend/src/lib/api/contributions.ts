@@ -49,6 +49,11 @@ export interface Contribution {
   acceptance_criteria: string[];
   skill_requirements: string[];
   sort_order?: number;
+  // Derived "M.C.S" display reference (milestone.contribution.sub, e.g. "1.2.0"
+  // for a top-level contribution, "1.2.1" for its first sub). Computed by the
+  // backend from the contribution's position at read time; never part of the
+  // title text. See issue #753.
+  reference?: string;
   parent_contribution?: string;
   child_contributions?: string[];
   estimated_duration?: number;
@@ -453,6 +458,8 @@ export interface ContributionComment {
   user_id: string;
   user_name: string;
   text: string;
+  /** AIDs of people @-mentioned in `text`, resolved client-side from the tokens. */
+  mentioned_aids?: string[];
   created_at: string;
 }
 
@@ -461,11 +468,12 @@ export async function addContributionComment(
   userId: string,
   userName: string,
   text: string,
+  mentionedAids: string[] = [],
 ): Promise<ContributionComment> {
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${contributionId}/comments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ user_id: userId, user_name: userName, text }),
+    body: JSON.stringify({ user_id: userId, user_name: userName, text, mentioned_aids: mentionedAids }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));

@@ -108,3 +108,23 @@ $contribution-status-grey: #90a4ae;
   border-radius: 10px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
 }
+
+// Derived "M.C.S" reference shown beside a contribution title (issue #753).
+// A muted, monospaced pill so the number reads as metadata, not title text.
+@mixin contribution-reference {
+  .contribution-ref {
+    display: inline-block;
+    margin-right: 0.5em;
+    padding: 0 0.4em;
+    border-radius: 4px;
+    background: var(--matou-muted, rgba(127, 127, 127, 0.14));
+    color: var(--matou-muted-foreground, #64748b);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.82em;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    vertical-align: baseline;
+    flex-shrink: 0;
+  }
+}
