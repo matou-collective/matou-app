@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { submitForReview, editContribution, registerWorkflowTools } from "../src/tools/workflow.js";
+import { submitForReview, saveEvidenceDraft, editContribution, registerWorkflowTools } from "../src/tools/workflow.js";
 import { MatouClient, MatouApiError } from "../src/backend.js";
 import { MemberDirectory } from "../src/members.js";
 
@@ -44,6 +44,55 @@ describe("submitForReview fractional-hours fallback", () => {
       submitForReview(ctx, { contribution_id: "ctr_1", completion_notes: "x", actual_hours: 24 }),
     ).rejects.toThrow();
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("saveEvidenceDraft", () => {
+  it("POSTs the evidence to the save-evidence-draft endpoint with rbac", async () => {
+    const { ctx, calls } = ctxSeq([
+      { ok: true, status: 200, body: '{"id":"ctr_1","status":"assigned"}' },
+    ]);
+    const result = (await saveEvidenceDraft(ctx, {
+      contribution_id: "ctr_1",
+      completion_notes: "partial work so far",
+      evidence_urls: ["https://gitlab/mr/1"],
+      acceptance_notes: ["criterion met"],
+      actual_amount: 100,
+      actual_hours: 2,
+    })) as Record<string, unknown>;
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("http://x/api/v1/contributions/ctr_1/save-evidence-draft");
+    expect(calls[0].init.method).toBe("POST");
+    expect(calls[0].init.headers["X-User-AID"]).toBe("EBEN");
+    const body = JSON.parse(calls[0].init.body);
+    expect(body).toEqual({
+      completion_notes: "partial work so far",
+      evidence_urls: ["https://gitlab/mr/1"],
+      acceptance_notes: ["criterion met"],
+      actual_cost: 100,
+      actual_duration: 2,
+    });
+    // Draft must not move the contribution into review.
+    expect(result.status).toBe("assigned");
+  });
+
+  it("retries with rounded hours and a derivation note when the backend rejects a fraction", async () => {
+    const { ctx, calls } = ctxSeq([
+      { ok: false, status: 400, body: '{"error":"invalid request body"}' },
+      { ok: true, status: 200, body: '{"status":"assigned","actual_duration":24}' },
+    ]);
+    const result = (await saveEvidenceDraft(ctx, {
+      contribution_id: "ctr_1",
+      completion_notes: "done",
+      actual_hours: 24.375,
+      actual_amount: 1950,
+    })) as Record<string, unknown>;
+    expect(calls[0].url).toBe("http://x/api/v1/contributions/ctr_1/save-evidence-draft");
+    const retryBody = JSON.parse(calls[1].init.body);
+    expect(retryBody.actual_duration).toBe(24);
+    expect(retryBody.actual_cost).toBe(1950);
+    expect(retryBody.completion_notes).toMatch(/24.375 hrs @ \$80.00\/hr = \$1950/);
+    expect(result._note).toMatch(/fractional hours/);
   });
 });
 
@@ -136,5 +185,15 @@ describe("edit_contribution registration", () => {
     const { server, tools } = fakeServer();
     registerWorkflowTools(server as any, regCtx(true) as any);
     expect(tools).not.toContain("edit_contribution");
+  });
+  it("exposes save_evidence_draft as a mutating tool", () => {
+    const { server, tools } = fakeServer();
+    registerWorkflowTools(server as any, regCtx(false) as any);
+    expect(tools).toContain("save_evidence_draft");
+  });
+  it("hides save_evidence_draft when readonly", () => {
+    const { server, tools } = fakeServer();
+    registerWorkflowTools(server as any, regCtx(true) as any);
+    expect(tools).not.toContain("save_evidence_draft");
   });
 });
