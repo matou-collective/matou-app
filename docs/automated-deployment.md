@@ -24,19 +24,12 @@ Run from the `frontend/` directory:
 npm run release -- <version>
 ```
 
-This runs a script to update the version in `frontend/package.json`, creates a tag for the new version, commits and pushes it to both the GitLab and GitHub repos.
+This runs a script to update the version in `frontend/package.json`, creates a tag for the new version, commits and pushes the commit and tag to Forgejo (`origin`). The Forgejo push mirror then copies them to GitHub, and the tag push there starts the build.
 
 Notes:
 
 * Currently only tested on MacOS
-* Assumes you have the following remotes set up:
-
-  ```bash
-  github git@github.com:matou-collective/matou-app.git (fetch)
-  github git@github.com:matou-collective/matou-app.git (push)
-  origin git@gitlab.com:matou-collective/matou-app.git (fetch)
-  origin git@gitlab.com:matou-collective/matou-app.git (push)
-  ```
+* Assumes `origin` is the Forgejo repo (`https://git.matou.nz/Matou/matou-app.git`) and that you are on a clean `main`. It does not push to GitHub; if the tag has not shown up there after a few minutes, use "Sync now" on the Forgejo push mirror.
 
 ---
 
