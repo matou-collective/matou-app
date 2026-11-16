@@ -1882,8 +1882,10 @@ func TestApproveSubContribution_AllowsApprovalWithoutAssignee(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected approval to succeed without assignee, got: %v", err)
 	}
-	if approved.Status != ContribAssigned {
-		t.Errorf("expected status %s, got %s", ContribAssigned, approved.Status)
+	// With no assignee the approved sub lands in confirmed, not assigned — its
+	// status must not imply someone is on it (see #800).
+	if approved.Status != ContribConfirmed {
+		t.Errorf("expected status %s, got %s", ContribConfirmed, approved.Status)
 	}
 	if approved.AssignedContributorID != "" {
 		t.Errorf("expected assignee to remain empty, got %q", approved.AssignedContributorID)

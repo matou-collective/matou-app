@@ -453,6 +453,18 @@ func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, type
 				if errors.Is(err, ErrNoChangesInTree) {
 					m.recoverEmptyTree(ctx, spaceID, entry.TreeID, entry.ObjectID)
 				}
+				if errors.Is(err, ErrAllChangesRejected) {
+					// Surface the concrete rule/field/author/reason on every read,
+					// not just the first: the rejection recorder dedupes its own
+					// log line by change id, so without this the reason would be
+					// invisible after the first read while this warning keeps
+					// firing (#816).
+					if reasons := describeObjectRejections(m.changeValidator(), entry.ObjectID); reasons != "" {
+						log.Printf("[ObjectTree] Warning: failed to build state for %s: %v (rejected: %s)",
+							entry.ObjectID, err, reasons)
+						continue
+					}
+				}
 				log.Printf("[ObjectTree] Warning: failed to build state for %s: %v",
 					entry.ObjectID, err)
 				continue

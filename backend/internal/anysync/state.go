@@ -157,7 +157,7 @@ func (s *ObjectState) applyChange(spaceID string, change *objecttree.Change, oc 
 		if change.Identity != nil {
 			author = change.Identity.Account()
 		}
-		if !validator.ValidateChange(spaceID, s.ObjectType, s.ObjectID, change.Id, author, change.Timestamp, oc.Ops, s.Fields) {
+		if !validator.ValidateChange(spaceID, s.ObjectType, s.ObjectID, change.Id, author, change.Timestamp, oc.Ops, s.Fields, change.IsSnapshot) {
 			return
 		}
 	}

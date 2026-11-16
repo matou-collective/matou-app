@@ -46,7 +46,9 @@ package anysync
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/matou-dao/backend/internal/contributions"
@@ -65,11 +67,17 @@ type ChangeValidator interface {
 	// `current` is the object's field state immediately before this change is
 	// applied, used to tell a genuine high-stakes transition apart from a
 	// no-op re-assertion (e.g. a snapshot that merely carries a value forward).
+	// `isSnapshot` is true when the change is a snapshot (a mechanical checkpoint
+	// of already-established state, not a newly authored transition). It matters
+	// because any-sync reduces an object tree so its root becomes the latest
+	// snapshot: on a read, iteration then BEGINS at that snapshot with an empty
+	// `current`, so a high-stakes value the snapshot merely carries forward can no
+	// longer be recognised as a re-assertion from `current` alone (#816).
 	//
 	// Returning false excludes the change from state computation and is
 	// expected to record it for observability. Implementations must be
 	// deterministic: the same inputs yield the same verdict on every peer.
-	ValidateChange(spaceID, objectType, objectID, changeID, author string, timestamp int64, ops []ChangeOp, current map[string]json.RawMessage) bool
+	ValidateChange(spaceID, objectType, objectID, changeID, author string, timestamp int64, ops []ChangeOp, current map[string]json.RawMessage, isSnapshot bool) bool
 }
 
 // RoleResolver maps an any-sync change author (the account string returned by
@@ -189,6 +197,63 @@ func (r *LoggingRejectionRecorder) Recent() []RejectedChange {
 	out := make([]RejectedChange, len(r.recent))
 	copy(out, r.recent)
 	return out
+}
+
+// RejectionLister is the read-only slice of a RejectionRecorder the read path
+// uses to make an ErrAllChangesRejected failure self-documenting on EVERY read.
+// The recorder dedupes its own "[write-rules] REJECTED" log line by change id,
+// so after the first read the reason would otherwise be invisible even though
+// the per-read "failed to build state" warning keeps firing (#816). A recorder
+// that retains rejections (LoggingRejectionRecorder) satisfies it.
+type RejectionLister interface {
+	Recent() []RejectedChange
+}
+
+// RejectionInspector surfaces the recorded rejections for one object, so a
+// caller that only holds the ChangeValidator (the read path) can report why the
+// object's state could not be built. WriteRuleValidator implements it over its
+// recorder.
+type RejectionInspector interface {
+	RejectionsFor(objectID string) []RejectedChange
+}
+
+// RejectionsFor returns the retained rejections recorded for objectID, oldest
+// first, or nil when the recorder does not retain them. It lets the read path
+// log the concrete rule/field/author/reason behind an ErrAllChangesRejected on
+// every read, not just the first (see RejectionLister).
+func (v *WriteRuleValidator) RejectionsFor(objectID string) []RejectedChange {
+	lister, ok := v.recorder.(RejectionLister)
+	if !ok {
+		return nil
+	}
+	var out []RejectedChange
+	for _, rc := range lister.Recent() {
+		if rc.ObjectID == objectID {
+			out = append(out, rc)
+		}
+	}
+	return out
+}
+
+// describeObjectRejections renders a validator's recorded rejections for an
+// object into a compact, single-line diagnostic (change id, author, rule field,
+// value and reason), for the read-path warning that reports a build failure.
+// Returns "" when the validator cannot surface rejections or none are recorded.
+func describeObjectRejections(validator ChangeValidator, objectID string) string {
+	inspector, ok := validator.(RejectionInspector)
+	if !ok {
+		return ""
+	}
+	rejections := inspector.RejectionsFor(objectID)
+	if len(rejections) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(rejections))
+	for _, rc := range rejections {
+		parts = append(parts, fmt.Sprintf("change %s by %q: %s (%s=%s)",
+			rc.ChangeID, rc.Author, rc.Reason, rc.Field, rc.Value))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // rolePredicate reports whether an author holding the given roles is permitted
@@ -513,7 +578,7 @@ func (v *WriteRuleValidator) WithProjectAssignments(projects ProjectAssignmentRe
 }
 
 // ValidateChange implements ChangeValidator.
-func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, changeID, author string, timestamp int64, ops []ChangeOp, current map[string]json.RawMessage) bool {
+func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, changeID, author string, timestamp int64, ops []ChangeOp, current map[string]json.RawMessage, isSnapshot bool) bool {
 	rule, guarded := communityWriteRules[objectType]
 	if !guarded || v.resolver == nil {
 		return true
@@ -596,6 +661,28 @@ func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, chang
 		// proof-backed transition with enforcement off (interim part-1
 		// behaviour). Resolve the author via the account → AID binding and gate
 		// by role. Fail-open on an unresolved author.
+		//
+		// A snapshot whose guarded field has NO prior value in `current` is the
+		// reduced-tree root: any-sync reduces an object tree so its root becomes
+		// the latest snapshot, and a read then BEGINS iteration there with an
+		// empty `current`. Such a snapshot merely carries forward state an earlier
+		// (now-reduced-away) change already established — the re-assertion guard
+		// above cannot recognise it, because the value it would compare against is
+		// gone. Gating it would drop the whole snapshot, taking every field it
+		// carries with it, so a signed-off plan/contribution read from its
+		// snapshot root fails to load with ErrAllChangesRejected (#816). On this
+		// fail-open interim path we allow it (absence of the prior value is not
+		// proof of a forgery). This does NOT reopen the forged-snapshot hole: a
+		// member's snapshot that FLIPS a visible value to a new high-stakes one
+		// has the old value present in `current`, so it falls through to the role
+		// gate below and is still rejected. The proof-backed enforce path above is
+		// likewise untouched — there the snapshot carries the signer's proof
+		// forward and it is still verified.
+		if isSnapshot {
+			if _, present := current[op.Field]; !present {
+				continue
+			}
+		}
 		roles, resolved := v.resolver.RolesForAuthorAt(author, timestamp)
 		if !resolved {
 			continue

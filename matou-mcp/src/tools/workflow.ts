@@ -16,8 +16,14 @@ interface SubmitArgs {
   attachment_paths?: string[];
 }
 
-export async function submitForReview(ctx: ToolContext, args: SubmitArgs): Promise<unknown> {
-  const path = `/api/v1/contributions/${args.contribution_id}/submit-evidence`;
+// Builds the shared evidence request body and uploads any local files, then POSTs
+// to `path` with the acting AID. Carries the fractional-hours fallback: if the
+// backend rejects a fractional actual_hours with a decode error, it retries with
+// rounded hours and records the exact figure in a derivation note. Used by both
+// submit_for_review (→ /submit-evidence) and save_evidence_draft (→ /save-evidence-draft),
+// which share the same request body and semantics (only status/notification differ,
+// server-side).
+async function postEvidence(ctx: ToolContext, path: string, args: SubmitArgs): Promise<unknown> {
   const payload: Record<string, unknown> = { completion_notes: args.completion_notes };
   if (args.evidence_urls) payload.evidence_urls = args.evidence_urls;
   if (args.acceptance_notes) payload.acceptance_notes = args.acceptance_notes;
@@ -50,6 +56,14 @@ export async function submitForReview(ctx: ToolContext, args: SubmitArgs): Promi
       _note: `Backend rejected fractional hours; stored ${rounded}h and recorded the exact figure in completion notes.`,
     };
   }
+}
+
+export async function submitForReview(ctx: ToolContext, args: SubmitArgs): Promise<unknown> {
+  return postEvidence(ctx, `/api/v1/contributions/${args.contribution_id}/submit-evidence`, args);
+}
+
+export async function saveEvidenceDraft(ctx: ToolContext, args: SubmitArgs): Promise<unknown> {
+  return postEvidence(ctx, `/api/v1/contributions/${args.contribution_id}/save-evidence-draft`, args);
 }
 
 interface EditArgs {
@@ -198,6 +212,38 @@ export function registerWorkflowTools(server: McpServer, ctx: ToolContext): void
       mutating: true,
     },
     (args) => submitForReview(ctx, args as unknown as SubmitArgs),
+  );
+
+  defineTool(
+    server,
+    ctx,
+    {
+      name: "save_evidence_draft",
+      description:
+        "Save a contribution's evidence as a DRAFT without submitting it for review. The draft is " +
+        "persisted privately to the assigned contributor; it does NOT move the contribution into review " +
+        "and sends NO reviewer notification — when ready to submit, use `submit_for_review` instead. " +
+        "Accepts the same evidence fields as submit_for_review (all optional except contribution_id):\n" +
+        "• completion_notes — describe the work and how each DELIVERABLE was produced.\n" +
+        "• acceptance_notes — one entry PER acceptance criterion, stating how it was met (same order).\n" +
+        "• actual_hours / actual_amount — actual time and cost (amount = hours × rate).\n" +
+        "Pass a time report and any supporting attachments as local file paths: `time_report_path` and " +
+        "`attachment_paths` (uploaded automatically). `evidence_urls` is for links (e.g. GitLab MRs/commits). " +
+        "Only the assigned contributor may save a draft (enforced by the backend). " +
+        "Auto-handles backends that only accept whole hours.",
+      schema: {
+        contribution_id: z.string(),
+        completion_notes: z.string(),
+        actual_hours: z.number().optional(),
+        actual_amount: z.number().optional(),
+        evidence_urls: z.array(z.string()).optional(),
+        acceptance_notes: z.array(z.string()).optional(),
+        time_report_path: z.string().optional(),
+        attachment_paths: z.array(z.string()).optional(),
+      },
+      mutating: true,
+    },
+    (args) => saveEvidenceDraft(ctx, args as unknown as SubmitArgs),
   );
 
   defineTool(

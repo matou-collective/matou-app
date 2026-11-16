@@ -19,6 +19,7 @@ import { KIT, KIT_BUILD } from 'src/generated/kit';
 import { kitUserDataPath } from './kit-paths';
 import { buildDesktopEntry, schemeHandlerMimeType } from './desktop-entry';
 import { resolveIdentityKey } from './identity-key';
+import { toggleWindowMaximize, isWindowMaximized } from './window-controls';
 
 // Using destructuring to access autoUpdater due to the CommonJS module of 'electron-updater'.
 // It is a workaround for ESM compatibility issues, see https://github.com/electron-userland/electron-builder/issues/7976.
@@ -481,14 +482,12 @@ ipcMain.handle('get-api-token', () => apiToken);
 // Window control IPC handlers
 ipcMain.handle('window-minimize', () => mainWindow?.minimize());
 ipcMain.handle('window-maximize', () => {
-  if (mainWindow?.isMaximized()) {
-    mainWindow.unmaximize();
-  } else {
-    mainWindow?.maximize();
-  }
+  if (mainWindow) toggleWindowMaximize(mainWindow);
 });
 ipcMain.handle('window-close', () => mainWindow?.close());
-ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() ?? false);
+ipcMain.handle('window-is-maximized', () =>
+  mainWindow ? isWindowMaximized(mainWindow) : false,
+);
 
 // --- Secure storage IPC handlers (OS-level encryption via safeStorage) ---
 const secureStorePath = path.join(app.getPath('userData'), 'matou-data', 'secure-store.json');
