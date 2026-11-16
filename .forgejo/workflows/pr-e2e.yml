@@ -70,7 +70,22 @@ jobs:
           # wait.sh) because it runs before the checkout exists, and the checkout
           # is the PR head, which may predate the helper — so the mode read below
           # mirrors host_capacity_drive_mode by hand.
-          drive_res=/tmp/matou-drive-wanted
+          #
+          # Slot + reservation paths come from the host's generated
+          # host-capacity.env so this guard flocks the SAME inodes swarm.yml/
+          # triage.yml and the harness libs do — the state-dir paths (#205/#218),
+          # not the stale /tmp names the cutover left behind. A guard left on /tmp
+          # no longer shares an inode with them, so it stopped excluding
+          # swarm/triage and stopped deferring to a declared drive reservation at
+          # all, silently doubling the two-slot host semaphore (#817). Fall back
+          # to the harness-default state dir if a host predates the file.
+          cap_env="$HOME/factory-cron/host-capacity.env"
+          [ -f "$cap_env" ] && . "$cap_env"
+          state_dir="${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}"
+          mkdir -p "$state_dir"
+          set -- ${HOST_CAPACITY_SLOTS:-$state_dir/matou-swarm.lock $state_dir/matou-host-slot-2.lock}
+          slot1="$1"; slot2="${2:-$1}"
+          drive_res="${HOST_CAPACITY_DRIVE_WANTED:-$state_dir/matou-drive-wanted}"
           drive_exclusive="${DRIVE_EXCLUSIVE:-}"
           if [ -z "$drive_exclusive" ] && [ -r /home/swarm/swarm/host-registry.conf ]; then
             drive_exclusive="$(awk -F'[ \t=]+' '$1=="drive-exclusive"{print $2; exit}' /home/swarm/swarm/host-registry.conf 2>/dev/null || true)"
@@ -87,10 +102,10 @@ jobs:
             # comment + pr-e2e-sweep own the give-up path (#278).
             deadline=$(( $(date +%s) + 300 ))
             while [ "$(date +%s)" -lt "$deadline" ]; do
-              exec 9>/tmp/matou-swarm.lock
+              exec 9>"$slot1"
               if flock -n 9; then acquired=1; break; fi
               exec 9>&-
-              exec 8>/tmp/matou-host-slot-2.lock
+              exec 8>"$slot2"
               if flock -n 8; then acquired=1; break; fi
               exec 8>&-
               sleep 20
@@ -106,9 +121,9 @@ jobs:
             deadline=$(( $(date +%s) + 1800 ))
             while [ "$(date +%s)" -lt "$deadline" ]; do
               touch "$drive_res"
-              exec 9>/tmp/matou-swarm.lock
+              exec 9>"$slot1"
               if flock -n 9; then
-                exec 8>/tmp/matou-host-slot-2.lock
+                exec 8>"$slot2"
                 if flock -n 8; then acquired=1; rm -f "$drive_res"; break; fi
                 exec 8>&-
               fi
@@ -234,7 +249,7 @@ jobs:
           marker="/tmp/matou-pr-e2e-lockbusy.${{ github.run_number }}"
           if [ -f "$marker" ]; then
             rm -f "$marker"
-            echo "pr-e2e: lost /tmp/matou-swarm.lock to a concurrent swarm worker — expected contention, not a fault; healer stands down."
+            echo "pr-e2e: lost a host-capacity slot to a concurrent swarm worker — expected contention, not a fault; healer stands down."
             if [ -n "$MATTERMOST_BOT_TOKEN" ]; then
               jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" \
                 --arg message ":hourglass: pr-e2e skipped for \`${{ github.repository }}\` — the host swarm lock was busy for 30min, so the feature spec never ran. Re-run via workflow_dispatch or push again. $RUN_URL" \
