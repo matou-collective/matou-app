@@ -33,6 +33,17 @@ on:
         default: false
         type: boolean
 
+# One build per tag. The Forgejo push mirror is the only thing that pushes a
+# release tag here, and it can deliver the same tag twice within a second
+# (v0.8.13 started two runs for one commit). Without this both would build and
+# race on the Play / TestFlight upload (same versionCode) and the release assets.
+# A duplicate delivery cancels the earlier run; the later one carries on.
+# Dispatches keep one group per platform input, and are never cancelled, so two
+# different-platform dispatches on the same ref do not kill each other.
+concurrency:
+  group: build-${{ github.ref }}-${{ github.ref_type == 'tag' && 'tag' || inputs.platform }}
+  cancel-in-progress: ${{ github.ref_type == 'tag' }}
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
