@@ -78,11 +78,11 @@ func (m *RoleGatedMembers) ChannelMembers(channelID string) ([]string, error) {
 }
 
 // rolesSatisfyGate reports whether any role held by a member satisfies a
-// channel's AllowedRoles gate. Matching is case-insensitive like the read-side
-// check (api.containsRole) but also word-aware, because the two sides are
-// authored differently: the UI writes coarse gate labels ("steward", "admin")
-// while resolved roles are contributions role IDs ("operations_steward"). A
-// gate entry matches when all of its words appear in the held role, so
+// channel's AllowedRoles gate. Matching is case-insensitive and word-aware,
+// mirroring the read-side check (api.rolesSatisfyChannelGate), because the two
+// sides are authored differently: the UI writes coarse gate labels ("steward",
+// "admin") while resolved roles are contributions role IDs ("operations_steward").
+// A gate entry matches when all of its words appear in the held role, so
 // "steward" admits an operations_steward while "admin" does not admit a
 // plain member.
 func rolesSatisfyGate(allowedRoles, heldRoles []string) bool {

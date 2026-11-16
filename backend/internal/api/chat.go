@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/anysync"
@@ -204,7 +205,6 @@ func (h *ChatHandler) HandleListChannels(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	userRole := h.getUserRole()
 	type channelEntry struct {
 		obj  *anysync.ObjectPayload
 		data ChatChannelData
@@ -222,7 +222,7 @@ func (h *ChatHandler) HandleListChannels(w http.ResponseWriter, r *http.Request)
 
 	channels := make([]ChannelResponse, 0, len(latestByID))
 	for _, entry := range latestByID {
-		if len(entry.data.AllowedRoles) > 0 && !containsRole(entry.data.AllowedRoles, userRole) {
+		if !h.userSatisfiesChannelGate(entry.data.AllowedRoles) {
 			continue
 		}
 		if entry.data.IsArchived && r.URL.Query().Get("includeArchived") != "true" {
@@ -274,8 +274,7 @@ func (h *ChatHandler) HandleGetChannel(w http.ResponseWriter, r *http.Request) {
 	if h.store != nil {
 		ch, err := h.store.GetChannel(ctx, channelID)
 		if err == nil {
-			userRole := h.getUserRole()
-			if len(ch.AllowedRoles) > 0 && !containsRole(ch.AllowedRoles, userRole) {
+			if !h.userSatisfiesChannelGate(ch.AllowedRoles) {
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "access denied"})
 				return
 			}
@@ -312,8 +311,7 @@ func (h *ChatHandler) HandleGetChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userRole := h.getUserRole()
-	if len(data.AllowedRoles) > 0 && !containsRole(data.AllowedRoles, userRole) {
+	if !h.userSatisfiesChannelGate(data.AllowedRoles) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "access denied"})
 		return
 	}
@@ -1807,10 +1805,30 @@ func (h *ChatHandler) HandleUpdateReadCursor(w http.ResponseWriter, r *http.Requ
 
 // --- Helper Functions ---
 
-func (h *ChatHandler) getUserRole() string {
-	// TODO: Look up the user's CommunityProfile to get their role
-	// For now, return empty (treats as "member")
-	return ""
+// userSatisfiesChannelGate reports whether the local user's resolved roles
+// satisfy a channel's AllowedRoles gate. An empty gate is open to everyone.
+//
+// Gate labels are authored coarsely by the UI ("admin", "steward") while a
+// user's resolved roles are contributions role IDs ("operations_steward",
+// "founding_member"), so matching is case-insensitive and word-aware — the same
+// rule the push-side role gate uses (notifications.rolesSatisfyGate): a gate
+// entry matches a held role when every word of the gate entry appears in the
+// held role, so "steward" admits an operations_steward while "admin" does not
+// admit a plain member.
+//
+// This replaces a stub that always resolved the user to an unnamed role, which
+// made containsRole fail for every AllowedRoles gate — hiding an admins-only
+// channel from everyone, the steward who created it included (#829).
+func (h *ChatHandler) userSatisfiesChannelGate(allowedRoles []string) bool {
+	if len(allowedRoles) == 0 {
+		return true
+	}
+	held := h.currentUserRoles()
+	heldStrings := make([]string, 0, len(held))
+	for _, role := range held {
+		heldStrings = append(heldStrings, string(role))
+	}
+	return rolesSatisfyChannelGate(allowedRoles, heldStrings)
 }
 
 // currentUserRoles resolves the local user's contribution roles for the chat
@@ -1871,13 +1889,50 @@ func (h *ChatHandler) getSenderName(aid string) string {
 	return aid
 }
 
-func containsRole(allowedRoles []string, userRole string) bool {
-	for _, role := range allowedRoles {
-		if strings.EqualFold(role, userRole) {
-			return true
+// rolesSatisfyChannelGate reports whether any role held by the user satisfies a
+// channel's AllowedRoles gate. Matching mirrors the push-side gate
+// (notifications.rolesSatisfyGate): case-insensitive and word-aware, so a coarse
+// gate label ("steward") admits a specific role ID ("operations_steward"). A
+// gate entry matches when all of its words appear in the held role.
+func rolesSatisfyChannelGate(allowedRoles, heldRoles []string) bool {
+	for _, allowed := range allowedRoles {
+		want := roleGateWords(allowed)
+		if len(want) == 0 {
+			continue
+		}
+		for _, held := range heldRoles {
+			if wordsContainAll(roleGateWords(held), want) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// roleGateWords lowercases a role label and splits it on any non-alphanumeric
+// separator, so "Operations Steward", "operations_steward" and
+// "operations-steward" all yield the same words.
+func roleGateWords(role string) []string {
+	return strings.FieldsFunc(strings.ToLower(role), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+}
+
+// wordsContainAll reports whether have contains every word in want.
+func wordsContainAll(have, want []string) bool {
+	for _, w := range want {
+		found := false
+		for _, h := range have {
+			if h == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 type messageEntry struct {

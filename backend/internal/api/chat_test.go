@@ -290,6 +290,113 @@ func TestChat_ListChannels(t *testing.T) {
 	}
 }
 
+// createAdminOnlyChannel creates a channel gated to admins/stewards
+// (allowedRoles ["admin","steward"], the gate the CreateChannelModal writes for
+// the "Admins only" visibility option) and returns its ID. Creation runs as the
+// default founding-member test user.
+func createAdminOnlyChannel(t *testing.T, env *chatTestEnv, name string) string {
+	t.Helper()
+	body := fmt.Sprintf(`{"name":"%s","allowedRoles":["admin","steward"]}`, name)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/channels", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("failed to create admin-only channel: %d %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	return resp["channelId"].(string)
+}
+
+// TestChat_ListChannels_AdminOnlyVisibleToSteward is the regression for #829:
+// an "Admins only" channel (allowedRoles ["admin","steward"]) must appear in the
+// channel list for the steward/founding member who can manage channels. The
+// previous getUserRole() stub resolved every caller to an unnamed role, so the
+// gate matched no one and the channel was hidden from everyone — including its
+// creator.
+func TestChat_ListChannels_AdminOnlyVisibleToSteward(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	// A real steward/founding member resolves to the full KERI role bundle
+	// (operations_steward, project_steward, …), which the gate's "steward" label
+	// admits. The default mock holds only the bare "founding_member" ID, so set
+	// the realistic bundle the production lookup (MapKERIRole) returns.
+	env.roleLookup.roles["ETEST_CHAT_USER01"] = contributions.MapKERIRole("Founding Member")
+
+	channelID := createAdminOnlyChannel(t, env, "stewards-only")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/channels", nil)
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Channels []ChannelResponse `json:"channels"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	found := false
+	for _, ch := range resp.Channels {
+		if ch.ID == channelID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("admin-only channel %s not visible to founding member; got %+v", channelID, resp.Channels)
+	}
+
+	// And the detail endpoint must serve it to the steward, not 403.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/chat/channels/"+channelID, nil)
+	getW := httptest.NewRecorder()
+	env.mux.ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("expected 200 on GetChannel for steward, got %d: %s", getW.Code, getW.Body.String())
+	}
+}
+
+// TestChat_ListChannels_AdminOnlyHiddenFromMember: the same gate still hides the
+// channel from a plain member — the restriction must stay enforced.
+func TestChat_ListChannels_AdminOnlyHiddenFromMember(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	channelID := createAdminOnlyChannel(t, env, "stewards-only") // created as founding member
+
+	// Demote the caller to a plain member.
+	env.roleLookup.roles["ETEST_CHAT_USER01"] = []contributions.Role{contributions.RoleMember}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/channels", nil)
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	var resp struct {
+		Channels []ChannelResponse `json:"channels"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	for _, ch := range resp.Channels {
+		if ch.ID == channelID {
+			t.Fatalf("admin-only channel %s leaked to a plain member", channelID)
+		}
+	}
+
+	// Detail endpoint must 403 for the member.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/chat/channels/"+channelID, nil)
+	getW := httptest.NewRecorder()
+	env.mux.ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 on GetChannel for member, got %d: %s", getW.Code, getW.Body.String())
+	}
+}
+
 func TestChat_GetChannel(t *testing.T) {
 	env := setupChatTestEnv(t)
 	defer env.cleanup()
