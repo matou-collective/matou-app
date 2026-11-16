@@ -2117,6 +2117,18 @@ async function submitAssign() {
   border: 1px dashed var(--matou-border);
   border-radius: var(--matou-radius-sm);
   background: var(--matou-secondary);
+  // #823: isolate the holding area onto its own stacking + compositing layer.
+  // The compact contribution cards carry a translucent status "wash"; composited
+  // over this section's tinted background inside the scrolling plan, Chromium
+  // left partial-repaint ghosts — the tint looked mis-layered behind the cards
+  // and flickered as a card's hover box-shadow transitioned. `isolation: isolate`
+  // establishes a clean stacking context (the tint sits firmly behind the cards)
+  // and `translateZ(0)` promotes the subtree to its own layer so it repaints
+  // completely rather than leaving stale translucent pixels. Milestone bodies
+  // (opaque background) are unaffected — this is scoped to the holding area.
+  position: relative;
+  isolation: isolate;
+  transform: translateZ(0);
 }
 
 .unassigned-header {
