@@ -2,6 +2,9 @@
 #
 # release.sh — Updates the app version, creates a tag and a commit and pushes them to main triggering a release
 #
+# Pushes to Forgejo (origin) only. The Forgejo push mirror carries main and the
+# tag to GitHub, and the tag push there starts .github/workflows/build.yml.
+#
 # Usage:
 #   ./scripts/release.sh <version>
 
@@ -76,10 +79,8 @@ git tag "$TAG"
 echo "⬆️  Pushing commit and tag"
 git push origin "$BRANCH"
 git push origin "$TAG"
-git push github "$BRANCH"
-git push github "$TAG"
 
 echo ""
 echo "✅ Release $TAG pushed"
-echo "📦 GitHub will now create a draft release and trigger builds"
+echo "📦 The Forgejo mirror will carry the tag to GitHub, which creates a draft release and triggers builds"
 echo "https://github.com/matou-collective/matou-app/releases/tag/$TAG"
