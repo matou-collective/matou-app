@@ -19,8 +19,9 @@ WP2), a `v*` tag builds every installer on GitHub-hosted runners.
 | `.forgejo/workflows/android.yml` | Forgejo `Matou/matou-app` | `pull_request`, `workflow_dispatch` — **not tags** | debug APK on PRs; a manual release-AAB *smoke* build on dispatch. Play upload does **not** live here. |
 
 So on a `v*` tag, **Forgejo doing nothing is correct behaviour.** `scripts/release.sh`
-pushes the tag to *both* remotes (`origin` = Forgejo, `github`); only the
-GitHub push matters for the release build (`scripts/release.sh:56-59`).
+pushes to Forgejo (`origin`) only; the Forgejo push mirror (main, branches and
+tags, sync-on-commit with an 8-hour fallback) carries the tag to GitHub, and
+that is what starts the release build.
 
 ## Checklist: what happened to the release for `vX.Y.Z`
 
@@ -43,8 +44,10 @@ Look on **GitHub**, in this order — none of this needs the Forgejo actions API
    other assets; it is called out in the release job's summary instead.
 
 If step 1 shows no run for the tag at all, check that the tag actually reached
-GitHub (`git ls-remote github refs/tags/vX.Y.Z`) — `scripts/release.sh` pushes
-it, but a hand-made tag pushed only to `origin` never triggers a GitHub build.
+GitHub (`git ls-remote github refs/tags/vX.Y.Z`). The Forgejo push mirror
+normally copies it within minutes; if it has not arrived, use "Sync now" on the
+repo's push mirror (Forgejo → Settings → Repository → Mirror settings) instead
+of pushing to GitHub by hand.
 
 ## Why the Forgejo actions API is *not* on that checklist
 
