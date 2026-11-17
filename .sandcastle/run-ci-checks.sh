@@ -110,6 +110,23 @@ run_stage "frontend + backend checks" \
     echo "==> stage: eslint (npm run lint)"; npm run lint
     echo "==> stage: quasar build (npm run build)"; npm run build
     cd ../backend
+    # Warm the whole module graph in ONE retried stage before any Go stage
+    # touches the network (#837). This container has no persistent module cache
+    # (GOMODCACHE lives on the ephemeral layer; docker run mounts only the
+    # workspace), so every ci run fetches the backend graph cold from
+    # proxy.golang.org (~190 MB of zips). `go build`/`go test`/golangci-lint have
+    # no retry, so a single mid-stream HTTP/2 reset on any one zip used to hard-
+    # fail the stage and red main (run 54157: btcd + x/text zips both reset).
+    # `go mod download` pulls the full graph with bounded retry + backoff
+    # (mirrors git-setup.sh, idss #1411); build/test/lint then run against the
+    # warm cache with no further network, so all proxy risk is in this one stage.
+    echo "==> stage: go mod download (warm module cache, retry)"
+    attempt=1; delay=2
+    until go mod download; do
+      [ "$attempt" -ge 3 ] && { echo "ERROR: go mod download failed after $attempt attempts — module proxy (proxy.golang.org) unreachable" >&2; exit 1; }
+      echo "go mod download: attempt $attempt failed, retrying in ${delay}s" >&2
+      sleep "$delay"; delay=$((delay * 2)); attempt=$((attempt + 1))
+    done
     echo "==> stage: go build"; go build ./...
     echo "==> stage: go test (make test)"; make test
     cd ..
