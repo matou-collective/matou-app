@@ -943,6 +943,23 @@ func (h *ContributionsHandler) HandleSaveEvidenceDraft(w http.ResponseWriter, r 
 		return
 	}
 	log.Printf("[Contributions] evidence draft saved for %s", id)
+	// Broadcast an SSE refresh so any open view picks up the saved draft (notes,
+	// URLs, attachment) without an app reload. For a same-node write the any-sync
+	// tree listener self-suppresses the local echo, so this handler-level
+	// broadcast is the only channel that tells the local frontend a draft save
+	// happened. Use contribution:updated — a refresh-only trigger that does NOT
+	// pop a "Submission Edited" toast; a draft is the owner's private working
+	// copy and must not notify the lead/reviewer or imply "needs re-review"
+	// (that semantic belongs to edit-evidence). No notifier.Notify and no status
+	// change here — a draft save is non-transitioning and non-notifying.
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:updated",
+			Data: map[string]string{
+				"contribution_id": id,
+			},
+		})
+	}
 	writeJSON(w, http.StatusOK, contrib)
 }
 

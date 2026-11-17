@@ -619,6 +619,66 @@ func TestContributionsHandler_EditEvidence_OwnerNotifiesAndBroadcasts(t *testing
 	}
 }
 
+func TestContributionsHandler_SaveEvidenceDraft_BroadcastsNoNotifyNoStatusChange(t *testing.T) {
+	store := contributions.NewMockStore()
+	svc := contributions.NewService(store)
+	notifier := &recordingNotifier{}
+	handler := NewContributionsHandler(svc, nil, notifier)
+	broker := NewEventBroker()
+	handler.SetBroker(broker)
+	events := broker.Subscribe()
+
+	ctx := context.Background()
+	c, err := svc.CreateContribution(ctx, "community", &contributions.CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Task", Description: "Do it",
+		ContributionType: "technical", Priority: "low", CreatedBy: "lead-1",
+		Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, _ = svc.TransitionContribution(ctx, "community", c.ID, contributions.ContribConfirmed)
+	_, _ = svc.AssignContributor(ctx, "community", c.ID, "contributor-1")
+	before, _ := svc.GetContribution(ctx, "community", c.ID)
+	priorStatus := before.Status
+
+	body, _ := json.Marshal(map[string]interface{}{"completion_notes": "wip draft"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+c.ID+"/save-evidence-draft", bytes.NewReader(body))
+	req.Header.Set("X-User-AID", "contributor-1")
+	req = req.WithContext(context.WithValue(req.Context(), ctxUserAID, "contributor-1"))
+
+	w := httptest.NewRecorder()
+	handler.HandleSaveEvidenceDraft(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// SSE broadcast so open views refresh — type contribution:updated (a
+	// refresh-only trigger that does not pop a "Submission Edited" toast).
+	select {
+	case ev := <-events:
+		if ev.Type != "contribution:updated" {
+			t.Errorf("event type = %s, want contribution:updated", ev.Type)
+		}
+		data := ev.Data.(map[string]string)
+		if data["contribution_id"] != c.ID {
+			t.Errorf("event contribution_id = %q, want %q", data["contribution_id"], c.ID)
+		}
+	default:
+		t.Error("expected an SSE broadcast on draft save")
+	}
+
+	// A draft save is non-notifying and non-transitioning.
+	if len(notifier.sent) != 0 {
+		t.Errorf("no notifications expected on draft save, got %d", len(notifier.sent))
+	}
+	after, _ := svc.GetContribution(ctx, "community", c.ID)
+	if after.Status != priorStatus {
+		t.Errorf("status changed on draft save: %s -> %s", priorStatus, after.Status)
+	}
+}
+
 func TestContributionsHandler_Reorder(t *testing.T) {
 	handler := setupTestContributionsHandler()
 	ctx := context.Background()
