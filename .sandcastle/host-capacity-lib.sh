@@ -253,20 +253,23 @@ host_capacity_release_exclusive() {
 # host_capacity_holder_path <slot-path> — the sidecar beside a pooled lock.
 host_capacity_holder_path() { printf '%s.holder\n' "$1"; }
 
-# host_capacity_holder_write <slot-path> <kind> <ref> [repo] [worker] [run_id] [mode] [run_dir] [target]
+# host_capacity_holder_write <slot-path> <kind> <ref> [repo] [worker] [run_id] [mode] [run_dir] [target] [attempts_dir]
 #   <kind> is one of ticket|session|drive (CONTEXT.md vocabulary); <ref> the
 #   issue number, `run` (a swarm run — the issue is read from swarm.db
 #   attempts), `triage`, or the drive id. <repo> is the owner/slug the work is
 #   FOR; <target> (drive holders) is the drive SHAPE — a per-product token for
 #   the box the drive stands up (CONTEXT.md **Box**), never a repo slug —
 #   the two are distinct fields so the fleet monitor renders REPO and TARGET
-#   from their own keys (#118). Empty optional args record JSON null. Atomic
-#   (tmp + mv) so a concurrent reader never sees partial JSON.
+#   from their own keys (#118). <attempts_dir> (swarm-run holders, #350) is
+#   the run's host-side /run/host-attempts sink, where the in-sandbox claim
+#   appends the ticket it won — so the fleet monitor can name a ref=run slot's
+#   ticket from claim time, not only at run end. Empty optional args record
+#   JSON null. Atomic (tmp + mv) so a concurrent reader never sees partial JSON.
 host_capacity_holder_write() {
   [ -n "${1:-}" ] || return 0
   command -v jq >/dev/null 2>&1 || return 0
   local slot="$1" kind="$2" ref="$3" repo="${4:-}" worker="${5:-}"
-  local run_id="${6:-}" mode="${7:-}" run_dir="${8:-}" target="${9:-}"
+  local run_id="${6:-}" mode="${7:-}" run_dir="${8:-}" target="${9:-}" attempts_dir="${10:-}"
   local path tmp
   path="$(host_capacity_holder_path "$slot")"
   tmp="$(mktemp "$path.XXXXXX" 2>/dev/null)" || return 0
@@ -274,13 +277,14 @@ host_capacity_holder_write() {
       --arg kind "$kind" --arg ref "$ref" --arg repo "$repo" --arg worker "$worker" \
       --argjson pid "$$" --arg host "${SWARM_HOST:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)}" \
       --argjson since "$(date +%s)" --arg run_id "$run_id" --arg mode "$mode" --arg run_dir "$run_dir" \
-      --arg target "$target" \
+      --arg target "$target" --arg attempts_dir "$attempts_dir" \
       '{kind:$kind, ref:$ref, repo:(if $repo=="" then null else $repo end),
         worker:(if $worker=="" then null else $worker end), pid:$pid, host:$host, since:$since,
         run_id:(if $run_id=="" then null else $run_id end),
         mode:(if $mode=="" then null else $mode end),
         run_dir:(if $run_dir=="" then null else $run_dir end),
-        target:(if $target=="" then null else $target end)}' > "$tmp" 2>/dev/null \
+        target:(if $target=="" then null else $target end),
+        attempts_dir:(if $attempts_dir=="" then null else $attempts_dir end)}' > "$tmp" 2>/dev/null \
      && mv -f "$tmp" "$path" 2>/dev/null; then
     chmod 0644 "$path" 2>/dev/null || true
   else

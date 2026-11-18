@@ -572,6 +572,12 @@ if command -v jq >/dev/null 2>&1; then
   # Rewrite overwrites (the slot's CURRENT work).
   bash -c '. "$1"; host_capacity_holder_write "$2" ticket run Acme/widget swarm-worker r-42 "" ""' _ "$lib" "$slot1"
   [ "$(jq -r .run_id "$holder")" = r-42 ] || fail "holder rewrite must replace: $(cat "$holder")"
+  [ "$(jq -r .attempts_dir "$holder")" = null ] || fail "#350: no attempts_dir arg must record null: $(cat "$holder")"
+  # #350: a swarm-run holder names its claim sink so the probe can read the
+  # ticket the in-sandbox claim won.
+  bash -c '. "$1"; host_capacity_holder_write "$2" ticket run Acme/widget swarm-worker r-43 "" "" "" /tmp/matou-host-attempts-r-43' _ "$lib" "$slot1"
+  [ "$(jq -r .attempts_dir "$holder")" = /tmp/matou-host-attempts-r-43 ] || fail "#350: holder must carry attempts_dir: $(cat "$holder")"
+  [ "$(jq -r .target "$holder")" = null ] || fail "#350: attempts_dir must not shift into target: $(cat "$holder")"
   bash -c '. "$1"; host_capacity_holder_clear "$2"' _ "$lib" "$slot1"
   [ ! -e "$holder" ] || fail "holder_clear must remove the sidecar"
   # Clearing an absent sidecar is fine (idempotent, rc 0).

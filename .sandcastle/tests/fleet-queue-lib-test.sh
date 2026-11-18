@@ -18,6 +18,8 @@ export HOST_CAPACITY_DRIVE_WANTED="$tmp/state/drive-wanted"
 export FLEET_QUEUE_CACHE="$tmp/state/fleet-queue.json"
 export FLEET_QUEUE_STAMP="$tmp/state/fleet-queue-dispatched"
 export FLEET_QUEUE_RECENT_CLOSES="$tmp/state/fleet-recent-closes"
+export FLEET_QUEUE_MARKS="$tmp/state/fleet-queue-marks"
+export COMMENTS_DIR="$tmp/comments"
 export FORGEJO_TOKEN=t
 mkdir -p "$tmp/state"
 . "$sc/fleet-queue-lib.sh"
@@ -105,11 +107,47 @@ while [ $# -gt 0 ]; do
 done
 [ "$data" = "@-" ] && data="$(cat)"
 printf '%s %s %s\n' "$method" "$url" "$data" >>"${CURL_LOG:?}"
-case "$url" in
-  */issues/10/blocks*) printf '[{"number":12,"state":"open","repository":{"full_name":"Acme/alpha"}},{"number":5,"state":"open","repository":{"full_name":"Acme/beta"}},{"number":99,"state":"closed","repository":{"full_name":"Acme/beta"}}]' ;;
-  */issues/77/blocks*) exit 22 ;;
-  */dispatches) [ -n "${DISPATCH_FAIL:-}" ] && { printf '500'; exit 0; }; printf '204' ;;
-  *) printf '[]' ;;
+# A tiny tracker: one JSON array of comments per issue under $COMMENTS_DIR, ids
+# strictly increasing across the whole forge (the property arbitration rests on).
+store="${COMMENTS_DIR:?}"; mkdir -p "$store"
+cfile() { local k="${url#*/repos/}"; k="${k%/comments}"; printf '%s/%s.json' "$store" "${k//\//_}"; }
+nextid() { local i; i=$(( $(cat "$store/seq" 2>/dev/null || echo 100) + 1 )); echo "$i" >"$store/seq"; echo "$i"; }
+put() { # <file> <host-or-empty> <body> -> the stored comment
+  local f="$1" id c; id="$(nextid)"; [ -f "$f" ] || echo '[]' >"$f"
+  c="$(jq -cn --argjson id "$id" --arg b "$3" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{id: $id, body: $b, created_at: $t}')"
+  jq -c --argjson c "$c" '. + [$c]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"; printf '%s' "$c"
+}
+case "$method $url" in
+  "GET "*/issues/*/comments)
+    [ -n "${COMMENTS_GET_FAIL:-}" ] && exit 22
+    f="$(cfile)"; if [ -f "$f" ]; then cat "$f"; else printf '[]'; fi ;;
+  "POST "*/issues/*/comments)
+    [ -n "${COMMENTS_POST_FAIL:-}" ] && exit 22
+    f="$(cfile)"
+    # RACE_FIRST=<host>: a peer's marker lands just BEFORE ours (lower id);
+    # RACE_AFTER=<host>: just after (higher id) — two ticks in the same second.
+    # RACE_ONLY=<n> confines the peer to that one issue.
+    case "$url" in */issues/${RACE_ONLY:-*}/comments) ;; *) RACE_FIRST=""; RACE_AFTER="" ;; esac
+    if [ -n "${RACE_FIRST:-}" ]; then put "$f" x "fleet-dispatch host=$RACE_FIRST" >/dev/null; fi
+    put "$f" x "$(jq -r .body <<<"$data")"
+    if [ -n "${RACE_AFTER:-}" ]; then put "$f" x "fleet-dispatch host=$RACE_AFTER" >/dev/null; fi ;;
+  "DELETE "*/issues/comments/*)
+    [ -n "${COMMENTS_DELETE_FAIL:-}" ] && { printf '500'; exit 0; }
+    id="${url##*/}"; hit=404
+    for f in "$store"/*.json; do
+      [ -f "$f" ] || continue
+      if jq -e --argjson id "$id" 'any(.[]; .id == $id)' "$f" >/dev/null; then
+        jq -c --argjson id "$id" 'map(select(.id != $id))' "$f" >"$f.tmp" && mv "$f.tmp" "$f"; hit=204
+      fi
+    done
+    printf '%s' "$hit" ;;
+  *)
+    case "$url" in
+      */issues/10/blocks*) printf '[{"number":12,"state":"open","repository":{"full_name":"Acme/alpha"}},{"number":5,"state":"open","repository":{"full_name":"Acme/beta"}},{"number":99,"state":"closed","repository":{"full_name":"Acme/beta"}}]' ;;
+      */issues/77/blocks*) exit 22 ;;
+      */dispatches) [ -n "${DISPATCH_FAIL:-}" ] && { printf '500'; exit 0; }; printf '204' ;;
+      *) printf '[]' ;;
+    esac ;;
 esac
 SH
 export CURL_LOG="$tmp/curl.log"; : >"$CURL_LOG"
@@ -241,6 +279,103 @@ fleet_queue_strike_reset
 check "strike_reset clears the counter" \
   '[ "$(fleet_queue_strikes)" -eq 0 ] && ! fleet_queue_standdown >/dev/null'
 unset FLEET_QUEUE_STRIKES_MAX FLEET_QUEUE_BACKOFF_BASE FLEET_QUEUE_BACKOFF_MAX FLEET_QUEUE_STRIKES
+
+# ── dispatch arbitration (#351): one ticket goes to ONE host ────────────────
+# Every idle host's tick fires in the same cron minute and saw the same fleet
+# head, so each dispatched it to itself. The marker is a comment on the ticket
+# (`fleet-dispatch host=<h>`), arbitrated by the forge's strictly increasing
+# comment ids exactly as the claim is: the LOWEST live marker's host dispatches.
+R=https://forge.test/api/v1
+cstore() { printf '%s/Acme_%s_issues_%s.json' "$COMMENTS_DIR" "$1" "$2"; }
+seed() { # <repo> <n> <id> <body> <age-seconds>
+  local f; f="$(cstore "$1" "$2")"; mkdir -p "$COMMENTS_DIR"; [ -f "$f" ] || echo '[]' >"$f"
+  jq -c --argjson id "$3" --arg b "$4" --arg t "$(date -u -d "@$(( $(date +%s) - $5 ))" +%Y-%m-%dT%H:%M:%SZ)" \
+    '. + [{id: $id, body: $b, created_at: $t}]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+}
+arb_reset() { rm -rf "$COMMENTS_DIR"; rm -f "$FLEET_QUEUE_MARKS"; : >"$CURL_LOG"; }
+posts() { local n; n="$(grep -c "^POST .*/comments" "$CURL_LOG")" || true; echo "${n:-0}"; }
+
+arb_reset
+seed alpha 10 7 "a human said something" 10
+seed alpha 10 8 "swarm-claim host=box-02 run=44" 10
+check "marks ignores ordinary comments and swarm-claims (no marker, rc 0, empty)" \
+  'out="$(fleet_queue_marks $R Acme/alpha 10)" && [ -z "$out" ]'
+seed alpha 10 9 "fleet-dispatch host=box-02
+(automated)" 30
+seed alpha 10 12 "fleet-dispatch host=box-07" 5
+check "marks lists live markers as 'id host', lowest id first" \
+  '[ "$(fleet_queue_marks $R Acme/alpha 10 | tr "\n" ",")" = "9 box-02,12 box-07," ]'
+seed alpha 10 6 "fleet-dispatch host=box-99" 99999
+check "marks drops a marker older than the TTL (a dead dispatch must not hold a ticket)" \
+  '! fleet_queue_marks $R Acme/alpha 10 | grep -q box-99'
+check "marks is rc 1 on a failed comments read (never an empty 'nobody holds it')" \
+  '! COMMENTS_GET_FAIL=1 fleet_queue_marks $R Acme/alpha 10 >/dev/null 2>&1'
+
+arb_reset
+check "arbitrate on an unmarked ticket posts ONE marker and wins" \
+  'fleet_queue_arbitrate $R Acme/alpha 10 box-07 && [ "$(posts)" -eq 1 ] && [ "$(fleet_queue_marks $R Acme/alpha 10 | cut -d" " -f2)" = box-07 ]'
+check "arbitrate exposes the marker it holds and records it on the host for the sweep" \
+  '[ -n "$FLEET_QUEUE_ARB_MARK" ] && grep -q " Acme/alpha 10 $FLEET_QUEUE_ARB_MARK\$" "$FLEET_QUEUE_MARKS"'
+check "the marker says which host and that it is automated" \
+  'jq -r ".[0].body" "$(cstore alpha 10)" | head -1 | grep -qx "fleet-dispatch host=box-07" && jq -r ".[0].body" "$(cstore alpha 10)" | grep -qi "automated"'
+: >"$CURL_LOG"
+check "arbitrate again by the SAME host reuses its live marker (no second comment)" \
+  'fleet_queue_arbitrate $R Acme/alpha 10 box-07 && [ "$(posts)" -eq 0 ]'
+: >"$CURL_LOG"
+check "arbitrate by ANOTHER host loses without posting anything, naming the holder" \
+  '! fleet_queue_arbitrate $R Acme/alpha 10 box-02 && [ "$FLEET_QUEUE_ARB_HOLDER" = box-07 ] && [ "$(posts)" -eq 0 ]'
+
+arb_reset
+RACE_FIRST=box-02 fleet_queue_arbitrate $R Acme/alpha 10 box-07; rc=$?
+check "two ticks in the same second: the LOWER comment id wins, this host loses" \
+  '[ "$rc" -eq 1 ] && [ "$FLEET_QUEUE_ARB_HOLDER" = box-02 ]'
+check "the loser deletes its own marker so the ticket carries only the winner's" \
+  '[ "$(fleet_queue_marks $R Acme/alpha 10 | tr "\n" ",")" = "101 box-02," ]'
+arb_reset
+RACE_AFTER=box-02 fleet_queue_arbitrate $R Acme/alpha 10 box-07; rc=$?
+check "two ticks in the same second: this host's lower id wins" \
+  '[ "$rc" -eq 0 ] && [ "$(fleet_queue_marks $R Acme/alpha 10 | head -1)" = "101 box-07" ]'
+
+arb_reset
+seed alpha 10 50 "fleet-dispatch host=box-02" 99999
+check "an EXPIRED foreign marker holds nothing: this host posts and wins" \
+  'fleet_queue_arbitrate $R Acme/alpha 10 box-07 && [ "$(posts)" -eq 1 ]'
+
+# Fail OPEN: a tracker blip must never stall the fleet — the dispatch goes out
+# as it did before #351 and the in-sandbox claim still guards the ticket.
+arb_reset
+check "arbitrate fails OPEN (rc 0, a stderr line, no marker) when the comments read fails" \
+  'COMMENTS_GET_FAIL=1 fleet_queue_arbitrate $R Acme/alpha 10 box-07 2>"$tmp/arb.err" && [ -z "$FLEET_QUEUE_ARB_MARK" ] && grep -q "could not read .*Acme/alpha#10.*unarbitrated" "$tmp/arb.err"'
+check "arbitrate fails OPEN when the marker post fails" \
+  'COMMENTS_POST_FAIL=1 fleet_queue_arbitrate $R Acme/alpha 10 box-07 2>"$tmp/arb.err" && [ -z "$FLEET_QUEUE_ARB_MARK" ] && grep -q "unarbitrated" "$tmp/arb.err"'
+
+# The sweep: a marker is litter once it has expired; the host that posted it
+# removes it (and only it — never a peer's, never a live one).
+arb_reset
+fleet_queue_arbitrate $R Acme/alpha 10 box-07
+fleet_queue_marks_sweep $R
+check "sweep leaves a LIVE marker alone" \
+  '[ -n "$(fleet_queue_marks $R Acme/alpha 10)" ] && [ -s "$FLEET_QUEUE_MARKS" ]'
+seed beta 5 60 "fleet-dispatch host=box-07" 99999
+printf '%s Acme/beta 5 60\n' "$(( $(date +%s) - 99999 ))" >>"$FLEET_QUEUE_MARKS"
+fleet_queue_marks_sweep $R
+check "sweep deletes this host's EXPIRED marker from the ticket and forgets it" \
+  '[ "$(jq length "$(cstore beta 5)")" -eq 0 ] && ! grep -q "Acme/beta 5 60" "$FLEET_QUEUE_MARKS" && grep -q "Acme/alpha 10" "$FLEET_QUEUE_MARKS"'
+printf '%s Acme/beta 5 61\n' "$(( $(date +%s) - 99999 ))" >>"$FLEET_QUEUE_MARKS"
+fleet_queue_marks_sweep $R
+check "sweep forgets a marker the forge no longer has (404 — the loser already deleted it)" \
+  '! grep -q "Acme/beta 5 61" "$FLEET_QUEUE_MARKS"'
+printf '%s Acme/beta 5 62\n' "$(( $(date +%s) - 700 ))" >>"$FLEET_QUEUE_MARKS"
+COMMENTS_DELETE_FAIL=1 fleet_queue_marks_sweep $R
+check "sweep KEEPS the record when the delete fails, so the next tick retries" \
+  'grep -q "Acme/beta 5 62" "$FLEET_QUEUE_MARKS"'
+arb_reset
+check "sweep with no record is quiet, rc 0, and reads nothing" \
+  'fleet_queue_marks_sweep $R && [ ! -s "$CURL_LOG" ]'
+fleet_queue_arbitrate $R Acme/alpha 10 box-07; mark="$FLEET_QUEUE_ARB_MARK"
+fleet_queue_mark_release $R "$mark"
+check "mark_release deletes a marker at once (a dispatch that failed frees the ticket)" \
+  '[ -z "$(fleet_queue_marks $R Acme/alpha 10)" ]'
 
 # ── dispatch: ONE repo's swarm.yml with inputs.ticket + inputs.host ─────────
 : >"$CURL_LOG"

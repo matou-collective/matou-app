@@ -126,4 +126,36 @@ out="$(env -u SWARM_IDENTITY_CONTRACT bash -c '
 grep -q "is contract 0, this harness needs" <<<"$out" || fail "the contract lag must be named first, got: $out"
 echo "ok 11 identity_apply refuses an older contract stamp"
 
-echo "identity-lib: 11 groups passed"
+# 12: heal_workdir_literal_home — the pure #352 predicate. A literal `/home/...`
+#     single-host path is the trap (TRUE); the per-host `$HOME/...` form the
+#     generator writes is correct (FALSE). Operates on UNEXPANDED source text.
+out="$(bash -c '. "'"$sc"'/identity-lib.sh"
+  heal_workdir_literal_home "/home/dev/swarm/Acme/widget"  && echo "home:yes" || echo "home:no"
+  heal_workdir_literal_home "\$HOME/swarm/Acme/widget"     && echo "dollar:yes" || echo "dollar:no"')"
+grep -q "home:yes"  <<<"$out" || fail "a literal /home/ path must read as the trap, got: $out"
+grep -q "dollar:no" <<<"$out" || fail "a \$HOME/ path must NOT read as the trap, got: $out"
+echo "ok 12 heal_workdir_literal_home flags /home/ and clears \$HOME/"
+
+# 13: identity_check_heal_workdir — the shared guard both enrol and the drift
+#     check call. REFUSES (rc 1, loud, names the value + the portable form) a
+#     committed literal `/home/...` HEAL_WORKDIR default; PASSES (rc 0) the
+#     per-host `$HOME/...` form the generator writes. (Acceptance #352.)
+tmpid="$(mktemp -d)"; trap 'rm -rf "$tmpid"' EXIT
+printf ': "${HEAL_WORKDIR:=/home/dev/swarm/Acme/widget}"\n' > "$tmpid/bad.sh"
+printf ': "${HEAL_WORKDIR:=$HOME/swarm/Acme/widget}"\n'     > "$tmpid/good.sh"
+out="$(bash -c '. "'"$sc"'/identity-lib.sh"; identity_check_heal_workdir "'"$tmpid"'/bad.sh" 2>&1'; echo "rc=$?")"
+grep -q "rc=1" <<<"$out" || fail "a literal /home/ HEAL_WORKDIR must be refused rc 1, got: $out"
+grep -q "/home/dev/swarm/Acme/widget" <<<"$out" || fail "the refusal must name the offending value, got: $out"
+grep -qi "every pool host" <<<"$out" || fail "the refusal must explain it is read on every host, got: $out"
+grep -q '#352' <<<"$out" || fail "the refusal must name the ticket, got: $out"
+out="$(bash -c '. "'"$sc"'/identity-lib.sh"; identity_check_heal_workdir "'"$tmpid"'/good.sh" 2>&1'; echo "rc=$?")"
+grep -q "rc=0" <<<"$out" || fail "a \$HOME/ HEAL_WORKDIR must pass rc 0, got: $out"
+# An absent HEAL_WORKDIR line (or a missing file) is not a failure — nothing to judge.
+printf 'REPO_SLUG=Acme/widget\n' > "$tmpid/none.sh"
+out="$(bash -c '. "'"$sc"'/identity-lib.sh"; identity_check_heal_workdir "'"$tmpid"'/none.sh"; echo "rc=$?"')"
+grep -q "rc=0" <<<"$out" || fail "a file with no HEAL_WORKDIR default must pass rc 0, got: $out"
+out="$(bash -c '. "'"$sc"'/identity-lib.sh"; identity_check_heal_workdir "'"$tmpid"'/does-not-exist.sh"; echo "rc=$?"')"
+grep -q "rc=0" <<<"$out" || fail "a missing identity file must pass rc 0, got: $out"
+echo "ok 13 identity_check_heal_workdir refuses a literal home, passes \$HOME and absent"
+
+echo "identity-lib: 13 groups passed"
