@@ -287,7 +287,16 @@ cr_review_build_prompt() {
 # `claude --output-format json` on SWARM_REVIEW_MODEL with a READ-ONLY tool
 # allowlist — no Edit/Write/push, so the reviewer can never mutate the checkout
 # (the review-prompt.md "read-only" contract, enforced not just asked). A missing
-# `claude` leaves the result empty → cr_review_parse fails CLOSED.
+# `claude`, or a prompt the exec cannot carry, leaves the result empty →
+# cr_review_parse SKIPS, treating it as an absent reviewer (#228/#2161).
+#
+# #2161: the prompt is fed to `claude -p` on STDIN, never as an argv argument.
+# The prompt = skeleton + issue body + criteria + the FULL diff of the claimed
+# commits, which routinely runs past the Linux single-argument limit
+# MAX_ARG_STRLEN (~128 KiB, independent of ARG_MAX). As a single argv string
+# (the old `"$(cat "$prompt_file")"` form) that made the `timeout ... claude ...`
+# exec fail "Argument list too long" (rc 126) BEFORE claude started, leaving an
+# empty result that bricked the close. Stdin has no such ceiling.
 cr_review_invoke() {
   local prompt_file="$1" result="$2" log="$3"
   : > "$result"
@@ -298,7 +307,7 @@ cr_review_invoke() {
   command -v claude >/dev/null 2>&1 || return 0
   local tools="${CR_REVIEW_ALLOWED_TOOLS:-Read,Grep,Glob,Bash(git diff:*),Bash(git show:*),Bash(git log:*),Bash(git status:*)}"
   ( cd "$root" && timeout "${CR_REVIEW_TIMEOUT:-600}" claude -p --model "$SWARM_REVIEW_MODEL" \
-      --allowedTools "$tools" --output-format json "$(cat "$prompt_file")" ) \
+      --allowedTools "$tools" --output-format json < "$prompt_file" ) \
     > "$result" 2>"$log" || true
 }
 
@@ -343,9 +352,10 @@ pretty="$(jq . <<<"$json")"
 # landing_merge_if_green. The reviewer emits JSON {verdict, findings}; reject →
 # fold the findings into the violation list (refuse), unsure → park the ticket
 # ready-for-human with the findings attached, approve → proceed, unauthenticated
-# → SKIP the gate (a claude -p child that is not logged in is treated as an
-# absent reviewer, #228). Unparseable / empty output from a reviewer that
-# genuinely RAN still fails CLOSED (refuse). The review JSON is posted on the thread like
+# → SKIP the gate (a claude -p child that could not run — not logged in (#228),
+# or no envelope written at all (#2161) — is treated as an absent reviewer).
+# Non-empty but unparseable output from a reviewer that genuinely RAN still fails
+# CLOSED (refuse). The review JSON is posted on the thread like
 # the envelope, and the review call's token spend is recorded (swarm.db, #94).
 park_for_human=""
 if cr_review_enabled && [ "$gate_rc" -eq 0 ] && [ "$status" = success ] \
@@ -369,14 +379,16 @@ if cr_review_enabled && [ "$gate_rc" -eq 0 ] && [ "$status" = success ] \
   case "$review_verdict" in
     approve) ;;  # proceed to the mode branch / direct close
     unauthenticated)
-      # #228: the reviewer subprocess could not AUTHENTICATE — a `claude -p`
-      # child in an interactive standing session is not logged in. Treat it like
-      # an ABSENT reviewer binary and SKIP the gate (no violation, no gate_rc=1);
-      # the close proceeds on the deterministic gates alone, no worse than the
-      # pre-#197 world. Visible on stdout + the thread (cr_post_review above),
-      # never a silent pass. Fail-CLOSED is retained for a reviewer that genuinely
-      # ran and returned garbage (the malformed case below).
-      echo "close-report: the independent reviewer could not authenticate (claude -p is not logged in) — SKIPPING the reviewer gate, treated as an absent reviewer (#228)" ;;
+      # The reviewer subprocess could not RUN — either it could not AUTHENTICATE
+      # (a `claude -p` child in an interactive standing session is not logged in,
+      # #228/#2155) or it wrote no envelope at all (an absent `claude`, or an exec
+      # failure before claude started — a prompt over MAX_ARG_STRLEN, #2161). Treat
+      # it like an ABSENT reviewer binary and SKIP the gate (no violation, no
+      # gate_rc=1); the close proceeds on the deterministic gates alone, no worse
+      # than the pre-#197 world. Visible on stdout + the thread (cr_post_review
+      # above), never a silent pass. Fail-CLOSED is retained for a reviewer that
+      # genuinely ran and returned garbage (the malformed case below).
+      echo "close-report: the independent reviewer could not run (claude -p is not logged in, or wrote no output) — SKIPPING the reviewer gate, treated as an absent reviewer (#228/#2161)" ;;
     reject)
       # The findings become the close's violation list, verbatim (#197).
       if [ -n "$review_lines" ]; then
@@ -387,8 +399,8 @@ if cr_review_enabled && [ "$gate_rc" -eq 0 ] && [ "$status" = success ] \
       gate_rc=1 ;;
     unsure)
       park_for_human=1 ;;
-    *)  # malformed / empty — fail CLOSED
-      violations="${violations:+$violations$'\n'}reviewer output was empty or unparseable — failing the close CLOSED (#197)"
+    *)  # malformed (a reviewer that RAN and returned garbage) — fail CLOSED
+      violations="${violations:+$violations$'\n'}reviewer output was unparseable — failing the close CLOSED (#197)"
       gate_rc=1 ;;
   esac
 fi
@@ -408,7 +420,23 @@ outcome="$status"
 [ -n "$park_for_human" ] && outcome="parked"      # #197: reviewer said `unsure`
 [ -n "$pr_superseded" ] && outcome="superseded"   # #151: another host won the race
 commits_csv="$(jq -r '(.commits // []) | join(",")' <<<"$json")"
-echo "SANDCASTLE_ATTEMPT issue=$issue outcome=$outcome commits=$commits_csv"
+cr_attempt_line="SANDCASTLE_ATTEMPT issue=$issue outcome=$outcome commits=$commits_csv"
+echo "$cr_attempt_line"
+# #2106: that stdout echo is the ONLY crossing of the sandbox->host boundary the
+# #283 stranded-close reconcile reads — execute-lib greps it out of the sandcastle
+# log (`pnpm run sandcastle | tee $log`). A worker that pipes THIS script through
+# `| tail`/`| head` truncates the line away before it reaches that log (run 57327:
+# `close-report.sh 2099 … 2>&1 | tail -40` pushed the protocol line out of the
+# last-40 window), so the capture came up empty and the reconcile never fired on a
+# genuinely stranded close (#2099). Also append the line to a host-mounted sink: a
+# file write no trailing pipe on this script's stdout can drop. One short line via a
+# single append is atomic under PIPE_BUF, so two concurrent workers (ADR 0184) never
+# interleave. Best-effort — a missing/unwritable sink dir falls back to the stdout
+# channel, no worse than before #2106. The default path matches main.mts's mount.
+cr_sink="${SANDCASTLE_ATTEMPT_SINK:-/run/host-attempts/attempts.log}"
+cr_sink_dir="$(dirname "$cr_sink")"
+[ -d "$cr_sink_dir" ] && [ -w "$cr_sink_dir" ] &&
+  printf '%s\n' "$cr_attempt_line" >> "$cr_sink" 2>/dev/null || true
 
 # The envelope lands on the issue in EVERY outcome (evidence trail, #444 AC).
 # post_comment wraps the given verdict markdown with the header + envelope.

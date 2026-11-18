@@ -144,6 +144,45 @@ _heal_touches_product_surface() {
   return "$hit"
 }
 
+# _heal_touches_vendored_path <co> <a> <b> — 0 (REFUSE) if the diff a..b edits a
+# factory-vendored file (a FACTORY_MANIFEST path, as .sandcastle/<p>; ADR 0180)
+# that this heal cannot clear. The heal clone (heal.sh's HEAL_CLONE) wires no
+# core.hooksPath, so ADR 0287's pre-push drift gate never fires here — this rail
+# is the ONLY thing between a hand-edited vendored file and `main` (idss #2177,
+# the heal twin of the worker-side #1963/#1964). A vendored edit clears ONLY as a
+# genuine re-vendor: it ALSO bumps .sandcastle/FACTORY_REF in the SAME commit AND
+# check-harness-drift.sh returns a CLEAN verdict (exit 0) against the new pin. A
+# vendored edit with no FACTORY_REF bump returns 0 OFFLINE (the cheap pre-check,
+# no network — the common case); a bump whose drift check is NON-clean — CONFIRMED
+# drift, a TRANSPORT exit 3, or any other non-zero — also returns 0: a guard that
+# could not reach the code it guards is not a clean result (GOTCHAS #30, ADR
+# 0287's posture). No manifest path touched, or a clean re-vendor, returns 1
+# (ALLOW); a checkout with no FACTORY_MANIFEST (a consumer that vendors nothing)
+# returns 1 — nothing to enforce.
+_heal_touches_vendored_path() {
+  local co="$1" a="$2" b="$3" mf changed p touched=1
+  mf="$co/.sandcastle/FACTORY_MANIFEST"
+  [ -f "$mf" ] || return 1
+  changed="$(git -C "$co" diff --name-only "$a..$b" 2>/dev/null)" || return 1
+  [ -n "$changed" ] || return 1
+  # Any changed file a FACTORY_MANIFEST path (as .sandcastle/<p>)? Cheap, no
+  # network — an ordinary heal touches none and returns here.
+  while IFS= read -r p; do
+    case "$p" in ''|'#'*) continue ;; esac
+    if printf '%s\n' "$changed" | grep -qxF ".sandcastle/$p"; then touched=0; break; fi
+  done <"$mf"
+  [ "$touched" -eq 0 ] || return 1
+  # A vendored file is in this commit. It clears ONLY as a re-vendor: FACTORY_REF
+  # bumped in the same commit AND a CLEAN drift verdict. No bump -> refuse offline.
+  printf '%s\n' "$changed" | grep -qxF ".sandcastle/FACTORY_REF" || return 0
+  local drift="$co/.sandcastle/check-harness-drift.sh"
+  [ -f "$drift" ] || return 0
+  if ( cd "$co" && bash "$drift" >/dev/null 2>&1 ); then
+    return 1   # clean re-vendor — allow
+  fi
+  return 0      # confirmed drift, or the check faulted (GOTCHAS #30) — refuse
+}
+
 # heal_rails <co> <pre_head> — accept HEAD as a healed commit, or reset to
 # <pre_head>, name the rule in HEAL_RAIL_REASON, and fail. Rules (all reset +
 # fail): exactly 1 commit; ≤3 files; ≤400 changed NON-TEST lines (#1144, raised
@@ -175,6 +214,20 @@ heal_rails() {
       | grep -qE '^\.sandcastle/rehearsal-|^\.forgejo/workflows/'; then
     HEAL_RAIL_REASON="self-modification"; HEAL_RAIL_SWARMABLE=false
     echo "healer: self-modification attempt — reverting"
+    git -C "$co" reset --hard "$pre" >/dev/null
+    return 1
+  fi
+  # Vendored-path rail (#2177): never land a drifted factory-vendored file (ADR
+  # 0180). The heal clone wires no core.hooksPath, so ADR 0287's pre-push drift
+  # gate never runs here — a hand-edited vendored file would ride straight onto
+  # main and red the seam drift stage (the heal twin of #1963/#1964, witnessed by
+  # #2177's baa7f598). A manifest-path edit is allowed ONLY as a genuine re-vendor
+  # (FACTORY_REF bumped + a CLEAN drift verdict); anything else resets. A heal
+  # cannot author a factory-owned file: land the fix in Matou/dev-factory and file
+  # a re-vendor ticket.
+  if _heal_touches_vendored_path "$co" "$pre" "$head"; then
+    HEAL_RAIL_REASON="vendored-path edit"; HEAL_RAIL_SWARMABLE=false
+    echo "healer: fix edits a factory-vendored file (ADR 0180) without a verified re-vendor — land it in dev-factory and file a re-vendor ticket; reverting"
     git -C "$co" reset --hard "$pre" >/dev/null
     return 1
   fi

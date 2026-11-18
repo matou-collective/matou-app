@@ -4,8 +4,8 @@
 # as having no library. It owns everything a worker container needs to EXIST
 # before one is spawned:
 #
-#   .env manifest → secret files → pnpm store → mount dirs → install → image
-#   → persistent nix store seed
+#   .env manifest → secret files → pnpm store → mount dirs → disk → install
+#   → image → persistent nix store seed
 #
 # Three of run-swarm.sh's tests used to pin pieces of this stage as verbatim
 # COPIES of the block (nix-store-test.sh, run-swarm-env-guard-test.sh,
@@ -121,6 +121,71 @@ SWARM_ALLOW_COLD_STORE=1 provision_pnpm_store_guard "$d" \
   || fail "SWARM_ALLOW_COLD_STORE=1 must pass an empty store"
 pass=$((pass+1))
 
+# ── 4b. the full-disk guard (GOTCHAS #411) ────────────────────────────────
+# A FULL root filesystem makes `sandcastle docker build-image` die ENOSPC with
+# exit 1 and NO error line this stage can grep, so the verdict reads
+# `stage=sandcastle docker build-image` with an empty `--- error lines ---`
+# block and the healer has nothing to key on (bens-mac-04, 2026-11-06). Measure
+# before the write and refuse in the #489 idiom: this guard's OWN stage, FATAL
+# captured as the error line (#9).
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/docker" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = info ] && { printf '%s\n' "${DOCKER_ROOT_DIR-/var/lib/docker}"; exit "${DOCKER_INFO_RC:-0}"; }
+exit 0
+SH
+cat > "$tmp/bin/df" <<'SH'
+#!/usr/bin/env bash
+echo "df $*" >> "${DF_LOG:-/dev/null}"
+exit_rc="${DF_RC:-0}"
+[ "$exit_rc" = 0 ] || exit "$exit_rc"
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "/dev/test 240000000 239000000 ${DF_FREE_KB:?} 100% /"
+SH
+chmod +x "$tmp/bin/docker" "$tmp/bin/df"
+
+disk_run() {   # <free-kb> [extra env...] -> the guard, verdicting to $vp
+  vp="$tmp/disk-verdict.txt"; rm -f "$vp"
+  DF_FREE_KB="$1" DF_LOG="$tmp/df.log" PATH="$tmp/bin:$PATH" "${@:2}" \
+    bash -c ". '$sc/verdict-lib.sh'; . '$sc/provision-lib.sh'
+             verdict_begin '$vp'
+             verdict_stage 'preflight self-tests (#446)'
+             provision_disk_guard; rc=\$?
+             verdict_write \$rc; exit \$rc" 2>"$tmp/disk.err"
+}
+
+: > "$tmp/df.log"
+if disk_run 178176; then fail "a 174 MiB-free data root must be refused"; fi
+grep -q 'MiB free' "$tmp/disk.err" || fail "the refusal must name the fault: $(cat "$tmp/disk.err")"
+grep -q 'ENOSPC' "$tmp/disk.err" || fail "the refusal must name the mechanism: $(cat "$tmp/disk.err")"
+grep -q 'free space on this host' "$tmp/disk.err" || fail "the refusal must name the fix"
+grep -q '^stage=docker disk space check (#411)$' "$vp" \
+  || fail "the verdict must re-key to THIS guard's stage, never the stale one:
+$(cat "$vp")"
+grep -q 'only 174 MiB free' "$vp" || fail "the FATAL must be captured as the error line:
+$(cat "$vp")"
+grep -q -- "-Pk /var/lib/docker" "$tmp/df.log" || fail "it must measure docker's data root: $(cat "$tmp/df.log")"
+pass=$((pass+1))
+
+# a roomy host passes silently; the floor and the 0 disable are honoured; and an
+# unmeasurable df passes rather than reding a run on a guess.
+disk_run $((20 * 1024 * 1024)) || fail "20 GiB free must pass"
+[ -s "$tmp/disk.err" ] && fail "a roomy host must say nothing: $(cat "$tmp/disk.err")"
+disk_run 178176 env SWARM_MIN_DISK_MB=0 || fail "SWARM_MIN_DISK_MB=0 must disable the guard"
+if disk_run $((8 * 1024 * 1024)) env SWARM_MIN_DISK_MB=10240; then
+  fail "SWARM_MIN_DISK_MB must raise the floor"
+fi
+disk_run $((8 * 1024 * 1024)) env SWARM_MIN_DISK_MB=4096 || fail "SWARM_MIN_DISK_MB must lower the floor"
+disk_run 178176 env SWARM_MIN_DISK_MB=notanumber \
+  && fail "a junk floor must fall back to the default, not crash the stage open"
+disk_run 1 env DF_RC=1 || fail "an unreadable df must PASS: never red a run on a measurement not taken"
+# a data root this user cannot stat still measures the right filesystem
+: > "$tmp/df.log"
+disk_run $((20 * 1024 * 1024)) env DOCKER_ROOT_DIR="$tmp/bin/nope/deeper" \
+  || fail "a non-existent data root must still measure"
+grep -q -- "-Pk $tmp/bin\b" "$tmp/df.log" || fail "it must walk up to the nearest real ancestor: $(cat "$tmp/df.log")"
+pass=$((pass+1))
+
 # ── 5. the .env manifest materialize + allowlist guard (#593) ─────────────
 # CI always refreshes from .env.example (so it is structurally clean and the
 # guard never fires there); a host-mode .env is a developer's own file, never
@@ -232,17 +297,30 @@ exit "${PNPM_RC:-0}"
 SH
 chmod +x "$tmp/bin/pnpm"
 : > "$tmp/pnpm.log"
-PNPM_LOG="$tmp/pnpm.log" PATH="$tmp/bin:$PATH" \
+# DF_FREE_KB is explicit: the #411 disk guard runs ahead of both writes now, so
+# this group must state the room it assumes rather than inherit the test host's.
+PNPM_LOG="$tmp/pnpm.log" DF_FREE_KB=$((20 * 1024 * 1024)) PATH="$tmp/bin:$PATH" \
   bash -c ". '$sc/verdict-lib.sh'; . '$sc/provision-lib.sh'; provision_install_and_build" \
   || fail "install+build must succeed when pnpm does"
 grep -qx 'pnpm install --frozen-lockfile' "$tmp/pnpm.log" || fail "install must be pnpm, frozen: $(cat "$tmp/pnpm.log")"
 grep -qx 'pnpm exec sandcastle docker build-image' "$tmp/pnpm.log" || fail "the image build must run: $(cat "$tmp/pnpm.log")"
 grep -qE '^(npm|yarn) ' "$tmp/pnpm.log" && fail "npm/yarn must never be used (flake.nix: 'no npm/yarn')"
 : > "$tmp/pnpm.log"
-if PNPM_LOG="$tmp/pnpm.log" PNPM_RC=1 PATH="$tmp/bin:$PATH" \
+if PNPM_LOG="$tmp/pnpm.log" PNPM_RC=1 DF_FREE_KB=$((20 * 1024 * 1024)) PATH="$tmp/bin:$PATH" \
     bash -c ". '$sc/verdict-lib.sh'; . '$sc/provision-lib.sh'; provision_install_and_build"; then
   fail "a failing install must fail the stage (the #142 lockfile break must be loud)"
 fi
+
+# …and a full disk refuses BEFORE either write — the whole point of #411 is that
+# no GiB is attempted on a filesystem that cannot take it.
+: > "$tmp/pnpm.log"
+if PNPM_LOG="$tmp/pnpm.log" DF_FREE_KB=178176 PATH="$tmp/bin:$PATH" \
+    bash -c ". '$sc/verdict-lib.sh'; . '$sc/provision-lib.sh'; provision_install_and_build" \
+    2>"$tmp/disk.err"; then
+  fail "a full disk must fail the stage"
+fi
+[ -s "$tmp/pnpm.log" ] && fail "the guard must refuse before pnpm is invoked at all: $(cat "$tmp/pnpm.log")"
+grep -q 'ENOSPC' "$tmp/disk.err" || fail "the refusal must name the mechanism: $(cat "$tmp/disk.err")"
 pass=$((pass+1))
 
 echo "provision-lib: $pass groups passed"

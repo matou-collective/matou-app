@@ -516,6 +516,10 @@ out21="$(bash "$here/../rehearsal-report.sh" "$tmp/run")" || fail "reporter exit
 grep -q 'WARN labels fetch failed' <<<"$out21" || fail "transient labels failure was silent (#495's exact hole)"
 grep -q 'labels re-fetch succeeded' <<<"$out21" || fail "retry success not announced"
 grep -Eq '^[[:space:]]*97,?[[:space:]]*$' "$CURL_LOG" || fail "retry did not restore label ops — issue filed without rehearsal-183"
+# The blip must reach the reporter: forgejo_get's own retry (#2048) is held to
+# ONE attempt on this fetch, so the wire sees exactly the failed fetch + the
+# reporter's paced re-fetch — not a silent lib retry that hides the WARN.
+[ "$(cat "$LABELS_COUNT" 2>/dev/null)" = 2 ] || fail "labels fetch must be single-attempt + one loud re-fetch (got $(cat "$LABELS_COUNT" 2>/dev/null) fetches)"
 unset LABELS_FAIL_FIRST
 pass=$((pass+1))
 

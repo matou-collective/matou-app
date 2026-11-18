@@ -23,11 +23,21 @@
 GATE_ZERO_SHA=0000000000000000000000000000000000000000
 
 # gate_langs_for_files — read newline-separated repo paths on stdin, echo the
-# set of language tokens the change touches ("go" and/or "ts"), one per line,
-# sorted and unique. A path that maps to no gated toolchain contributes nothing.
+# set of language tokens the change touches ("go", "ts" and/or "docs"), one per
+# line, sorted and unique. A path that maps to no gated toolchain contributes
+# nothing. "docs" is the diagram-source tier: the trees whose mermaid/slice-map
+# contracts the seam enforces (#343, #834) but which carry NO go/ts token, so a
+# docs-only change was invisible to the pre-push gate and its break was CI-only
+# (GOTCHAS #143, the bare-`%%` that red CI a second time).
+#
+# WHICH trees are diagram sources is per-repo (a vendored script must never name a
+# consumer's doc paths — #47): GATE_DOCS_GLOBS, space-separated shell globs. Unset
+# means no docs tier. gate_run fills it from the repo's own
+# .sandcastle/docs-gate.globs (one glob per line, # comments) when the env is unset.
 gate_langs_for_files() {
-  local f
+  local f g
   {
+    set -f  # (a pipe subshell) the globs are case patterns, never cwd-expanded
     while IFS= read -r f; do
       [ -n "$f" ] || continue
       case "$f" in
@@ -38,8 +48,26 @@ gate_langs_for_files() {
         *.ts|*.tsx|*.vue|*.mts|*.cts|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig*.json)
           echo ts ;;
       esac
+      if [ -n "${GATE_DOCS_GLOBS:-}" ]; then
+        for g in $GATE_DOCS_GLOBS; do
+          # shellcheck disable=SC2254  # $g is a glob, matched on purpose
+          case "$f" in $g) echo docs; break ;; esac
+        done
+      fi
     done
   } | sort -u
+}
+
+# gate_docs_globs <root> — echo the docs-tier globs: GATE_DOCS_GLOBS if set, else
+# the repo's per-repo-layer .sandcastle/docs-gate.globs (not in FACTORY_MANIFEST,
+# so drift-safe), else nothing.
+gate_docs_globs() {
+  local root="$1"
+  if [ -n "${GATE_DOCS_GLOBS:-}" ]; then
+    printf '%s\n' "$GATE_DOCS_GLOBS"
+  elif [ -f "$root/.sandcastle/docs-gate.globs" ]; then
+    sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$root/.sandcastle/docs-gate.globs" | grep -v '^[[:space:]]*$' | tr '\n' ' '
+  fi
 }
 
 # gate_go_default_cmd <root> — the real Go gate: the seam's Go stages, run inside
@@ -53,6 +81,7 @@ gate_go_default_cmd() {
   nix develop "$root#go-ci" --command bash -euo pipefail -c '
     gofiles="$(find . -type f -name "*.go" \
       -not -path "./node_modules/*" -not -path "./.sandcastle/nix-store/*" \
+      -not -path "./.sandcastle/worktrees/*" \
       -printf "%P\\n" 2>/dev/null || true)"
     if [ -z "$gofiles" ]; then
       echo "gofmt debt check FAILED: found no Go files to scan — refusing to pass" >&2; exit 1
@@ -105,6 +134,19 @@ gate_scrub_git_env() {
         GIT_OBJECT_DIRECTORY GIT_QUARANTINE_PATH GIT_INTERNAL_GITDIR 2>/dev/null || true
 }
 
+# gate_nix_available — true when a usable `nix` is on PATH to run the pinned dev
+# shells. Factored out of the stage functions so the offline test can force the
+# no-toolchain path deterministically with GATE_NO_NIX=1 — proving the fail-closed
+# arms on EVERY host, not only CI's nix-less runners. The arms used to be gated
+# behind a `command -v nix` skip in the test, so a fail-closed assertion that
+# resolved a per-repo override (this repo's own .sandcastle/ts-gate.sh, #312) was
+# green on the nix-having author/pool hosts and red on CI (#314). Default
+# behaviour is unchanged: with GATE_NO_NIX unset it is exactly `command -v nix`.
+gate_nix_available() {
+  [ "${GATE_NO_NIX:-}" = 1 ] && return 1
+  command -v nix >/dev/null 2>&1
+}
+
 # gate_go_stage <root> — run the Go gate for a Go-touching change. Resolves the
 # Go command by a first-match-wins precedence so a consumer whose layout/toolchain
 # differs from the nix default can satisfy the gate without editing the vendored
@@ -129,7 +171,7 @@ gate_go_stage() {
     ( cd "$root" && gate_scrub_git_env && ./.sandcastle/go-gate.sh )
     return $?
   fi
-  if ! command -v nix >/dev/null 2>&1; then
+  if ! gate_nix_available; then
     echo "gate: Go change detected but no supported Go gate resolved in this sandbox." >&2
     echo "gate: refusing to push un-linted Go (issue #198). Cause is either a missing" >&2
     echo "gate: Go toolchain (no \`nix\`) OR a layout that differs from the nix default." >&2
@@ -165,7 +207,7 @@ gate_ts_stage() {
     ( cd "$root" && gate_scrub_git_env && ./.sandcastle/ts-gate.sh )
     return $?
   fi
-  if ! command -v nix >/dev/null 2>&1; then
+  if ! gate_nix_available; then
     echo "gate: TypeScript change detected but no supported TS gate resolved in this workdir." >&2
     echo "gate: refusing to push un-linted TypeScript (#1252). Cause is either a missing" >&2
     echo "gate: toolchain (no \`nix\`) OR a layout that differs from the nix default." >&2
@@ -178,10 +220,11 @@ gate_ts_stage() {
 
 # gate_gofmt_tree_go_files — newline-separated, root-relative list of the repo's
 # OWN Go files: the tree minus the gitignored local build artifacts that carry
-# FOREIGN Go, `node_modules/` and `.sandcastle/nix-store/`. Pruning the scan's
-# INPUT (not filtering its output) is what keeps the verdict readable: a nix store
-# ships the Go distribution's own `src/`, whose deliberately-malformed testdata
-# makes gofmt print hundreds of parse errors before any verdict at all.
+# FOREIGN Go — `node_modules/`, `.sandcastle/nix-store/` and `.sandcastle/worktrees/`.
+# Pruning the scan's INPUT (not filtering its output) is what keeps the verdict
+# readable: a nix store ships the Go distribution's own `src/`, whose
+# deliberately-malformed testdata makes gofmt print hundreds of parse errors
+# before any verdict at all.
 #
 # The nix-store entry is why the host gofmt gate never worked. Gate 3b landed
 # 2026-09-12, one day AFTER a nix store appeared in the swarm workdir, and that
@@ -196,6 +239,7 @@ gate_ts_stage() {
 gate_gofmt_tree_go_files() {
   find . -type f -name '*.go' \
     -not -path './node_modules/*' -not -path './.sandcastle/nix-store/*' \
+    -not -path './.sandcastle/worktrees/*' \
     -printf '%P\n' 2>/dev/null || true
 }
 
@@ -256,19 +300,96 @@ gate_gofmt_stage() {
   return 3
 }
 
+# gate_docs_default_cmd <root> — the cheap docs-diagram check: the repo's in-repo
+# mermaid-parse (#343) and slice-map YAML (#834) checkers over the diagram trees,
+# run with plain `node` — NO nix, NO build — so it costs the host push path next
+# to nothing, the docs twin of gate_gofmt_default_cmd (#1458). Runs the SAME two
+# commands scripts/seam-smoke.sh's `Docs:` stages run (bare, i.e. the checkers'
+# own DEFAULT_TARGETS: architecture + slices + ux/flows for mermaid, slices for
+# the yaml), so a bare `%%` (GOTCHAS #143) or an unquoted `#` can no longer reach
+# main CI-only. Assumes cwd is <root> (its caller cd's there in the scrub subshell).
+#
+# check-mermaid.mjs resolves happy-dom out of app/node_modules and its exit code
+# is a THREE-way contract this stage must honour — the GOTCHAS #400 shape in a
+# docs tier (a sandbox with no `pnpm install` has no happy-dom):
+#   0  every block parses        -> go on to the yaml check;
+#   1  a block will NOT parse     -> a real docs break, refuse the push;
+#   *  the checker CRASHED (the    -> a HARNESS fault: refuse LOUDLY and NAME it
+#      usual cause: no happy-dom)     (never report a crash as a broken diagram,
+#                                      never silently skip — #400).
+# The yaml checker has no DOM dependency; its exit 1 is a truncated scalar.
+gate_docs_default_cmd() {
+  local rc
+  node scripts/check-mermaid.mjs
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    return 1
+  elif [ "$rc" -ne 0 ]; then
+    echo "gate: the mermaid-parse checker CRASHED (exit $rc) — a HARNESS fault, not a" >&2
+    echo "gate: broken diagram. The usual cause is a missing \`happy-dom\` in" >&2
+    echo "gate: app/node_modules (check-mermaid.mjs resolves it there; a sandbox with" >&2
+    echo "gate: no \`pnpm install\` has none — GOTCHAS #400). Refusing to pass: a crash" >&2
+    echo "gate: must never be reported as a parse failure, nor silently skipped." >&2
+    return 3
+  fi
+  node scripts/check-slices-yaml.mjs
+  rc=$?
+  [ "$rc" -eq 0 ] || return 1
+}
+
+# gate_docs_stage <root> — run the docs-diagram gate for a docs-touching change
+# on EVERY push path (GOTCHAS #143's bare-`%%` red CI a SECOND time because the
+# push gate had no docs tier: a diagram break was CI-only, one run too late, on a
+# branch a human had to re-open). The docs twin of gate_gofmt_stage: cheap, never
+# enters a nix shell. Resolves the docs command by a first-match-wins precedence
+# so a consumer whose layout/toolchain differs can satisfy the gate without
+# editing this vendored file:
+#   1. GATE_DOCS_CMD — a supported override (env); also the offline test seam;
+#   2. an executable per-repo .sandcastle/docs-gate.sh — auto-detected, run
+#      through the same git-env-scrubbed `cd "$root"` subshell. Not in
+#      FACTORY_MANIFEST, so it stays a per-repo layer file (drift-safe);
+#   3. a `node` on PATH — run the repo's in-repo checkers (gate_docs_default_cmd).
+# FAIL CLOSED when NONE resolve — no GATE_DOCS_CMD, no executable
+# .sandcastle/docs-gate.sh, no `node`: a docs change whose diagrams cannot be
+# checked blocks the push, exactly as the Go/TS gates fail closed (a blocked push
+# beats a red main). Returns the stage's exit code.
+gate_docs_stage() {
+  local root="$1"
+  if [ -n "${GATE_DOCS_CMD:-}" ]; then
+    ( cd "$root" && gate_scrub_git_env && eval "$GATE_DOCS_CMD" )
+    return $?
+  fi
+  if [ -x "$root/.sandcastle/docs-gate.sh" ]; then
+    ( cd "$root" && gate_scrub_git_env && ./.sandcastle/docs-gate.sh )
+    return $?
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "gate: docs-diagram change detected but no supported docs gate resolved." >&2
+    echo "gate: refusing to push un-checked diagrams (GOTCHAS #143). Cause is either a" >&2
+    echo "gate: missing \`node\` OR a layout that differs from the default. Set a" >&2
+    echo "gate: supported override — GATE_DOCS_CMD, or an executable" >&2
+    echo "gate: .sandcastle/docs-gate.sh — to run this repo's docs checkers." >&2
+    return 3
+  fi
+  ( cd "$root" && gate_scrub_git_env && gate_docs_default_cmd "$root" )
+}
+
 # gate_run <root> [only] [go_tier] — read the changed-file list on stdin, decide
 # which language gates to run, run them. A Go change runs the Go gate; a
 # TypeScript change runs the eslint lint gate (#1252 — TS lint breaks reached
-# main un-gated). The optional <only> ("go"|"ts") restricts execution to a single
-# language. The optional <go_tier> selects HOW DEEP the Go gate runs when a Go
-# change is present: "full" (default) runs the pinned Go seam stages (sandbox);
-# "gofmt" runs only the cheap gofmt-only host gate (Gate 3b, #1458). The pre-push
-# hook uses go_tier=gofmt on the HOST push path so a formatting break is caught
-# there (where f291b547/#1429 slipped past) while the heavy Go seam stays
-# sandbox-only (#198). Returns non-zero if any stage that ran failed.
+# main un-gated); a docs-diagram change runs the cheap mermaid/slice-map checkers
+# (GOTCHAS #143 — a docs break was CI-only until the gate grew a docs tier). The
+# optional <only> ("go"|"ts"|"docs") restricts execution to a single language.
+# The optional <go_tier> selects HOW DEEP the Go gate runs when a Go change is
+# present: "full" (default) runs the pinned Go seam stages (sandbox); "gofmt"
+# runs only the cheap gofmt-only host gate (Gate 3b, #1458). The pre-push hook
+# uses go_tier=gofmt on the HOST push path so a formatting break is caught there
+# (where f291b547/#1429 slipped past) while the heavy Go seam stays sandbox-only
+# (#198). The docs tier is cheap on every path, so it runs regardless of go_tier.
+# Returns non-zero if any stage that ran failed.
 gate_run() {
   local root="$1" only="${2:-}" go_tier="${3:-full}" langs rc=0
-  langs="$(gate_langs_for_files)"
+  langs="$(GATE_DOCS_GLOBS="$(gate_docs_globs "$root")" gate_langs_for_files)"
   if [ -z "$langs" ]; then
     echo "gate: no gated language touched — nothing to check" >&2
     return 0
@@ -288,6 +409,12 @@ gate_run() {
     if grep -qx ts <<<"$langs"; then
       echo "gate: TypeScript change detected — running the pinned eslint lint gate" >&2
       gate_ts_stage "$root" || rc=$?
+    fi
+  fi
+  if [ -z "$only" ] || [ "$only" = docs ]; then
+    if grep -qx docs <<<"$langs"; then
+      echo "gate: docs-diagram change detected — running the cheap mermaid/slice-map checkers (GOTCHAS #143)" >&2
+      gate_docs_stage "$root" || rc=$?
     fi
   fi
   return $rc

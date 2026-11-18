@@ -32,6 +32,20 @@ git init -q "$work/wd"
 # own SWARM_POLICY_FILE via "$@", which env honours over this default.
 printf 'LANDING=push\n' > "$work/policy-push-default.sh"
 export SWARM_POLICY_FILE="$work/policy-push-default.sh"
+# #2048: pin the runner-journal unit + the per-repo workdir lock to hermetic,
+# absent paths so the DEFAULT scenarios never read matou-workstation's real
+# forgejo-runner-swarm journal or a stray /tmp workdir lock. The AC3/AC4
+# scenarios at the end override these deliberately. Exported once so every
+# `env ... bash heal.sh` block inherits them (none of them -u these).
+export HEAL_RUNNER_UNIT="heal-test-no-such-runner.service"
+export HEAL_WORKDIR_LOCK="$work/absent-workdir-lock"
+# #339: host_runner_file now resolves this host's .runner via the
+# ONBOARD_HOST_RUNNER_DIR default ($HOME/forgejo-runner/.runner), which EXISTS on
+# a factory-onboarded box (e.g. matou-workstation). Pin it to an absent sandbox
+# dir so the DEFAULT scenarios never read the host's real runner uuid; the #336
+# scenarios set SWARM_RUNNER_FILE explicitly (which wins), and the #339 scenario
+# below overrides this to a dir it controls.
+export ONBOARD_HOST_RUNNER_DIR="$work/absent-forgejo-runner"
 echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
 
 run_heal() {
@@ -570,6 +584,30 @@ grep -qx 'api_curl_exit=0'   "$ev/api-timing.txt" || fail "#1462: a 401 is curl 
 grep -q  '^api_seconds=timeout' "$ev/api-timing.txt" && fail "#1462: a 401 must NOT be recorded as api_seconds=timeout"
 rm -rf "$stub_dir"
 
+# --- #325: the API probe reads the read the harness actually depends on --------
+# The healer's probe used actions/tasks?limit=1 while the claim prefetch's hot
+# read is limit=100 — a ~4-7x-cheaper cost class, so the bundle reported "API
+# healthy" while the limit=100 read was blowing its 20 s cap. The probe must now
+# read the SAME shape claim_alive_runs (claim-lib.sh) does, so api-timing.txt
+# reflects the read that actually fails. A curl stub on PATH records every URL.
+probe_dir="$(mktemp -d)"; probe_calls="$work/probe-calls.txt"; : > "$probe_calls"
+cat > "$probe_dir/curl" <<STUB
+#!/usr/bin/env bash
+url=""
+for a in "\$@"; do url="\$a"; done
+echo "\$url" >> "$probe_calls"
+printf '200 1.100'
+exit 0
+STUB
+chmod +x "$probe_dir/curl"
+rm -f "$work/state/"*
+run_heal HEAL_MODE=watchdog PATH="$probe_dir:$PATH" >/dev/null 2>&1 || true
+grep -q 'actions/tasks?limit=100&page=1' "$probe_calls" \
+  || fail "#325: the API probe must read actions/tasks?limit=100&page=1 (claim_alive_runs's hot read, not the 4-7x-cheaper limit=1), got: $(cat "$probe_calls")"
+grep -q 'actions/tasks?limit=1&page=1' "$probe_calls" \
+  && fail "#325: the API probe must NOT read the cheap limit=1 shape — it hides the degradation (got: $(cat "$probe_calls"))"
+rm -rf "$probe_dir"
+
 # failover (#510): the agent's FIRST call answers the weekly-limit line; the
 # SECOND — after the flip to the standby account — diagnoses normally. With a
 # standby token configured the heal rides over: no deferral, diagnosis posted,
@@ -847,7 +885,7 @@ cat > "$work/capture-agent.sh" <<'EOF'
 #!/usr/bin/env bash
 ev="$(printf '%s' "$1" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
 mkdir -p "${CAPDIR:?}"
-cp "$ev/worker-logs.txt" "$ev/run-verdict.txt" "$ev/healer-host.txt" "$CAPDIR/" 2>/dev/null || true
+cp "$ev/worker-logs.txt" "$ev/run-verdict.txt" "$ev/healer-host.txt" "$ev/runner-journal.txt" "$CAPDIR/" 2>/dev/null || true
 cat > "$ev/diagnosis.md" <<'D'
 CLASS: harness-infra
 CONFIDENCE: high
@@ -1254,4 +1292,165 @@ PY
   rm -f "$dbd"
 fi
 
-echo "heal.sh: 30 scenarios passed"
+# --- #2048 AC3: the healer reads the runner's REAL systemd unit ---------------
+# The unit varies by pool host; this one is `forgejo-runner-swarm.service`, not
+# the bare `forgejo-runner` the healer hardcoded — so runner-journal.txt came
+# back EMPTY on every incident, and that journal is exactly what named the host
+# and the degraded window in the 2026-10-16 latency incident. Shim systemd so
+# detection resolves the swarm unit and journals it; the bare name yields
+# nothing (the old bug).
+shimdir="$(mktemp -d)"
+cat > "$shimdir/systemctl" <<'EOF'
+#!/usr/bin/env bash
+# list-units for the forgejo-runner glob → the swarm unit (real-ish output shape)
+printf '  forgejo-runner-swarm.service loaded active running Forgejo Actions runner (swarm)\n'
+EOF
+cat > "$shimdir/journalctl" <<'EOF'
+#!/usr/bin/env bash
+# emit a journal line ONLY for the swarm unit; the bare `forgejo-runner` the
+# healer used to query yields nothing — exactly the EMPTY bundle this fixes.
+unit=""; prev=""
+for a in "$@"; do [ "$prev" = -u ] && unit="$a"; prev="$a"; done
+case "$unit" in
+  forgejo-runner-swarm*) echo 'Oct 16 12:36:39 pool-host forgejo-runner[2547855]: level=error msg="failed to fetch task: deadline exceeded"' ;;
+  *) : ;;
+esac
+EOF
+chmod +x "$shimdir/systemctl" "$shimdir/journalctl"
+rm -rf "$work/state"; mkdir -p "$work/state"
+rm -f "$work/wd/.sandcastle/logs/"*.log
+capdir="$work/ev-runner-journal"; rm -rf "$capdir"
+# HEAL_RUNNER_UNIT= (empty) re-enables detection; PATH shims systemd.
+run_heal HEAL_RUNNER_UNIT= PATH="$shimdir:$PATH" \
+  HEAL_AGENT_CMD="bash $work/capture-agent.sh" CAPDIR="$capdir" SWARM_HOST=box9 >/dev/null 2>&1 || true
+grep -q "failed to fetch task: deadline exceeded" "$capdir/runner-journal.txt" 2>/dev/null \
+  || fail "#2048 AC3: runner-journal.txt must carry the forgejo-runner-swarm journal (got: $(cat "$capdir/runner-journal.txt" 2>/dev/null))"
+grep -q "runner unit: forgejo-runner-swarm" "$capdir/runner-journal.txt" 2>/dev/null \
+  || fail "#2048 AC3: the healer must resolve the forgejo-runner-swarm unit, not the bare forgejo-runner (got: $(cat "$capdir/runner-journal.txt" 2>/dev/null))"
+rm -rf "$shimdir"
+
+# --- #336: pool-locality is decided by the FAILING LEG's OWN job-log runner uuid,
+# never by repo-scoped siblings --------------------------------------------------
+# On `swarm` (a multi-host pool) the old boolean job_ran_here keyed on repo-scoped
+# signals ALONE (a fresh workdir-lock mtime / the runner journal naming the repo).
+# Both ALSO fire for the host's OTHER green runs of the SAME repo in the window,
+# so on a genuine cross-host fault it returned "here" and the bundle asserted the
+# confident WRONG "NOT a leg on another pool host" (coa#186: an out-of-disk
+# bens-mac-04 leg whose job log named a DIFFERENT runner uuid). The tri-state
+# job_locality decides from the leg's OWN job-log runner uuid vs this host's
+# `.runner` uuid, and never asserts the negative on evidence that cannot
+# distinguish the two. All three scenarios copy the three locality artefacts the
+# diagnosis agent reads first.
+# A fresh job-log curl stub (the #188 block's jl_dir was removed above): serve
+# JOBLOG_FILE on the job-log route, exec the real curl for every other call.
+jl_dir="$(mktemp -d)"; realcurl="$(command -v curl)"
+cat > "$jl_dir/curl" <<STUB
+#!/usr/bin/env bash
+url=""
+for a in "\$@"; do url="\$a"; done
+case "\$url" in
+  *"/jobs/"*"/attempt/1/logs")
+     leg="\${url%/attempt/1/logs}"; leg="\${leg##*/jobs/}"
+     if [ "\$leg" -le "\${JOBLOG_MAX_OK:-0}" ] 2>/dev/null; then cat "\$JOBLOG_FILE"; printf '\n200'; else printf '\n404'; fi
+     exit 0 ;;
+  *) exec "$realcurl" "\$@" ;;
+esac
+STUB
+chmod +x "$jl_dir/curl"
+cat > "$work/loc-agent.sh" <<'EOF'
+#!/usr/bin/env bash
+ev="$(printf '%s' "$1" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
+mkdir -p "${LOCCAP:?}"
+cp "$ev/worker-logs.txt" "$ev/run-verdict.txt" "$ev/no-local-evidence.txt" "$LOCCAP/" 2>/dev/null || true
+cat > "$ev/diagnosis.md" <<'D'
+CLASS: harness-infra
+CONFIDENCE: high
+ACTION-TAKEN: none
+ESCALATE: no
+
+**Root cause** — stub.
+D
+EOF
+chmod +x "$work/loc-agent.sh"
+
+# This host's own runner-registration file: `.runner` JSON carrying our uuid.
+myrunner="$work/dot-runner.json"
+printf '{"uuid":"4ff4a71f-1111-2222-3333-444444444444","name":"swarm-01"}\n' > "$myrunner"
+
+# (1) `here`: the failing leg's job log names THIS host's runner uuid → the
+# confident pre-Sandcastle-fault message is kept.
+rm -rf "$work/state"; mkdir -p "$work/state"
+rm -f "$work/wd/.sandcastle/logs/"*.log          # no fresh local worker log
+jl_here="$work/jl-here.txt"
+printf 'Oct 16 12:34:01 runner 4ff4a71f-1111-2222-3333-444444444444 picked up task 278090\nboom: something failed before Sandcastle span\n' > "$jl_here"
+capdir="$work/ev-loc-here"; rm -rf "$capdir"
+run_heal PATH="$jl_dir:$PATH" JOBLOG_FILE="$jl_here" JOBLOG_MAX_OK=0 \
+  SWARM_RUNNER_FILE="$myrunner" \
+  HEAL_AGENT_CMD="bash $work/loc-agent.sh" LOCCAP="$capdir" SWARM_HOST=box9 >/dev/null 2>&1 || true
+grep -q "THIS repo's job ran on this host" "$capdir/worker-logs.txt" 2>/dev/null \
+  || fail "#336 here: a job-log runner uuid that matches this host's .runner must keep the confident local-fault message (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
+grep -q "NOT a leg on another pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  || fail "#336 here: the confident 'NOT a leg on another pool host' negative is earned only here"
+grep -q "ran on another swarm pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  && fail "#336 here: a matching uuid must NOT be blamed on another pool host"
+
+# (2) `elsewhere` DESPITE a fresh workdir lock: the repo-scoped lock fires (a green
+# sibling), but the failing leg's job log names a DIFFERENT runner uuid → the leg
+# ran on another pool host, and NO artefact claims it ran here. This is coa#186.
+rm -rf "$work/state"; mkdir -p "$work/state"
+rm -f "$work/wd/.sandcastle/logs/"*.log
+lockfresh="$work/workdir-lock-fresh"; : > "$lockfresh"   # a green sibling's fresh checkout this window
+jl_other="$work/jl-other.txt"
+printf 'Oct 16 12:36:39 runner 73a6c98a-9999-8888-7777-666666666666 picked up task 278090\nmkdir /home/swarm/.cache/act: no space left on device\n' > "$jl_other"
+capdir="$work/ev-loc-elsewhere"; rm -rf "$capdir"
+run_heal PATH="$jl_dir:$PATH" JOBLOG_FILE="$jl_other" JOBLOG_MAX_OK=0 \
+  SWARM_RUNNER_FILE="$myrunner" HEAL_WORKDIR_LOCK="$lockfresh" \
+  HEAL_AGENT_CMD="bash $work/loc-agent.sh" LOCCAP="$capdir" SWARM_HOST=box9 >/dev/null 2>&1 || true
+grep -q "ran on another swarm pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  || fail "#336 elsewhere: a job-log runner uuid that is NOT ours resolves to elsewhere even with a fresh workdir lock (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
+grep -q "THIS repo's job ran on this host" "$capdir/worker-logs.txt" 2>/dev/null \
+  && fail "#336 elsewhere: a fresh repo-scoped lock must NOT earn the 'ran here' claim for a leg whose job log names another runner (coa#186)"
+grep -q "NOT a leg on another pool host" "$capdir/no-local-evidence.txt" 2>/dev/null \
+  && fail "#336 elsewhere: the confident negative must not leak into no-local-evidence.txt"
+
+# (3) `unknown` (undecidable): repo-scoped signals fire (fresh workdir lock) but
+# the failing leg's job log carries NO runner uuid to compare → the artefact must
+# DECLINE to assert "NOT a leg on another pool host", not guess either way.
+rm -rf "$work/state"; mkdir -p "$work/state"
+rm -f "$work/wd/.sandcastle/logs/"*.log
+jl_nouuid="$work/jl-nouuid.txt"
+printf 'Could not resolve host: git.matou.nz\nsome generic failure with no runner identity\n' > "$jl_nouuid"
+capdir="$work/ev-loc-unknown"; rm -rf "$capdir"
+run_heal PATH="$jl_dir:$PATH" JOBLOG_FILE="$jl_nouuid" JOBLOG_MAX_OK=0 \
+  SWARM_RUNNER_FILE="$myrunner" HEAL_WORKDIR_LOCK="$lockfresh" \
+  HEAL_AGENT_CMD="bash $work/loc-agent.sh" LOCCAP="$capdir" SWARM_HOST=box9 >/dev/null 2>&1 || true
+grep -q "could not determine which pool host ran this leg" "$capdir/worker-logs.txt" 2>/dev/null \
+  || fail "#336 unknown: a fresh repo-scoped signal with no job-log uuid must resolve to undecidable (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
+grep -q "NOT a leg on another pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  && fail "#336 unknown: the undecidable artefact must NOT assert the confident negative"
+grep -q "ran on another swarm pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  && fail "#336 unknown: the undecidable artefact must NOT assert the leg ran elsewhere either"
+# (4) #339: the RESOLUTION ORDER itself — SWARM_RUNNER_FILE UNSET, the onboarding
+# default present. Every scenario above pins SWARM_RUNNER_FILE explicitly, which
+# is exactly why the old `${SWARM_RUNNER_FILE:-$HOME/.runner}` default was never
+# exercised and `here` was dead on every factory-onboarded host. Here the host's
+# .runner lives at <ONBOARD_HOST_RUNNER_DIR>/.runner (how onboarding registers
+# it), SWARM_RUNNER_FILE is empty, and the failing leg's job log names THAT uuid
+# → host_runner_file must find the onboarding-default file and `here` must fire.
+rm -rf "$work/state"; mkdir -p "$work/state"
+rm -f "$work/wd/.sandcastle/logs/"*.log
+onboarddir="$work/forgejo-runner"; mkdir -p "$onboarddir"
+printf '{"uuid":"4ff4a71f-1111-2222-3333-444444444444","name":"swarm-01"}\n' > "$onboarddir/.runner"
+jl_onboard="$work/jl-onboard.txt"
+printf 'Oct 16 12:34:01 runner 4ff4a71f-1111-2222-3333-444444444444 picked up task 278090\nboom: something failed before Sandcastle span\n' > "$jl_onboard"
+capdir="$work/ev-loc-onboard"; rm -rf "$capdir"
+run_heal PATH="$jl_dir:$PATH" JOBLOG_FILE="$jl_onboard" JOBLOG_MAX_OK=0 \
+  SWARM_RUNNER_FILE= ONBOARD_HOST_RUNNER_DIR="$onboarddir" \
+  HEAL_AGENT_CMD="bash $work/loc-agent.sh" LOCCAP="$capdir" SWARM_HOST=box9 >/dev/null 2>&1 || true
+grep -q "THIS repo's job ran on this host" "$capdir/worker-logs.txt" 2>/dev/null \
+  || fail "#339: with SWARM_RUNNER_FILE unset, host_runner_file must resolve <ONBOARD_HOST_RUNNER_DIR>/.runner so a matching uuid still earns 'here' (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
+grep -q "NOT a leg on another pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  || fail "#339: the onboarding-default resolution must reach the confident local-fault negative"
+rm -rf "$jl_dir"
+
+echo "heal.sh: 35 scenarios passed"

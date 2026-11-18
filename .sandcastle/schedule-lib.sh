@@ -269,12 +269,27 @@ schedule_fleet_pick() {
   return 0
 }
 
-# schedule_fleet_pick_signal <host-signals-dir> — drop the pick where every
-# sandbox sees it read-only (/run/host-signals/fleet-pick, the start-sha
-# pattern). No pick → no file → the in-sandbox lister's own order. Best-effort.
+# schedule_fleet_pick_signal <host-signals-dir> [pick-ready-json] — drop the
+# pick where every sandbox sees it read-only (the start-sha pattern). No pick →
+# no file → the in-sandbox lister's own order. Best-effort. Two files:
+#   fleet-pick       — the pick NUMBER (the #2145 single-issue fast-path trigger).
+#   fleet-pick-task  — the pick's FULL task OBJECT, when the ready JSON is passed
+#                      (#327): the host has already LISTED and verified this pick
+#                      outside the 30s budget, so the in-sandbox lister emits it
+#                      with ZERO forge reads — even the #2145 two-read fast path
+#                      overran CLAIM_LISTER_MAX_TIME on a slow forge. A
+#                      garbled/empty input leaves no task file, and the sandbox
+#                      falls back to the single-issue fast path.
 schedule_fleet_pick_signal() {
   [ -n "${SCHEDULE_FLEET_PICK:-}" ] || return 0
-  mkdir -p "$1" 2>/dev/null && printf '%s\n' "$SCHEDULE_FLEET_PICK" >"$1/fleet-pick" 2>/dev/null || true
+  mkdir -p "$1" 2>/dev/null || return 0
+  printf '%s\n' "$SCHEDULE_FLEET_PICK" >"$1/fleet-pick" 2>/dev/null || true
+  if [ -n "${2:-}" ]; then
+    local task=""
+    task="$(jq -ec --arg n "$SCHEDULE_FLEET_PICK" \
+      '[.[] | select((.number | tostring) == $n)] | select(length > 0)' <<<"$2" 2>/dev/null)" || task=""
+    [ -n "$task" ] && printf '%s\n' "$task" >"$1/fleet-pick-task" 2>/dev/null || true
+  fi
 }
 
 # ── the per-run model (#448) ───────────────────────────────────────────────

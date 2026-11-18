@@ -25,6 +25,9 @@ setup() {
   # per-test sandbox (the module defaults point at $HOME/swarm on a real host).
   # Plain globals — the claim-lib functions read them at call time.
   CLAIM_VERDICT_LOG="$FAKE_DIR/verdicts.log"
+  # #325: the latency sink now defaults ON at a host path ($HOME/swarm/logs); pin
+  # it into the per-test sandbox too so the suite never writes the real series.
+  CLAIM_LATENCY_LOG="$FAKE_DIR/claim-latency.log"
   CLAIM_ABSENCE_STATE_DIR="$FAKE_DIR/absence"
   # Legacy sweep tests below assert single-poll re-arm; the new default is 2 (a
   # dedicated test asserts that). Individual tests raise it to exercise N>1.
@@ -124,6 +127,44 @@ jq -n '[{number:78, labels:[{id:50,name:"agent-working"}]}]' >"$FAKE_DIR/issues-
 c1="$(claim_post 78 ws 512)"    # run 512 IS alive
 rearmed="$(janitor_sweep)"
 check "live claim untouched" '[ -z "$rearmed" ] && grep -q swarm-claim "$FAKE_DIR/comments-78.json"'
+
+# T8b (#348): the janitor must not judge a SESSION claim by swarm runs. The
+# session-runner's run= is its pid — never in the alive swarm-run list — so the
+# janitor used to sweep a live session's claim on its second pass, and a second
+# host then ran a full session on the same ticket. A session claim carries
+# ` session-ttl=<n>` and is live until it is older than that.
+setup
+jq -n '[{number:80, labels:[{id:50,name:"agent-working"}]}]' >"$FAKE_DIR/issues-agent-working.json"
+c1="$(claim_post 80 ws 3607219 7500)"
+check "a session claim's first line carries its ttl" 'jq -e ".[0].body | startswith(\"swarm-claim host=ws run=3607219 session-ttl=7500\n\")" "$FAKE_DIR/comments-80.json" >/dev/null'
+check "a session claim still reads as a claim (id run)" '[ "$(_claim_comments 80)" = "$c1 3607219" ]'
+check "a non-numeric ttl is ignored, not posted" '[ -n "$(claim_post 80 ws 5 abc)" ] && ! grep -q "run=5 session-ttl" "$FAKE_DIR/comments-80.json"'
+setup
+jq -n '[{number:80, labels:[{id:50,name:"agent-working"}]}]' >"$FAKE_DIR/issues-agent-working.json"
+now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+jq -n --arg t "$now_iso" '[{id:900, created_at:$t, body:"swarm-claim host=ws run=3607219 session-ttl=7500\n(auto)"}]' >"$FAKE_DIR/comments-80.json"
+r1="$(janitor_sweep)"; r2="$(janitor_sweep)"; r3="$(janitor_sweep)"
+check "a live session claim survives repeated janitor passes" '[ -z "$r1$r2$r3" ] && grep -q swarm-claim "$FAKE_DIR/comments-80.json"'
+check "the janitor never removed the live session's label" '! grep -q "DELETE .*issues/80/labels/50" "$FAKE_DIR/calls.log"'
+check "a session pid starts no absence streak" '[ ! -e "$FAKE_DIR/absence/3607219" ]'
+# The pid collides with a run number that has a terminal verdict: still live.
+echo "1 2 x completed 0 run=3607219" >"$CLAIM_VERDICT_LOG"
+check "a verdict-log collision on the pid does not sweep a live session" '[ -z "$(janitor_sweep)" ]'
+# Past its ttl the claim is dead: a crashed host must not strand the ticket.
+setup
+jq -n '[{number:80, labels:[{id:50,name:"agent-working"}]}]' >"$FAKE_DIR/issues-agent-working.json"
+jq -n '[{id:900, created_at:"2020-01-01T00:00:00Z", body:"swarm-claim host=ws run=3607219 session-ttl=7500\n(auto)"}]' >"$FAKE_DIR/comments-80.json"
+check "an expired session claim is swept" '[ "$(janitor_sweep)" = "80" ] && ! grep -q swarm-claim "$FAKE_DIR/comments-80.json"'
+# An un-ageable session claim (no created_at) is kept, fail-closed.
+setup
+jq -n '[{number:80, labels:[{id:50,name:"agent-working"}]}]' >"$FAKE_DIR/issues-agent-working.json"
+jq -n '[{id:900, body:"swarm-claim host=ws run=3607219 session-ttl=7500\n(auto)"}]' >"$FAKE_DIR/comments-80.json"
+check "a session claim with no created_at is kept (fail-closed)" '[ -z "$(janitor_sweep)" ]'
+# A dead swarm claim beside a live session claim: the session keeps the ticket.
+setup
+jq -n '[{number:80, labels:[{id:50,name:"agent-working"}]}]' >"$FAKE_DIR/issues-agent-working.json"
+jq -n --arg t "$now_iso" '[{id:899, created_at:$t, body:"swarm-claim host=old run=400\n(auto)"},{id:900, created_at:$t, body:"swarm-claim host=ws run=3607219 session-ttl=7500\n(auto)"}]' >"$FAKE_DIR/comments-80.json"
+check "a live session claim holds the ticket beside a dead swarm claim" '[ -z "$(janitor_sweep)" ]'
 
 # T9: 2026-08-11 review finding 1 — a tasks-API failure must NOT read as "nothing
 # alive". claim_alive_runs must fail loud (rc nonzero), not degrade to `[]` at rc 0.
@@ -328,8 +369,15 @@ echo 9 >"$FAKE_DIR/tasks-fail-count"
 ( CLAIM_LATENCY_LOG="$FAKE_DIR/lat.log" CLAIM_ALIVE_RETRIES=2 claim_alive_runs >/dev/null 2>&1 ) || true
 check "every retry attempt logs a sample (3 rows)" '[ "$(wc -l <"$FAKE_DIR/lat.log")" = 3 ]'
 check "a failed sample records the nonzero rc" 'grep -q "rc=22" "$FAKE_DIR/lat.log"'
-check "latency log is OFF by default (unset => no file written)" \
-  'setup; claim_alive_runs >/dev/null; [ ! -e "$FAKE_DIR/lat.log" ]'
+# #325: the series is ON by default now (it sat unset in production, so no p95
+# could be measured). A bare read writes a sample to the wired sink, and that
+# default sink is a SIBLING of the verdict log; an explicit empty disables it.
+check "latency log is ON by default (a bare read writes a sample to the wired sink)" \
+  'setup; claim_alive_runs >/dev/null; [ -s "$FAKE_DIR/claim-latency.log" ] && grep -q "dur=[0-9]*s rc=0" "$FAKE_DIR/claim-latency.log"'
+check "the default sink is a sibling of the verdict log (#325)" \
+  '( unset CLAIM_LATENCY_LOG; CLAIM_VERDICT_LOG=/var/run/swarm/run-swarm-verdicts.log; . "$here/../claim-lib.sh"; [ "$CLAIM_LATENCY_LOG" = /var/run/swarm/claim-latency.log ] )'
+check "CLAIM_LATENCY_LOG= (empty) disables the series (#325)" \
+  '( CLAIM_LATENCY_LOG=; . "$here/../claim-lib.sh"; [ -z "$CLAIM_LATENCY_LOG" ] )'
 
 # T19 (the #1247 core fix): the janitor sweeps a stale claim whose run has a
 # recorded TERMINAL verdict EVEN WHEN THE TRACKER IS DOWN. On #1247 twelve stale

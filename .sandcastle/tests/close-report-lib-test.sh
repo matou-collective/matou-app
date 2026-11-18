@@ -555,13 +555,19 @@ jq -n '{type:"result", result:"I think this looks fine to me, approve."}' > "$rf
 jq -n '{type:"result", result:"{\"verdict\":\"lgtm\",\"findings\":[]}"}' > "$rf"
 [ "$(verdict_of)" = malformed ] || fail "RV6: an unknown verdict must fail closed (malformed)"; ok
 
-# RV7 — an empty result file fails CLOSED.
+# RV7 — #2161: an empty result file means the reviewer could not RUN at all (no
+# JSON envelope was ever written) — an absent `claude`, or an exec failure before
+# claude started (a prompt over MAX_ARG_STRLEN made `timeout ... claude ...` fail
+# "Argument list too long" before claude started). No review happened, so SKIP it
+# like an absent reviewer (#228), never fail CLOSED. A reviewer that genuinely ran
+# always writes a `--output-format json` envelope (non-empty), so this can never
+# mask real garbage (RV12c still holds the fail-CLOSED line).
 : > "$rf"
-[ "$(verdict_of)" = malformed ] || fail "RV7: an empty result must fail closed (malformed)"; ok
+[ "$(verdict_of)" = unauthenticated ] || fail "RV7: an empty result (reviewer could not run) must SKIP, not fail closed (#2161)"; ok
 
-# RV8 — a missing result file fails CLOSED.
-[ "$(jq -r '.verdict' <<<"$(cr_review_parse "$repo/does-not-exist.json")")" = malformed ] \
-  || fail "RV8: a missing result file must fail closed (malformed)"; ok
+# RV8 — #2161: a missing result file is the same can-not-run case -> SKIP.
+[ "$(jq -r '.verdict' <<<"$(cr_review_parse "$repo/does-not-exist.json")")" = unauthenticated ] \
+  || fail "RV8: a missing result file (reviewer could not run) must SKIP, not fail closed (#2161)"; ok
 
 # RV9 — a bare verdict object (no .result wrapper, e.g. a stub) still parses.
 jq -n '{verdict:"approve", findings:[]}' > "$rf"
@@ -588,5 +594,34 @@ jq -n '{type:"result", result:"The handler should reject requests before /login 
 # auth failure) stays malformed too — only an authentication failure skips.
 jq -n '{type:"result", terminal_reason:"api_error", result:"upstream timeout, try again"}' > "$rf"
 [ "$(verdict_of)" = malformed ] || fail "RV11b: an api_error without a /login prompt must stay malformed (fail closed)"; ok
+
+# RV12 — #2155: a `claude -p` child that cannot authenticate does NOT always say
+# "/login". claude 2.1.228 emits an api_error whose `.result` reads "Failed to
+# authenticate: OAuth session expired ..." and whose usage block is ALL ZEROS (the
+# model was never invoked). That evades the /login regex, so pre-#2155 it fell to
+# `malformed` and bricked every close in an interactive standing session. Zero
+# usage is the version-robust auth signal -> `unauthenticated` (skip, #228).
+jq -n '{type:"result", is_error:true, terminal_reason:"api_error",
+        result:"Failed to authenticate: OAuth session expired and could not be refreshed",
+        usage:{input_tokens:0, output_tokens:0}}' > "$rf"
+[ "$(verdict_of)" = unauthenticated ] || fail "RV12: a zero-usage OAuth-expired result (claude 2.1.228) must normalise to unauthenticated (skip, #2155)"; ok
+
+# RV12b — claude 2.1.318's unauthenticated shape carries NO `.result` at all, just
+# an empty-usage result object. Zero usage still classifies it `unauthenticated`.
+jq -n '{duration_api_ms:0, stop_reason:"stop_sequence", total_cost_usd:0,
+        usage:{input_tokens:0, output_tokens:0}}' > "$rf"
+[ "$(verdict_of)" = unauthenticated ] || fail "RV12b: a zero-usage result with no .result (claude 2.1.318) must normalise to unauthenticated (skip, #2155)"; ok
+
+# RV12c — the fail-CLOSED posture is PRESERVED for a reviewer that genuinely RAN:
+# non-zero usage with garbage output (no verdict) is a real-but-bad review and
+# must stay `malformed`, never skip. This is the line zero-usage must not cross.
+jq -n '{type:"result", result:"I looked at the diff and it seems fine to me.",
+        usage:{input_tokens:1800, output_tokens:42}}' > "$rf"
+[ "$(verdict_of)" = malformed ] || fail "RV12c: non-zero-usage garbage (a reviewer that truly ran) must stay malformed (fail closed, #2155)"; ok
+
+# RV12d — zero usage never overrides a PARSEABLE verdict: a valid verdict always
+# wins (it is returned before the auth classifier is ever consulted).
+jq -n '{type:"result", result:"{\"verdict\":\"approve\",\"findings\":[]}", usage:{input_tokens:0, output_tokens:0}}' > "$rf"
+[ "$(verdict_of)" = approve ] || fail "RV12d: a parseable verdict wins even with zero usage (#2155)"; ok
 
 echo "close-report-lib: $pass checks passed"

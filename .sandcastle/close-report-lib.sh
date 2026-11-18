@@ -589,27 +589,57 @@ cr_violations() {
 
 # _cr_review_is_auth_error <claude-result-file> — rc 0 when the reviewer
 # subprocess could not AUTHENTICATE rather than returning a review: a `claude -p`
-# child in an interactive standing session is not logged in and returns an
-# api_error terminal reason with a /login `.result`
-# ("Not logged in · Please run /login"). This is an environment fact (no
-# logged-in reviewer here), not a bad review, so the gate treats it like an
-# ABSENT reviewer binary and SKIPS — never fails CLOSED (#228). Requires BOTH the
-# error signal (terminal_reason=api_error OR is_error) AND the login prompt, so a
-# genuine review that merely mentions "/login" in its prose never trips this.
+# child in an interactive standing session is not logged in. This is an
+# environment fact (no logged-in reviewer here), not a bad review, so the gate
+# treats it like an ABSENT reviewer binary and SKIPS — never fails CLOSED (#228).
+# Three signatures, ANY of which means "no review happened":
+#   (a) an explicit login prompt in `.result` ("Not logged in · Please run
+#       /login") PAIRED with an error signal (terminal_reason=api_error OR
+#       is_error) — so a genuine review that merely mentions "/login" in its
+#       prose never trips this.
+#   (b) #2155: zero usage. A `claude -p` child that cannot authenticate never
+#       invokes the model, so its result object reports a usage block with zero
+#       input AND zero output tokens. This is the VERSION-ROBUST signal: claude
+#       2.1.228 emits a "Failed to authenticate: OAuth session expired" `.result`
+#       and 2.1.318 emits no `.result` at all — NEITHER matches the /login regex
+#       in (a), yet both report zero usage. A reviewer that genuinely RAN and
+#       returned garbage consumed input tokens (non-zero usage) and so still
+#       fails CLOSED (malformed) — the fail-CLOSED posture #197 is about.
+#   (c) #2161: an ABSENT or EMPTY result file. The reviewer subprocess wrote no
+#       JSON envelope at all, so it never ran — an absent `claude` binary, or an
+#       exec failure BEFORE claude started (a reviewer prompt exceeding the Linux
+#       single-argument limit MAX_ARG_STRLEN, ~128 KiB, made the `timeout ...
+#       claude ...` exec fail "Argument list too long" with no output). This is
+#       the same can-not-run class as (a)/(b) and the absent-binary case, so it
+#       SKIPS — never fails CLOSED, which would brick every close over a large
+#       diff. A reviewer that genuinely RAN always writes a `--output-format json`
+#       envelope (a non-empty file), so this never masks the (c)-excluded garbage
+#       the #197 fail-CLOSED posture is about — that stays non-empty -> malformed.
 _cr_review_is_auth_error() {
   local rf="${1:-}"
-  [ -n "$rf" ] && [ -f "$rf" ] && [ -s "$rf" ] || return 1
+  # (c) #2161: no file, or an empty file -> the reviewer could not run -> SKIP.
+  [ -n "$rf" ] && [ -f "$rf" ] && [ -s "$rf" ] || return 0
   jq -e '
     (type == "object")
-    and (((.result // "") | tostring) | test("/login|[Nn]ot logged in"))
-    and (((.terminal_reason // "") == "api_error") or ((.is_error // false) == true))
+    and (
+      (
+        (((.result // "") | tostring) | test("/login|[Nn]ot logged in"))
+        and (((.terminal_reason // "") == "api_error") or ((.is_error // false) == true))
+      )
+      or (
+        (.usage | type == "object")
+        and (((.usage.input_tokens // 0) | tonumber) == 0)
+        and (((.usage.output_tokens // 0) | tonumber) == 0)
+      )
+    )
   ' "$rf" >/dev/null 2>&1
 }
 
 # _cr_review_fail <claude-result-file> -> the fail-verdict JSON. `unauthenticated`
-# when the reviewer could not authenticate (the gate SKIPS it like an absent
-# reviewer, #228); otherwise `malformed` — the fail-CLOSED posture for a reviewer
-# that genuinely RAN and returned empty/garbage output.
+# when the reviewer could not RUN — it could not authenticate (#228/#2155) or it
+# wrote no JSON envelope at all (an absent/empty result, #2161); the gate SKIPS it
+# like an absent reviewer. Otherwise `malformed` — the fail-CLOSED posture for a
+# reviewer that genuinely RAN (a non-empty envelope) and returned garbage output.
 _cr_review_fail() {
   if _cr_review_is_auth_error "${1:-}"; then
     printf '%s\n' '{"verdict":"unauthenticated","findings":[]}'
@@ -623,10 +653,12 @@ _cr_review_fail() {
 # Reads a `claude --output-format json` result (its `.result` key holds the
 # agent's final text, which carries the verdict object — possibly wrapped in a
 # ```json fence or the whole file IS the bare object, for a stub / older CLI).
-# A reviewer that could not authenticate normalises to `unauthenticated` (the
-# gate SKIPS it, #228); anything else unparseable, empty, or an out-of-vocabulary
-# verdict normalises to `malformed` — the fail-CLOSED posture the gate acts on as
-# a rejection. rc is always 0: the verdict in the echoed JSON drives the decision.
+# A reviewer that could not RUN — could not authenticate (#228/#2155) or wrote no
+# envelope at all (an absent/empty result, #2161) — normalises to `unauthenticated`
+# (the gate SKIPS it); a NON-EMPTY envelope that is unparseable or carries an
+# out-of-vocabulary verdict normalises to `malformed` — the fail-CLOSED posture the
+# gate acts on as a rejection. rc is always 0: the verdict in the echoed JSON drives
+# the decision.
 cr_review_parse() {
   local rf="${1:-}" text obj verdict
   if [ -z "$rf" ] || [ ! -f "$rf" ] || [ ! -s "$rf" ]; then

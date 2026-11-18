@@ -2,14 +2,16 @@
 # tests/branch-strategy-test.sh — offline test for the worker's LANDING-aware
 # post-run host branch strategy (#230). Run: bash tests/branch-strategy-test.sh
 #
-# The hazard this closes (GOTCHAS 72): main.mts handed Sandcastle an
-# UNCONDITIONAL `branchStrategy: { type: "merge-to-head" }`, so after EVERY run
-# the host merged the worker's temp branch onto local `main`. Under LANDING=pr
-# the landing already happened via the worker's pull request, so that merge is
-# redundant AND reds the run with a SyncError the instant any concurrent writer
-# has touched the same lines (STATUS.md is the guaranteed collision). The
-# strategy is now LANDING-aware: pr pins a named branch (no merge-back), push
-# keeps merge-to-head.
+# The hazard this closes (GOTCHAS 72, deepened by #329): main.mts handed Sandcastle
+# an UNCONDITIONAL `branchStrategy: { type: "merge-to-head" }`, so after EVERY run
+# the host merged the worker's temp branch onto local `main` INSIDE the Sandcastle
+# lifecycle — a conflict there is a hard SyncError + a mid-merge workdir, BEFORE
+# run-swarm's GOTCHAS 66 rescue ladder can engage, the instant any concurrent writer
+# touched the same lines (STATUS.md is the guaranteed collision). The strategy is
+# now LANDING-aware and BOTH explicit modes pin a per-run NAMED branch (no
+# merge-back): pr lands via the worker's PR, push has the HOST adopt the branch and
+# the land seam owns the only rebase (so the conflict parks, not reds). Only an
+# UNSET/unknown LANDING keeps merge-to-head (a bare `pnpm run sandcastle`).
 #
 # Pure TS logic, so the test exercises resolveBranchStrategy() directly via tsx
 # (the same runner `pnpm run sandcastle` uses). No docker, no network.
@@ -61,10 +63,14 @@ check "pr → carries the per-run branch name" \
   "printf '%s' '$pr' | grep -q '\"branch\":\"sandcastle/worker/TESTBR\"'"
 check "pr → is NOT merge-to-head" "! printf '%s' '$pr' | grep -q 'merge-to-head'"
 
-# --- LANDING=push keeps merge-to-head (main is the landing surface) ---
+# --- LANDING=push ALSO pins a NAMED branch (#329): Sandcastle does NO merge, the
+#     HOST adopts the branch and the land seam owns the rebase (conflict → park) ---
 push="$(resolve push)"
-check "push → type:merge-to-head" "printf '%s' '$push' | grep -q '\"type\":\"merge-to-head\"'"
-check "push → has no named branch" "! printf '%s' '$push' | grep -q '\"branch\"'"
+check "push → type:branch (no in-lifecycle merge-to-head; #329)" \
+  "[ \"\$(printf '%s' '$push' | grep -o '\"type\":\"[a-z-]*\"')\" = '\"type\":\"branch\"' ]"
+check "push → carries the per-run branch name (the host adopts it)" \
+  "printf '%s' '$push' | grep -q '\"branch\":\"sandcastle/worker/TESTBR\"'"
+check "push → is NOT merge-to-head" "! printf '%s' '$push' | grep -q 'merge-to-head'"
 
 # --- unset / unknown falls back to merge-to-head (bare `npm run sandcastle`) ---
 unset_v="$(resolve __unset__)"
@@ -83,6 +89,11 @@ check "main.mts feeds it SWARM_POLICY_LANDING" \
   "grep -q 'resolveBranchStrategy(' '$mainmts' && grep -q 'SWARM_POLICY_LANDING' '$mainmts'"
 check "main.mts no longer hardcodes an unconditional merge-to-head branchStrategy" \
   "! grep -q 'branchStrategy: { type: \"merge-to-head\" }' '$mainmts'"
+# #329: main.mts takes the per-run branch NAME from the host (SWARM_WORKER_BRANCH)
+# so the host knows the ref it must adopt after a push run — falling back to its
+# own generated name only on a bare run. (The resolver feeds it to Sandcastle.)
+check "main.mts reads SWARM_WORKER_BRANCH for the per-run branch name (#329)" \
+  "grep -q 'SWARM_WORKER_BRANCH' '$mainmts'"
 
 rm -rf "$(dirname "$harness")"
 summary branch-strategy-test

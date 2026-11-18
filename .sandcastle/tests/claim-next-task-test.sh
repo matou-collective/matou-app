@@ -82,7 +82,10 @@ check "all contested emits []" '[ "$(bash "$script")" = "[]" ]'
 # completion candidate — fail-closed at the script, fail-OPEN at the surface
 # (idss#1425). A required read that faulted fails LOUD (non-zero exit, no []),
 # exactly like the failing-lister path below (T-idss#1195e / #52 / GOTCHAS 7), so
-# run-swarm re-keys it and the backstop re-fires instead of the lane stopping.
+# the backstop re-fires instead of the lane stopping. #325: this in-sandbox fault
+# surfaces under the host's "sandcastle run (workers)" verdict stage
+# (execute-lib.sh), NOT a re-keyed claim stage — the loud non-zero exit is what
+# the healer and backstop see.
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
 touch "$FAKE_DIR/tasks-fail"
 aout="$(bash "$script" 2>"$FAKE_DIR/aerr")"; arc=$?
@@ -184,10 +187,19 @@ bash "$script" >/dev/null 2>&1
 check "alive-runs prefetch is capped over the measured 12.2s tail" \
   '[ "$(sed -n "/actions\/tasks/s/.*--max-time \([0-9]*\).*/\1/p" "$FAKE_DIR/argv.log")" -gt 12 ]'
 
-# T-idss#1195d: the lister leg is bounded by WALL CLOCK from the outside.
-# list-ready-tasks.sh retries each read with backoff at LIST_READY_MAX_TIME (30s)
-# apiece — a worst case around 96s, unbounded relative to a 30s expansion. A
-# lister that hangs must cost the tick a graceful [], not the whole run.
+# T-idss#1195d (idss#2145): the lister leg is bounded by WALL CLOCK from the
+# outside. list-ready-tasks.sh retries each read with backoff at
+# LIST_READY_MAX_TIME (30s) apiece — a worst case ~96s, unbounded relative to a
+# 30s expansion, so it is cut off at CLAIM_LISTER_MAX_TIME. The lister here WOULD
+# have returned a NON-EMPTY queue (the forge is slow, not empty) — this is the
+# idss#2145 shape, where a forge answering its open-issues page in 8-22s blew the
+# bound every tick while 8 tickets were ready, and the old code laundered rc 124
+# into a [] the worker read as "nothing to do" (the idss#1425 hazard on the leg
+# #1425 left open). So a timed-out lister now fails LOUD — non-zero, NO [] —
+# exactly like the alive-runs and failing-lister arms: run-swarm re-keys it to
+# the "list ready tasks" stage and the healer sees a NAMED fault instead of a
+# silently idle lane. (In production the #2145 single-issue fast path keeps the
+# lister well under the bound, so this loud arm is the genuine-fault backstop.)
 setup
 cat >"$FAKE_DIR/lister" <<'EOF'
 #!/usr/bin/env bash
@@ -196,13 +208,14 @@ printf '%s' '[{"number":431,"title":"a","body":"b","url":"u"}]'
 EOF
 chmod +x "$FAKE_DIR/lister"; export CLAIM_LISTER="$FAKE_DIR/lister"
 lstart="$(date +%s)"
-out="$(CLAIM_LISTER_MAX_TIME=2 bash "$script" 2>"$FAKE_DIR/lterr")"
+out="$(CLAIM_LISTER_MAX_TIME=2 bash "$script" 2>"$FAKE_DIR/lterr")"; drc=$?
 lelapsed=$(( $(date +%s) - lstart ))
 unset CLAIM_LISTER
-check "a hanging lister emits [] instead of running past the outer budget" '[ "$out" = "[]" ]'
-check "a hanging lister is cut off at its wall-clock bound, not left to run" '[ "$lelapsed" -lt 10 ]'
-check "a hanging lister posts NO claim comment" '! grep -q "POST .*issues/431/comments" "$FAKE_DIR/calls.log"'
-check "a hanging lister says so on stderr" 'grep -q "wall-clock" "$FAKE_DIR/lterr"'
+check "a slow lister (non-empty queue) fails LOUD, non-zero (idss#1425/idss#2145)" '[ "$drc" -ne 0 ]'
+check "a slow lister does NOT emit a laundered []" '[ "$out" != "[]" ]'
+check "a slow lister is cut off at its wall-clock bound, not left to run" '[ "$lelapsed" -lt 10 ]'
+check "a slow lister posts NO claim comment" '! grep -q "POST .*issues/431/comments" "$FAKE_DIR/calls.log"'
+check "a slow lister says so on stderr" 'grep -q "wall-clock" "$FAKE_DIR/lterr"'
 
 # T-idss#1195e: a lister that FAILS (not hangs) must still fail LOUD. #52 gave the
 # lister a retry schedule and let a persistent outage propagate under set -e, so

@@ -23,6 +23,20 @@ mkdir -p "$tmp/bin"
 # `env -u REHEARSAL_DRIVE_ISSUE` and the "set" cases pin it inline.
 export PATH="$tmp/bin:$PATH" FORGEJO_TOKEN=t
 unset REHEARSAL_DRIVE_ISSUE 2>/dev/null || true
+# #330: pin the in-sandbox fleet-pick SIGNAL to an ABSENT path. The lister reads
+# this run's claimed ticket from ${SWARM_FLEET_PICK_SIGNAL:-/run/host-signals/fleet-pick}
+# and, when present, narrows every listing to that single issue (idss#2145 fast
+# path). That file exists in every worker sandbox but not on the CI host, so an
+# unpinned run reads the live pick in-sandbox and narrows to a ticket these
+# fixtures do not carry (green on CI, red in-sandbox). The fleet-pick cases below
+# override this inline with their own pick file.
+export SWARM_FLEET_PICK_SIGNAL="$tmp/no-such-fleet-pick"
+# #327: likewise pin the in-sandbox fleet-pick-TASK signal to an ABSENT path.
+# When present it carries the host's already-verified pick object and the lister
+# emits it with zero forge reads — a live file in a worker sandbox would make the
+# fixtures below (which drive the forge-read paths) short-circuit. Case 6d
+# overrides this inline with its own task file.
+export SWARM_FLEET_PICK_TASK_SIGNAL="$tmp/no-such-fleet-pick-task"
 # #186: pin a test-controlled PUSH policy as the suite default. The push/host-side
 # scenarios below used `env -u SWARM_POLICY_FILE` to mean "no policy file → default
 # push" — but an unset seam sources the HOST repo's real swarm-policy.sh, so a
@@ -70,6 +84,16 @@ case "$url" in
   *pulls?state=open*) sleep "${LEG_SLEEP:-0}"; emit "$(cat "${PULLS_FIXTURE:-/dev/null}" 2>/dev/null || echo '[]')" "${PULLS_HTTP:-200}"; exit ;;
   *labels=standing-drive*) sleep "${LEG_SLEEP:-0}"; b='[]'; [ -n "${DRIVES_FIXTURE:-}" ] && b="$(cat "$DRIVES_FIXTURE")"; emit "$b" "${DRIVES_HTTP:-200}"; exit ;;
   *labels=ready-for-agent*) sleep "${LEG_SLEEP:-0}"; emit "$(cat "${ISSUE_FIXTURE:?}")" "${READY_HTTP:-200}"; exit ;;
+  */issues/[0-9]*)
+    # #2145: single-issue GET (the fleet-pick fast path). Serve the matching
+    # object out of the page fixture, stamped state:"open" (the list endpoint
+    # returns only open issues, so fixtures omit the field); a number absent from
+    # the fixture is a gone pick -> 404, which the lister reads as "not ready".
+    sleep "${ISSUE_SLEEP:-0}"
+    n="${url##*/issues/}"; n="${n%%[/?]*}"
+    obj="$(jq -c --argjson n "$n" 'map(select(.number == $n)) | .[0] | select(. != null) | . + {state:"open"}' "${ISSUE_FIXTURE:-/dev/null}" 2>/dev/null || true)"
+    if [ -n "$obj" ]; then emit "$obj" "${READY_HTTP:-200}"; else emit '{"message":"Not Found"}' "${ISSUE_HTTP:-404}"; fi
+    exit ;;
 esac
 emit '[]' 200
 SH
@@ -240,14 +264,54 @@ pass=$((pass+1))
 #     reads survive on the pick.
 jq -e '.[0] | (.priority == true) and (.blocker == false) and (.created_at == "2026-10-05T10:00:00Z")' <<<"$out4b" >/dev/null \
   || fail "the emitted ticket must carry priority/blocker/created_at for the fleet merge (#301)"
-out4c="$(SWARM_FLEET_PICK_SIGNAL="$tmp/fleet-pick" bash -c 'printf "802\n" > "$SWARM_FLEET_PICK_SIGNAL"; bash "$0"' "$here/../list-ready-tasks.sh")" || fail "fleet-pick run exited non-zero"
+printf '802\n' > "$tmp/fleet-pick"
+out4c="$(env CURL_LOG="$tmp/4c.curl" SWARM_FLEET_PICK_SIGNAL="$tmp/fleet-pick" bash "$here/../list-ready-tasks.sh")" || fail "fleet-pick run exited non-zero"
 [ "$(jq -r '[.[].number] | join(",")' <<<"$out4c")" = "802" ] \
   || fail "with a fleet-pick signal naming 802 the lister must answer exactly #802 (got $(jq -c '[.[].number]' <<<"$out4c"))"
+# #2145: the fast path fetches ONLY the picked issue, never the expensive
+# ready-for-agent page (nor the standing-drive listing) — the whole reason it
+# fits the 30s budget on a slow forge.
+grep -qE 'issues/802( |$)' "$tmp/4c.curl" \
+  || fail "the fleet-pick fast path must GET /issues/802 directly (#2145)"
+if grep -q "labels=ready-for-agent" "$tmp/4c.curl"; then
+  fail "the fleet-pick fast path must NOT fetch the ready-for-agent page (#2145)"
+fi
+if grep -q "labels=standing-drive" "$tmp/4c.curl"; then
+  fail "the fleet-pick fast path must NOT fetch the standing-drive listing (#2145)"
+fi
+# #2145: a fast-path pick still carries the fields the fleet merge reads.
+jq -e '.[0] | has("blocker") and has("created_at") and has("landing") and has("model")' <<<"$out4c" >/dev/null \
+  || fail "the fast-path pick must keep the additive {blocker,created_at,landing,model} fields (#2145)"
 printf '999\n' > "$tmp/fleet-pick"
-out4d="$(SWARM_FLEET_PICK_SIGNAL="$tmp/fleet-pick" bash "$here/../list-ready-tasks.sh" 2>"$tmp/pick.err")" || fail "gone-pick run exited non-zero"
+out4d="$(LIST_READY_RETRIES=1 SWARM_FLEET_PICK_SIGNAL="$tmp/fleet-pick" bash "$here/../list-ready-tasks.sh" 2>"$tmp/pick.err")" || fail "gone-pick run exited non-zero"
 [ "$(jq 'length' <<<"$out4d")" = "0" ] || fail "a fleet pick that is no longer ready must answer [] (got $(jq -c '[.[].number]' <<<"$out4d"))"
 grep -q "fleet pick #999 is no longer ready" "$tmp/pick.err" || fail "a gone fleet pick must be named on stderr"
 rm -f "$tmp/fleet-pick"
+pass=$((pass+1))
+
+# 6d (#327): the fleet-pick-TASK signal — the host's already-verified pick
+#     object. When it is present the lister emits it with ZERO forge reads (even
+#     the #2145 two-read fast path overran CLAIM_LISTER_MAX_TIME on a slow forge).
+printf '[{"number":802,"title":"the pick","body":"b","url":"u/802","created_at":"2026-10-05T10:00:00Z","priority":true,"model":null,"landing_label":null,"landing":"push","blocker":false}]\n' \
+  > "$tmp/fleet-pick-task"
+out4e="$(env CURL_LOG="$tmp/4e.curl" SWARM_FLEET_PICK_TASK_SIGNAL="$tmp/fleet-pick-task" bash "$here/../list-ready-tasks.sh")" \
+  || fail "fleet-pick-task run exited non-zero"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out4e")" = "802" ] \
+  || fail "with a fleet-pick-task signal the lister must emit exactly that object (got $(jq -c '[.[].number]' <<<"$out4e"))"
+# the whole point: no forge read AT ALL on this path.
+[ ! -s "$tmp/4e.curl" ] \
+  || fail "the fleet-pick-task fast path must make ZERO forge reads (#327); saw: $(cat "$tmp/4e.curl")"
+jq -e '.[0] | has("blocker") and has("created_at") and has("landing") and has("model")' <<<"$out4e" >/dev/null \
+  || fail "the task-signal pick must keep the additive {blocker,created_at,landing,model} fields (#327)"
+# a garbled/empty signal falls through to a forge read, not a silent [].
+printf 'not json\n' > "$tmp/fleet-pick-task"
+out4f="$(env CURL_LOG="$tmp/4f.curl" SWARM_FLEET_PICK_TASK_SIGNAL="$tmp/fleet-pick-task" bash "$here/../list-ready-tasks.sh" 2>"$tmp/4f.err")" \
+  || fail "a garbled task signal must fall through, not exit non-zero"
+[ -s "$tmp/4f.curl" ] \
+  || fail "a garbled task signal must fall through to a forge read (#327)"
+grep -q "fleet-pick-task signal is present but unreadable" "$tmp/4f.err" \
+  || fail "a garbled task signal must be named on stderr (#327)"
+rm -f "$tmp/fleet-pick-task"
 pass=$((pass+1))
 
 # 7: a ticket's model-<name> label surfaces as its `.model` suffix — the field

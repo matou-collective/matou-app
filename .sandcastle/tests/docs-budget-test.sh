@@ -34,7 +34,27 @@ vendored=0
 
 STATUS_MAX=16384   # 16 KB
 LINE_MAX=2048      #  2 KB — the ~300 KB host-capacity row was the worst offender
-GOTCHAS_MAX=24576  # 24 KB — the index only; bodies live under docs/gotchas/
+# GOTCHAS_MAX — the index only; the full Symptom→Cause→Rule bodies live under
+# docs/gotchas/<id>-slug.md and are NOT budgeted here. Raised 24576 → 32768 by
+# #331 (ruled by agent under ADR 0174 — two-way door, revertible by a later
+# commit, proven by this test). Why this is NOT the accretion #196 fought:
+#   * #196 split a ~140 KB GOTCHAS that had accreted full prose bodies inline;
+#     the bodies now live under docs/gotchas/, so the index grows O(hazard
+#     count) at a BOUNDED per-row size, not O(prose). The ratchet still caps
+#     per-row bloat — it just caps higher.
+#   * The index is APPEND-ONLY + `.gitattributes merge=union` (#300), the whole
+#     point of its concurrency contract. The alternative (compacting old rows)
+#     REWRITES existing lines, which under merge=union racing a concurrent
+#     tail-append resolves by keeping BOTH the old long line and the short one
+#     — a duplicated row. An autonomous push-mode worker cannot safely sequence
+#     a rewrite against concurrent appends (the HOST owns the rebase), so #331
+#     took the append-only path: raise the ceiling, add the deferred rows, never
+#     rewrite a line. The invariant is preserved exactly.
+#   * The 24576 ceiling had ~131 B of headroom and had already forced FIVE
+#     hazards (#320/#321/#325/#328/#329) to defer their index rows into the
+#     journal. 32768 lands those five rows (~27.1 KB) and leaves ~5.5 KB — room
+#     for ~10 more tightened rows before this ticket's successor is needed.
+GOTCHAS_MAX=32768  # 32 KB — see rationale above (#331, was 24576 under #196)
 
 status="$root/STATUS.md"
 gotchas="$root/docs/GOTCHAS.md"

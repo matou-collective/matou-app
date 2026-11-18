@@ -80,4 +80,20 @@ fenced=$'<!-- origin: app-report -->\n## The operator'"'"$'s words (untrusted in
   || fail "marker: a real marker after the fence must still parse"
 pass=$((pass+1))
 
+# N+1: a host pin quoted in an INLINE code span (backticks) while DESCRIBING it
+#    is outside input too, never a live pin. session_host_marker now reads through
+#    body_marker -> marker() (body-marker.jq strip_inline_code, #2111), closing the
+#    hole #2114 found in its old private sed parser. A pin that merely SHARES its
+#    line with prose but is NOT in a span still parses (group 3) — that is a real
+#    harness shape, so only the backtick-wrapped case is suppressed.
+[ -z "$(session_host_marker $'see the \x60<!-- session-host: nowhere -->\x60 span')" ] \
+  || fail "marker: a host pin in an inline code span must NOT be honoured (#2114)"
+[ -z "$(session_host_marker $'and \x60\x60<!-- session-host: nowhere -->\x60\x60 too')" ] \
+  || fail "marker: a host pin in a double-backtick inline span must NOT be honoured (#2114)"
+[ "$(session_host_marker $'quoted \x60<!-- session-host: phantom -->\x60 then\n<!-- session-host: box1 -->')" = "box1" ] \
+  || fail "marker: a real pin must win over an earlier inline-span phantom (#2114)"
+[ "$(session_host_marker $'an unbalanced \x60 backtick then <!-- session-host: box1 -->')" = "box1" ] \
+  || fail "marker: a lone unmatched backtick opens no span (#2114)"
+pass=$((pass+1))
+
 echo "OK: $pass checks passed (session host affinity, pure core)"

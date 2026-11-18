@@ -249,6 +249,70 @@ co="$tmp/co5"; pre="$(mkco "$co")"
 heal_rails "$co" "$pre" && fail "workflow edit passed"
 pass=$((pass+1))
 
+# --- #2177: the FACTORY_MANIFEST rail — a heal must not land a drifted vendored
+#     file. The heal clone wires no core.hooksPath, so ADR 0287's pre-push drift
+#     gate never fires; this rail is the only thing between a hand-edited
+#     vendored file and main (the heal twin of #1963/#1964, which #2177 witnessed
+#     landing: baa7f598). A manifest-path edit lands ONLY as a genuine re-vendor:
+#     FACTORY_REF bumped in the SAME commit AND a CLEAN drift verdict (exit 0).
+mkvendorco() { # mkvendorco <dir> <drift-exit> — a checkout with a vendored file,
+               # a FACTORY_MANIFEST that lists it, a FACTORY_REF, and a
+               # check-harness-drift.sh STUB that exits <drift-exit>. Echoes pre_head.
+  git init -q "$1"; ( cd "$1"; git config user.email t@t; git config user.name t
+    mkdir -p .sandcastle
+    printf 'vendored v1\n' > .sandcastle/forgejo-lib.sh
+    printf 'forgejo-lib.sh\n' > .sandcastle/FACTORY_MANIFEST
+    printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' > .sandcastle/FACTORY_REF
+    printf '#!/usr/bin/env bash\nexit %s\n' "$2" > .sandcastle/check-harness-drift.sh
+    chmod +x .sandcastle/check-harness-drift.sh
+    git add -A; git commit -qm base )
+  git -C "$1" rev-parse HEAD
+}
+
+# V1 (the pin #2177 asks for): a commit that edits a manifest path with NO
+# FACTORY_REF bump is reset + refused OFFLINE — the cheap pre-check fires before
+# the network drift check runs (the stub would exit 0, but it is never called).
+co="$tmp/coV1"; pre="$(mkvendorco "$co" 0)"
+( cd "$co" && printf 'vendored v2 (hand-edited)\n' > .sandcastle/forgejo-lib.sh \
+  && git commit -aqm "rehearsal healer: tweak forgejo-lib (sigV1)" )
+heal_rails "$co" "$pre" && fail "a vendored-path edit with no FACTORY_REF bump passed"
+[ "$HEAL_RAIL_REASON" = "vendored-path edit" ] || fail "V1 reason not vendored-path edit: $HEAL_RAIL_REASON"
+[ "$HEAL_RAIL_SWARMABLE" = "false" ] || fail "vendored-path refusal should not be swarmable"
+[ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset after vendored-path breach"
+pass=$((pass+1))
+
+# V2: a genuine re-vendor — the vendored file changes AND FACTORY_REF bumps AND
+# the drift check returns CLEAN (exit 0) — PASSES, the commit stands.
+co="$tmp/coV2"; pre="$(mkvendorco "$co" 0)"
+( cd "$co" && printf 'vendored v2\n' > .sandcastle/forgejo-lib.sh \
+  && printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' > .sandcastle/FACTORY_REF \
+  && git commit -aqm "rehearsal healer: re-vendor (sigV2)" )
+heal_rails "$co" "$pre" || fail "a clean re-vendor (FACTORY_REF bumped + drift clean) was refused"
+[ "$(git -C "$co" rev-parse HEAD)" != "$pre" ] || fail "clean re-vendor was reset"
+pass=$((pass+1))
+
+# V3: a FACTORY_REF bump whose drift check is NON-clean still refuses — a
+# TRANSPORT exit 3 (or any non-zero) is not a clean result (GOTCHAS #30 / ADR
+# 0287), so the edit cannot be cleared and is reset.
+co="$tmp/coV3"; pre="$(mkvendorco "$co" 3)"
+( cd "$co" && printf 'vendored v2\n' > .sandcastle/forgejo-lib.sh \
+  && printf 'cccccccccccccccccccccccccccccccccccccccc\n' > .sandcastle/FACTORY_REF \
+  && git commit -aqm "rehearsal healer: re-vendor with drift (sigV3)" )
+heal_rails "$co" "$pre" && fail "a vendored edit whose drift check faulted (exit 3) passed"
+[ "$HEAL_RAIL_REASON" = "vendored-path edit" ] || fail "V3 reason wrong: $HEAL_RAIL_REASON"
+[ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset after V3 (transport) breach"
+pass=$((pass+1))
+
+# V4: a commit that touches NO manifest path is untouched by the rail even with a
+# manifest present — the rail never over-fires on an ordinary heal and never runs
+# the network drift check (the stub exits 3, so if it WERE run this would refuse).
+co="$tmp/coV4"; pre="$(mkvendorco "$co" 3)"
+( cd "$co" && printf 'ordinary fix\n' > note.txt \
+  && git add -A && git commit -qm "rehearsal healer: ordinary (sigV4)" )
+heal_rails "$co" "$pre" || fail "an ordinary heal (no vendored path) was refused by the rail"
+[ "$(git -C "$co" rev-parse HEAD)" != "$pre" ] || fail "ordinary heal reset"
+pass=$((pass+1))
+
 # 6: two commits → breach + reset
 co="$tmp/co6"; pre="$(mkco "$co")"
 ( cd "$co" && echo a >> base.txt && git commit -aqm "rehearsal healer: one" \

@@ -316,7 +316,13 @@ claimed-green close the host cannot reproduce is refused. Leave it unset
 unless the repo has a fast, hermetic loop with a MEANINGFUL exit code (0 =
 all passed, non-zero = a failure) — a loop that always exits 0, or one that
 needs the network or docker, must not go here. There is no cross-repo
-default, so an unset value simply leaves gate 4b inert.
+default, so an unset value simply leaves gate 4b inert. The command must
+also run NON-INTERACTIVELY, with no TTY: gate 4b re-runs it on the host
+with none attached, so a command that prompts hangs or aborts. A `pnpm`
+loop is the common trap — it dies with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`
+when it tries to confirm a `node_modules` removal and finds no TTY — so pin
+a flagged, prompt-free invocation (or a wrapper that sets no interactive
+step), not a bare `pnpm test`.
 
 **The e2e tier — mandatory, asked here, written now:**
 

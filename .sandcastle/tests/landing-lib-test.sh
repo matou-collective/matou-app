@@ -20,7 +20,11 @@ case "${1:-}" in
   push)
     printf '%s\n' "$*" >> "$GIT_PUSHES"
     case "$*" in
-      *HEAD:main|*HEAD:refs/heads/main) exit "${MAIN_PUSH_RC:-0}" ;;   # clean push / initial attempt
+      *HEAD:main|*HEAD:refs/heads/main)
+        # #346: a failed push to main can carry stderr the ladder classifies
+        # (a local hook refusal vs a transport fatal); emit $MAIN_PUSH_STDERR.
+        [ -n "${MAIN_PUSH_STDERR:-}" ] && printf '%s\n' "$MAIN_PUSH_STDERR" >&2
+        exit "${MAIN_PUSH_RC:-0}" ;;                                   # clean push / initial attempt
       *refs/heads/sandcastle/rescue-*)  exit "${RESCUE_PUSH_RC:-0}" ;; # the park/PR branch push
       *) exit 0 ;;                                                     # agent/issue-<N>, …
     esac ;;
@@ -407,6 +411,26 @@ check "#207 clean push pushes HEAD:main" 'grep -q "push origin HEAD:main" "$GIT_
 check "#207 clean push invokes no resolver, parks nothing, opens no PR" \
   '[ ! -s "$CLAUDE_ARGV" ] && ! grep -q "rescue-" "$GIT_PUSHES" && ! grep -q "^PR_CREATED$" "$CALLS_LOG"'
 
+# --- #2119: the SHA-preserving-promote flag. run-swarm.sh's success-path #283
+# reconcile may run ONLY when the promote was a clean fast-forward or a no-op
+# (`git push origin HEAD:main` succeeded on the FIRST try, SHAs preserved) — a
+# rebase landing rewrites the worker SHAs onto main, so a by-SHA reachability
+# check would false-reopen genuinely-landed work. landing_push_main_with_rescue
+# publishes that signal as LANDING_PROMOTE_CLEAN. Called OUTSIDE a subshell (the
+# real callers are too) so the test reads the global it sets; the function owns
+# the var — it clears a stale value on entry and sets 1 only on first-try success.
+clear207
+LANDING_PROMOTE_CLEAN=stale
+MAIN_PUSH_RC=0 landing_push_main_with_rescue coa >/dev/null 2>&1 || true
+check "#2119 a first-try push to main marks the promote SHA-preserving (LANDING_PROMOTE_CLEAN=1)" \
+  '[ "$LANDING_PROMOTE_CLEAN" = 1 ]'
+
+clear207
+LANDING_PROMOTE_CLEAN=stale
+MAIN_PUSH_RC=1 REBASE_RC=0 landing_push_main_with_rescue coa >/dev/null 2>&1 || true
+check "#2119 a rebase landing clears LANDING_PROMOTE_CLEAN (reconcile must skip it)" \
+  '[ -z "$LANDING_PROMOTE_CLEAN" ]'
+
 # --- conflict -> PR: push-to-main fails, rebase conflicts, claude resolves, GREEN
 clear207
 rc=0; ( MAIN_PUSH_RC=1 REBASE_RC=1 REBASE_IN_PROGRESS=0 LANDING_TEST_CMD=true \
@@ -469,6 +493,71 @@ check "#207 resolver NEVER passes --dangerously-skip-permissions" \
   '! grep -q "dangerously-skip-permissions" "$CLAUDE_ARGV"'
 
 # ===========================================================================
+# #346 — a LOCAL pre-push hook refusal must NOT be alarmed as a transport fault
+# (push-rescue-unreachable). landing_classify_push_failure tells the three cases
+# apart from the captured push output; the hook case short-circuits the ladder,
+# parks with --no-verify, and names the hook + its output. The forge is up.
+# ===========================================================================
+# --- the classifier (pure): transport fatals, server ref-rejections, hook refusal
+check "#346 classify: a transport fatal reads transport" \
+  '[ "$(landing_classify_push_failure "fatal: unable to access '\''https://git.x/r'\'': Could not resolve host: git.x")" = transport ]'
+check "#346 classify: a connection refusal reads transport" \
+  '[ "$(landing_classify_push_failure "ssh: connect to host git.x port 22: Connection refused
+fatal: Could not read from remote repository.")" = transport ]'
+check "#346 classify: a stale-main rejection reads rejected" \
+  '[ "$(landing_classify_push_failure " ! [rejected]        HEAD -> main (fetch first)
+error: failed to push some refs to '\''origin'\''")" = rejected ]'
+check "#346 classify: a non-fast-forward reads rejected" \
+  '[ "$(landing_classify_push_failure "error: failed to push some refs
+hint: Updates were rejected because the tip of your current branch is behind")" = rejected ]'
+check "#346 classify: a local hook refusal (no transport, no ref-reject) reads hook" \
+  '[ "$(landing_classify_push_failure "✖ TypeScript gate failed (exit 3)
+error: failed to push some refs to '\''origin'\''")" = hook ]'
+check "#346 classify: empty/unknown output defaults to rejected (ladder preserved)" \
+  '[ "$(landing_classify_push_failure "")" = rejected ]'
+
+# --- hook refusal, forge up, park succeeds -> distinct reason + hook-named alarm
+HOOK_ERR="✖ TypeScript gate failed (exit 3)
+error: failed to push some refs to 'origin'"
+clear207; SWARM_EXIT_REASON=""
+rc=0; ( MAIN_PUSH_RC=1 MAIN_PUSH_STDERR="$HOOK_ERR" landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+# run again un-subshelled to read the reason the function set
+clear207; SWARM_EXIT_REASON=""
+MAIN_PUSH_RC=1 MAIN_PUSH_STDERR="$HOOK_ERR" landing_push_main_with_rescue coa >/dev/null 2>&1 || true
+check "#346 hook refusal fails the land (rc 1)" '[ "$rc" = 1 ]'
+check "#346 hook refusal sets the distinct reason (NOT push-rescue-unreachable)" \
+  '[ "$SWARM_EXIT_REASON" = "push-refused-by-local-hook" ]'
+check "#346 hook refusal runs NO rebase resolver (short-circuits the ladder)" '[ ! -s "$CLAUDE_ARGV" ]'
+check "#346 hook refusal attempts only ONE push to main, then the rescue park" \
+  '[ "$(grep -c "push origin HEAD:main" "$GIT_PUSHES")" = "1" ]'
+check "#346 hook refusal parks on a rescue branch with the hook bypassed (--no-verify)" \
+  'grep -q "push --no-verify origin HEAD:refs/heads/sandcastle/rescue-" "$GIT_PUSHES"'
+check "#346 hook refusal names the LOCAL pre-push hook and denies a transport fault" \
+  'grep -q "LOCAL pre-push hook" "$NOTIFY_LOG" && grep -q "forge was reachable" "$NOTIFY_LOG"'
+check "#346 hook refusal surfaces the hook's own output in the alarm" \
+  'grep -q "TypeScript gate failed" "$NOTIFY_LOG"'
+check "#346 hook refusal never claims the forge is unreachable" \
+  '! grep -q "forge is unreachable" "$NOTIFY_LOG"'
+
+# --- hook refusal, forge up, but the park push itself fails -> no false branch claim
+clear207; SWARM_EXIT_REASON=""
+MAIN_PUSH_RC=1 MAIN_PUSH_STDERR="$HOOK_ERR" RESCUE_PUSH_RC=1 \
+  landing_push_main_with_rescue coa >/dev/null 2>&1 || true
+check "#346 hook refusal + failed park sets the rescue-unreachable-flavoured reason" \
+  '[ "$SWARM_EXIT_REASON" = "push-refused-by-local-hook-rescue-unreachable" ]'
+check "#346 hook refusal + failed park asserts the commits are in the workdir, not a branch" \
+  'grep -q "ONLY in the runner workdir" "$NOTIFY_LOG" && ! grep -q "parked on .sandcastle/rescue" "$NOTIFY_LOG"'
+
+# --- a GENUINE transport failure is unchanged: it still reaches the transport
+#     ladder (never the hook short-circuit). Forge down, nothing stale, park down.
+clear207; SWARM_EXIT_REASON=""
+MAIN_PUSH_RC=1 MAIN_PUSH_STDERR="fatal: unable to access 'https://git.x/r': Could not resolve host: git.x" \
+  REBASE_RC=0 ANCESTOR_RC=1 RESCUE_PUSH_RC=1 \
+  landing_push_main_with_rescue coa >/dev/null 2>&1 || true
+check "#346 a transport failure still reaches the transport reason (push-rescue-unreachable), never the hook reason" \
+  '[ "$SWARM_EXIT_REASON" = "push-rescue-unreachable" ]'
+
+# ===========================================================================
 # #193 — the push-mode HOST-LAND boundary. The worker pushes a per-run worker
 # branch; the HOST promotes it to main ONLY after verify. When verify flagged a
 # protected-path breach (VERIFY_PP_VIOLATION=1), the land seam must NOT push main
@@ -493,6 +582,69 @@ check "#193 no breach: the land seam pushes HEAD to main as usual" \
   'grep -q "push origin HEAD:main" "$GIT_PUSHES"'
 check "#193 no breach: no rescue branch is parked on a clean land" \
   '! grep -q "refs/heads/sandcastle/rescue-" "$GIT_PUSHES"'
+
+# ===========================================================================
+# #347 — a push run with NO commits of its own must NEVER push to main. Two runs
+# sharing one workdir (the shared checkout) left a run whose worker committed
+# nothing with a SIBLING run's commit on HEAD, which it then pushed — landing
+# another run's work under its own name. start_sha..HEAD empty (AHEAD=0) is the
+# provable "nothing of ours" signal: the land seam refuses the push, cleanly.
+# ===========================================================================
+clear207; SWARM_EXIT_REASON=""; rc=0
+VERIFY_PP_VIOLATION="" SWARM_POLICY_LANDING=push AHEAD=0 \
+  landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || rc=$?
+check "#347 no-own-commits: the push run does NOT push main" \
+  '! grep -q "push origin HEAD:main" "$GIT_PUSHES"'
+check "#347 no-own-commits: nothing is parked on a rescue branch either (nothing to land)" \
+  '! grep -q "refs/heads/sandcastle/rescue-" "$GIT_PUSHES"'
+check "#347 no-own-commits: the land seam returns clean (a no-op, not a red)" '[ "$rc" = 0 ]'
+# control: a push run WITH its own commits (AHEAD=1, the shim default) still lands.
+clear207; SWARM_EXIT_REASON=""
+VERIFY_PP_VIOLATION="" SWARM_POLICY_LANDING=push MAIN_PUSH_RC=0 AHEAD=1 \
+  landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || true
+check "#347 control: a push run WITH its own commits still pushes main" \
+  'grep -q "push origin HEAD:main" "$GIT_PUSHES"'
+
+# --- #2119: the land-SUCCESS reconcile. A first-try promote can be a NO-OP
+# "Everything up-to-date" (the worker commit never reached the runner HEAD): the
+# push returns 0, landing_stage returns 0, main never advanced, and the two
+# failure-path reconciles in run-swarm.sh never run. landing_stage must re-run
+# the #283 reconcile on that success path, gated on the SHA-preserving
+# LANDING_PROMOTE_CLEAN flag, reading the exported EXECUTE_ATTEMPTS_FILE.
+# LABELS_JSON carries ready-for-session so the reopen can re-queue the issue.
+s2119_setup() {
+  clear207; SWARM_EXIT_REASON=""
+  export LABELS_JSON='[{"id":48,"name":"agent-blocked"},{"id":70,"name":"ready-for-session"}]'
+  export EXECUTE_ATTEMPTS_FILE="$tmp/s2119-attempts.log"
+  printf 'SANDCASTLE_ATTEMPT issue=7 outcome=success commits=deadbee\n' > "$EXECUTE_ATTEMPTS_FILE"
+}
+
+# stranded: a clean no-op promote (MAIN_PUSH_RC=0 sets the flag) + commits NOT on
+# main (ANCESTOR_RC=1) + the issue reads closed -> landing_stage reopens it.
+s2119_setup
+VERIFY_PP_VIOLATION="" SWARM_POLICY_LANDING=push MAIN_PUSH_RC=0 ANCESTOR_RC=1 ISSUE_STATE=closed \
+  landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || true
+check "#2119 a no-op promote on the SUCCESS path reopens the stranded close (PATCH /issues/7)" \
+  'grep -qE "PATCH .*/issues/7$" "$CALLS_LOG"'
+check "#2119 the success-path reopen names the stranded commit" 'grep -q "deadbee" "$BODIES_LOG"'
+
+# landed: the SAME success path but the commits ARE on main (ANCESTOR_RC=0) ->
+# a clean fast-forward genuinely landed, so nothing is reopened (no false green).
+s2119_setup
+VERIFY_PP_VIOLATION="" SWARM_POLICY_LANDING=push MAIN_PUSH_RC=0 ANCESTOR_RC=0 ISSUE_STATE=closed \
+  landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || true
+check "#2119 a land whose commits ARE on main is NOT reopened on the success path" \
+  '! grep -qE "PATCH .*/issues/7$" "$CALLS_LOG"'
+
+# pr mode: landing_stage returns 0 via the PR path and never sets the flag, so
+# the success-path reconcile is skipped even with a stranded attempt line.
+s2119_setup
+SWARM_POLICY_LANDING=pr ANCESTOR_RC=1 ISSUE_STATE=closed \
+  landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || true
+check "#2119 pr mode never runs the success-path reconcile (flag unset)" \
+  '! grep -qE "PATCH .*/issues/7$" "$CALLS_LOG"'
+unset EXECUTE_ATTEMPTS_FILE
+export LABELS_JSON='[{"id":48,"name":"agent-blocked"}]'
 
 # ===========================================================================
 # #283 — the false-green reconcile. A push-mode close-report closes its issue

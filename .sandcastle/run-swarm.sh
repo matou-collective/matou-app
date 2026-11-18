@@ -168,12 +168,15 @@ swarm_trigger="${SWARM_TRIGGER:-${GITHUB_EVENT_NAME:-unknown}}"
 # ticket. SWARM_HOST is the pool-claim name (it survives a container, where
 # `hostname` is a random id); `hostname` is the bare-host fallback. The runner
 # name comes from the Actions-provided RUNNER_NAME (the consumer's swarm.yml
-# forwards `runner.name`), else the runner's own .runner registration file, else
-# unknown.
+# forwards `runner.name`), else this host's .runner registration file resolved by
+# host_runner_file (host-capacity-lib.sh) the way the factory actually writes it —
+# $HOME/forgejo-runner/.runner, NOT the old `${SWARM_RUNNER_FILE:-$HOME/.runner}`
+# default that named a path onboarding never creates, so the host/cron path
+# silently lost the runner name (#339) — else unknown.
 swarm_exec_host="${SWARM_HOST:-$(hostname 2>/dev/null || echo unknown)}"
 swarm_exec_runner="${RUNNER_NAME:-}"
-[ -z "$swarm_exec_runner" ] && [ -f "${SWARM_RUNNER_FILE:-$HOME/.runner}" ] \
-  && swarm_exec_runner="$(jq -r '.name // empty' "${SWARM_RUNNER_FILE:-$HOME/.runner}" 2>/dev/null || true)"
+[ -z "$swarm_exec_runner" ] && [ -f "$(host_runner_file)" ] \
+  && swarm_exec_runner="$(jq -r '.name // empty' "$(host_runner_file)" 2>/dev/null || true)"
 [ -n "$swarm_exec_runner" ] || swarm_exec_runner=unknown
 # One row per run — written NOW so even a run that dies in early startup, or is
 # killed before it lists tasks, leaves a started-but-open trace (finalised by the
@@ -193,7 +196,9 @@ on_exit() {
   verify_watch_stop
   [ -n "$worker_births" ] && rm -f "$worker_births" 2>/dev/null || true
   [ -n "${sandcastle_attempts:-}" ] && rm -f "$sandcastle_attempts" 2>/dev/null || true   # #283 attempt capture
-  rm -rf "${VERIFY_PP_BEFORE:-}" "${VERIFY_PP_AFTER:-}" 2>/dev/null || true   # #445 snapshots
+  [ -n "${SWARM_HOST_ATTEMPTS_SINK:-}" ] && rm -f "$SWARM_HOST_ATTEMPTS_SINK" 2>/dev/null || true   # #2112 persisted sink
+  rm -rf "${VERIFY_PP_RUNDIR:-}" "${VERIFY_PP_BEFORE:-}" "${VERIFY_PP_AFTER:-}" 2>/dev/null || true   # #445 snapshots (#761: one per-run dir holds both)
+  rm -f "${VERIFY_PP_BEFORE_DIRTY:-}" 2>/dev/null || true   # #2104 before-dirty set (in VERIFY_PP_RUNDIR; belt-and-braces)
   verdict_write "$ec"
   # Stamp the executing host onto the on-failure verdict (#135). verdict_write
   # only wrote a file on a NON-zero exit, so a clean run leaves none and this is
@@ -341,10 +346,12 @@ ready="$(cat "$pick_file")"; rm -f "$pick_file"
 ready_nums="$(schedule_ready_nums "$ready")"; n="$(schedule_ready_count "$ready")"
 swarmdb_event "$run_db_id" "" ready-set "$n ready task(s)" "[$ready_nums]"
 # Label the host-capacity slot the workflow won for this run (slot-aware
-# fleet). The workflow holds the flock inline and exports the path; the issue
-# is not known here (claims happen in the sandbox), so ref=run and the fleet
-# monitor reads the issue from this run's swarm.db attempts.
-host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket run "$repo_slug" swarm-worker "$run_db_id"
+# fleet). The workflow holds the flock inline and exports the path. A fleet
+# pick (#301) IS the ticket this run works, so ref names it and the Floor shows
+# the ticket on its slot from claim time — swarm.db attempts land only at run
+# END. With no pick (no fleet view) the claim happens in the sandbox, so
+# ref=run and the monitor resolves the issue from the run's ready-set/attempts.
+host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket "${SCHEDULE_FLEET_PICK:-run}" "$repo_slug" swarm-worker "$run_db_id"
 
 stamp="$(schedule_stamp_path "$repo_tag")"
 # #213: fold origin/main's head SHA into the debounce digest so a landed fix on
@@ -367,11 +374,22 @@ stamp_written=1   # from here a quiet death without a worker must clear the stam
 # and removes it on exit.
 SWARM_HOST_SIGNALS_DIR="${SWARM_HOST_SIGNALS_DIR:-${TMPDIR:-/tmp}/matou-host-signals-$run_db_id}"
 export SWARM_HOST_SIGNALS_DIR
+# #2106: the run-scoped WRITABLE attempts sink main.mts mounts at /run/host-attempts
+# (unlike the read-only host-signals mount above). close-report.sh appends its
+# SANDCASTLE_ATTEMPT line here — the sandbox->host channel the #283 reconcile reads
+# independently of how the worker pipes close-report's stdout. Named HERE so
+# main.mts and the execute seam below agree on the same host dir.
+SWARM_HOST_ATTEMPTS_DIR="${SWARM_HOST_ATTEMPTS_DIR:-${TMPDIR:-/tmp}/matou-host-attempts-$run_db_id}"
+export SWARM_HOST_ATTEMPTS_DIR
 # #301: mirror the fleet pick into the sandbox (/run/host-signals/fleet-pick)
 # so the in-sandbox lister answers exactly that ticket, or [] once it is gone —
 # claim-next-task.sh then claims it or nothing. No pick (a host with no fleet
 # view) → no file → the lister's own order, as before.
-schedule_fleet_pick_signal "$SWARM_HOST_SIGNALS_DIR"
+# #327: also mirror the pick's FULL task OBJECT ($ready is the single-element
+# pick array here) as fleet-pick-task, so the in-sandbox lister emits it with
+# ZERO forge reads — the two-read #2145 fast path overran CLAIM_LISTER_MAX_TIME
+# on a slow forge and RED'd the claim leg with rc 124.
+schedule_fleet_pick_signal "$SWARM_HOST_SIGNALS_DIR" "$ready"
 
 preflight_model_gate "$repo_slug" "$ready" || exit 1
 preflight_landing_gate "$repo_slug" "$ready" || exit 1
@@ -428,14 +446,36 @@ sandcastle_log="$(mktemp)"
 # post-run verify rolls the land back. Cleaned by the EXIT trap.
 sandcastle_attempts="$(mktemp)"
 export EXECUTE_ATTEMPTS_FILE="$sandcastle_attempts"
+# #2106/#2112: the host side of the attempts sink the sandbox wrote. close-report.sh
+# appends its SANDCASTLE_ATTEMPT line to the WRITABLE mount (SWARM_HOST_ATTEMPTS_DIR),
+# which execute-lib unions with the sandcastle-log grep so a worker that `| tail`'d
+# close-report's stdout no longer starves the reconcile. #2112: that run-scoped mount
+# is rmSync'd by main.mts's driveMirrorStop on EVERY exit path, and execute-lib reads
+# the sink only AFTER `pnpm run sandcastle` (main.mts) returns — so a sink INSIDE the
+# mount is already gone by then and the union silently degrades back to the very log
+# grep #2106 set out to stop trusting. main.mts instead PERSISTS the captured sink to
+# this host file BEFORE its teardown — a path OUTSIDE the mount that survives into the
+# post-run read. Both names point at the same file: main.mts writes
+# SWARM_HOST_ATTEMPTS_SINK, execute-lib reads EXECUTE_ATTEMPTS_SINK. Cleaned by the
+# EXIT trap.
+SWARM_HOST_ATTEMPTS_SINK="$(mktemp)"   # plain assign: no SC2155 (fires only on export/local)
+export SWARM_HOST_ATTEMPTS_SINK EXECUTE_ATTEMPTS_SINK="$SWARM_HOST_ATTEMPTS_SINK"
 worker_births="$(mktemp)"
 verify_watch_start "$worker_births" "$run_started"
 run_rc=0
 execute_sandcastle_run "$sandcastle_log" "$run_db_id" "$repo_slug" "$repo_tag" || run_rc=$?
+# #328: the generic red (log feeds verdict_write) can arrive AFTER a sandbox
+# close-report already closed its issue against the pushed worker branch — notably
+# LANDING=push's own post-run merge-to-head SyncError, which reds HERE, two stages
+# before landing_stage. #283's reconcile was wired only onto the two LATER exits
+# (verify_protected_paths and landing_stage below), so it never fired on this
+# earlier death and a close outlived an unlanded commit (#324). main never gained
+# the commits on this path, so reopen every stranded close here too — same call,
+# same guard (a commit that DID land is left closed; an empty attempts file no-ops).
 case "$run_rc" in
   0) ;;                          # workers ran — on to verify
   "$EXECUTE_RC_STOP") exit 0 ;;  # cancel / auth-dead / limit park: clean, named
-  *) exit 1 ;;                   # the generic red; the log feeds verdict_write
+  *) landing_reopen_stranded_closes "$sandcastle_attempts" "$repo_slug" origin/main || true; exit 1 ;;
 esac
 
 # ── verify ──────────────────────────────────────────────────────────────────
