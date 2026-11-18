@@ -104,6 +104,20 @@ grep -q 'close-report' "$FAKE_DIR/forgejo.log" || fail "comment should carry the
 # close_outcome + issue + commits out of the combined run stdout.
 grep -qE '^SANDCASTLE_ATTEMPT issue=444 outcome=success commits='"$c1"'$' "$FAKE_DIR/stdout.log" \
   || fail "honest close must emit the SANDCASTLE_ATTEMPT marker with outcome=success"; ok
+# #2106: the SANDCASTLE_ATTEMPT line is ALSO appended to the host-mounted sink when
+# one is wired — the channel the #283 reconcile reads independently of how a worker
+# pipes THIS script's stdout (a `| tail`/`| head` that truncates the stdout echo
+# away must not starve the reconcile; run 57327 stranded #2099 exactly so).
+sink_dir="$(mktemp -d)"; export SANDCASTLE_ATTEMPT_SINK="$sink_dir/attempts.log"
+run_close 444 "$(jq -n --arg c1 "$c1" '{
+  issue:444, status:"success", commits:[$c1], changed_files:["src.go"],
+  tests:[{command:"t",exit_code:0}], summary:"did it", blockers:[]
+}')"
+grep -qxE 'SANDCASTLE_ATTEMPT issue=444 outcome=success commits='"$c1" "$SANDCASTLE_ATTEMPT_SINK" \
+  || fail "#2106: the attempt line must land in the host sink file, not only stdout: $(cat "$SANDCASTLE_ATTEMPT_SINK" 2>/dev/null)"; ok
+grep -qE '^SANDCASTLE_ATTEMPT issue=444 outcome=success' "$FAKE_DIR/stdout.log" \
+  || fail "#2106: the stdout echo must remain too (the human-readable + legacy channel)"; ok
+unset SANDCASTLE_ATTEMPT_SINK; rm -rf "$sink_dir"
 # #22: a verified close releases BOTH claim labels — the timeline shows the bot
 # DELETE the agent-working and ready-for-agent labels off the closed issue.
 removed_label 444 40 || fail "honest close must release the agent-working label"; ok
@@ -197,14 +211,29 @@ grep -q 'REVIEWFINDING regression in the hot path' "$FAKE_DIR/forgejo.log" \
 grep -qE '^SANDCASTLE_ATTEMPT issue=444 outcome=refused ' "$FAKE_DIR/stdout.log" \
   || fail "RV-B: a reviewer-rejected close must emit outcome=refused"; ok
 
-# RV-C — malformed/empty reviewer output fails CLOSED (refuse), never a silent pass.
+# RV-C — NON-EMPTY but unparseable reviewer output (a reviewer that genuinely RAN
+# and returned garbage) fails CLOSED (refuse), never a silent pass.
 REVIEW_VERDICT=malformed run_close 444 "$good_env"; rc=$?
 [ "$rc" -eq 1 ] || fail "RV-C: malformed reviewer output must refuse the close, got $rc"; ok
 ! close_stuck 444 || fail "RV-C: a malformed-review close must NOT close the issue"; ok
 grep -qi 'unparseable\|failing the close CLOSED' "$FAKE_DIR/forgejo.log" \
   || fail "RV-C: a malformed review must name the fail-closed reason"; ok
+
+# RV-C2 — #2161: EMPTY reviewer output means the reviewer could not RUN at all (no
+# --output-format json envelope written) — an absent `claude`, or an exec failure
+# before claude started (a reviewer prompt over MAX_ARG_STRLEN made `timeout ...
+# claude ...` fail "Argument list too long" with no output). That is the #228
+# can-not-run class, not a reviewer that ran and returned garbage, so it SKIPS and
+# lets the close PROCEED — bricking every close over a large diff would be strictly
+# worse than an absent reviewer. (A reviewer that genuinely runs always writes a
+# non-empty envelope — the RV-C malformed path above.)
 REVIEW_VERDICT=empty run_close 444 "$good_env"; rc=$?
-[ "$rc" -eq 1 ] || fail "RV-C: empty reviewer output must also refuse the close, got $rc"; ok
+[ "$rc" -eq 0 ] || fail "RV-C2: empty reviewer output (could not run) must SKIP and let the close proceed, got $rc (#2161)"; ok
+close_stuck 444 || fail "RV-C2: an empty-review-skipped close must still close the issue (#2161)"; ok
+! grep -qi 'reviewer output was unparseable' "$FAKE_DIR/forgejo.log" \
+  || fail "RV-C2: an empty result must NOT be treated as unparseable garbage (fail closed) (#2161)"; ok
+grep -qi 'could not run.*SKIPPING' "$FAKE_DIR/stdout.log" \
+  || fail "RV-C2: the empty-result skip must be visible on stdout (#2161)"; ok
 
 # RV-D — unsure: the ticket is PARKED ready-for-human (label added, ready-for-agent
 # + agent-working removed), findings attached, issue left OPEN, exit 0.
@@ -234,9 +263,9 @@ grep -q "recorded the review call's token spend" "$FAKE_DIR/stdout.log" \
 REVIEW_VERDICT=authfail run_close 444 "$good_env"; rc=$?
 [ "$rc" -eq 0 ] || fail "RV-F: an unauthenticated reviewer must SKIP, letting the close proceed, got $rc"; ok
 close_stuck 444 || fail "RV-F: an auth-error-skipped close must still close the issue"; ok
-grep -qi 'could not authenticate.*SKIPPING' "$FAKE_DIR/stdout.log" \
+grep -qi 'could not run.*SKIPPING' "$FAKE_DIR/stdout.log" \
   || fail "RV-F: the reviewer-auth skip must be visible on stdout (#228)"; ok
-! grep -qi 'reviewer output was empty or unparseable' "$FAKE_DIR/forgejo.log" \
+! grep -qi 'reviewer output was unparseable' "$FAKE_DIR/forgejo.log" \
   || fail "RV-F: an auth error must NOT be treated as unparseable garbage (fail closed) (#228)"; ok
 
 # RV-G (#228) — the reviewer-prompt skeleton is resolved from the repo-root layout

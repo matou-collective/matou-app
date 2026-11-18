@@ -83,6 +83,31 @@ if [ -d "$repo_wanted_dir" ]; then
     exit 0
   done
 fi
+# #327: even the #2145 single-issue fast path pays TWO forge reads (GET
+# /issues/<n> + the candidate's /dependencies, measured ~10s on this forge),
+# and a slow-forge tick overran claim-next-task.sh's CLAIM_LISTER_MAX_TIME and
+# RED'd the claim leg (rc 124) — WITH or WITHOUT a fleet pick. But the host has
+# already LISTED and verified this run's one pick OUTSIDE the 30s
+# prompt-expansion budget (open, ready-for-agent, dependencies closed, not
+# agent-working / standing-drive / rehearsal, open-PR drop + run-parity
+# applied) and narrowed to it — so run-swarm.sh now mirrors the FULL task
+# OBJECT beside the pick number, at /run/host-signals/fleet-pick-task. When it
+# is present, emit the host's verdict with ZERO forge reads: the host verified
+# it seconds ago and the claim walk (claim-next-task.sh) is the real
+# race-resolver, so no re-fetch adds safety. Absent/garbled → fall through to
+# the #2145 single-issue fast path (or the full page), byte-identical to
+# before. This sits AFTER the drive-yield / peer-want gates so a yield still
+# wins over a pick, exactly as the single-issue fast path did.
+fleet_pick_task_signal="${SWARM_FLEET_PICK_TASK_SIGNAL:-/run/host-signals/fleet-pick-task}"
+if [ -f "$fleet_pick_task_signal" ]; then
+  if task_json="$(jq -ec 'select(type == "array" and length > 0)' "$fleet_pick_task_signal" 2>/dev/null)" \
+     && [ -n "$task_json" ]; then
+    echo "list-ready-tasks: emitting the host's already-verified fleet pick from the task signal — zero forge reads (#327)" >&2
+    printf '%s\n' "$task_json"
+    exit 0
+  fi
+  echo "list-ready-tasks: the fleet-pick-task signal is present but unreadable/empty — falling through to a forge read (#327)" >&2
+fi
 # A standing rehearsal DRIVE issue is executed HOST-MODE by the workstation
 # cron (scripts/rehearsal-executor.sh), never by the swarm — Ben's ruling on
 # Matou/idss#380 (DO/broker secrets stay off the swarm containers; #377 proved
@@ -179,6 +204,29 @@ bg_files=""
 cleanup_bg() { [ -n "$bg_files" ] && rm -f $bg_files; return 0; }
 trap cleanup_bg EXIT
 
+# #2145: the host runs this lister OUTSIDE the sandbox's 30s prompt-expansion
+# budget and, under the #301 fleet queue, has already chosen THIS run's ONE
+# ticket — mirrored read-only beside the drive-yield signal as
+# /run/host-signals/fleet-pick. The IN-SANDBOX lister (run inside
+# claim-next-task.sh, under that hard-coded 30s budget) then needs only that one
+# issue, yet it used to re-fetch the WHOLE ready-for-agent page and narrow to the
+# pick at the very foot. That page is this forge's dominant cost — 8-22s to
+# serialise ~20 full-body issues (measured idss#2145) — and page + claim walk
+# must BOTH fit the 30s budget, so a slow-forge tick fetched the page, blew
+# claim-next-task.sh's CLAIM_LISTER_MAX_TIME, and the swarm claimed nothing for
+# hours (idss#2145). When the pick is known, fetch just that issue
+# (GET /issues/<n>, ~2s): the dependency check, the agent-working /
+# standing-drive / rehearsal-marker filters, the open-PR drop, the run-landing
+# parity and the fleet-pick narrowing at the foot all run UNCHANGED on the
+# 1-element batch, so the OUTPUT is identical to the full-page path (which
+# already narrowed to exactly this pick) — only the fetch cost changes. No pick
+# (a host with no fleet view) → the full page, byte-identical to before.
+fleet_pick_signal="${SWARM_FLEET_PICK_SIGNAL:-/run/host-signals/fleet-pick}"
+fleet_pick_early=""
+if [ -f "$fleet_pick_signal" ]; then
+  fleet_pick_early="$(head -1 "$fleet_pick_signal" 2>/dev/null | tr -cd '0-9')"
+fi
+
 pulls_pid=""
 if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
   pulls_file="$(mktemp)"; bg_files="$bg_files $pulls_file"
@@ -192,7 +240,11 @@ fi
 # rather than "skip it after paying for it"). SECONDS is ~0 here, so this gate
 # fires only for a <=0 budget.
 drives_pid=""
-if [ "$SECONDS" -lt "${LIST_READY_DRIVE_BUDGET:-8}" ]; then
+# #2145: drive-blocker ORDERING is meaningless for the single-issue fast path (a
+# 1-element queue has no order), so skip the standing-drive listing entirely when
+# the host has already picked this run's one ticket — one fewer forge call on the
+# budget-bound path.
+if [ -z "$fleet_pick_early" ] && [ "$SECONDS" -lt "${LIST_READY_DRIVE_BUDGET:-8}" ]; then
   drives_file="$(mktemp)"; bg_files="$bg_files $drives_file"
   api "$FORGEJO_API/issues?state=open&type=issues&labels=standing-drive&limit=50" >"$drives_file" & drives_pid=$!
 fi
@@ -200,7 +252,24 @@ fi
 ready='[]'
 page=1
 while :; do
-  batch="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=ready-for-agent&limit=50&page=$page")"
+  if [ -n "$fleet_pick_early" ]; then
+    # #2145: single-issue fast path — fetch ONLY the pick, as a 1-element batch.
+    # A single GET returns the issue whatever its state, so keep it only when it
+    # is an OPEN, ready-for-agent issue (the server-side filter the page query
+    # would have applied). Anything else — closed, label dropped, or a 404/error
+    # body for a pick that is gone — yields an empty batch, and the fleet-pick
+    # block at the foot names it on stderr, exactly as the full-page narrowing did.
+    one="$(api "$FORGEJO_API/issues/$fleet_pick_early")" || one=""
+    if [ -n "$one" ] && jq -e 'type == "object" and (.state == "open")
+          and (((.labels // []) | map(.name) | index("ready-for-agent")) != null)' \
+          >/dev/null 2>&1 <<<"$one"; then
+      batch="[$one]"
+    else
+      batch='[]'
+    fi
+  else
+    batch="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=ready-for-agent&limit=50&page=$page")"
+  fi
   count="$(jq 'length' <<<"$batch")"
   [ "$count" -eq 0 ] && break
 
@@ -294,7 +363,8 @@ while :; do
          landing: ($ll // $landing_default)}]' \
     <<<"$ready")"
 
-  [ "$count" -lt 50 ] && break
+  # #2145: the single-issue fast path is one ticket — never paginate it.
+  { [ -n "$fleet_pick_early" ] || [ "$count" -lt 50 ]; } && break
   page=$((page + 1))
 done
 
@@ -451,15 +521,16 @@ ordered="$(jq --argjson blockers "$blocker_nums" '
 # claims it or nothing and the prompt's "Done" re-check completes the run
 # instead of letting it drift onto this repo's next ticket ahead of an older
 # one elsewhere. Host-side callers never see the mount, so nothing changes there.
-fleet_pick_signal="${SWARM_FLEET_PICK_SIGNAL:-/run/host-signals/fleet-pick}"
-if [ -f "$fleet_pick_signal" ]; then
-  fleet_pick="$(head -1 "$fleet_pick_signal" 2>/dev/null | tr -cd '0-9')"
-  if [ -n "$fleet_pick" ]; then
-    picked="$(jq --arg n "$fleet_pick" 'map(select((.number | tostring) == $n))' <<<"$ordered")"
-    if [ "$(jq length <<<"$picked")" -eq 0 ]; then
-      echo "list-ready-tasks: the fleet pick #$fleet_pick is no longer ready here (claimed elsewhere, closed or handed off) — answering [] so this one-ticket run completes (#301)" >&2
-    fi
-    ordered="$picked"
+# #2145: fleet_pick_early was read ONCE at the top (the fast path fetched exactly
+# this pick, or an empty batch when it is gone). For a fleet-pick run this
+# narrowing is a confirming no-op that still names a gone pick on stderr; for a
+# full-page run (no fast path) fleet_pick_early is empty and this is skipped,
+# byte-identical to the pre-#2145 "no signal file" behaviour.
+if [ -n "$fleet_pick_early" ]; then
+  picked="$(jq --arg n "$fleet_pick_early" 'map(select((.number | tostring) == $n))' <<<"$ordered")"
+  if [ "$(jq length <<<"$picked")" -eq 0 ]; then
+    echo "list-ready-tasks: the fleet pick #$fleet_pick_early is no longer ready here (claimed elsewhere, closed or handed off) — answering [] so this one-ticket run completes (#301)" >&2
   fi
+  ordered="$picked"
 fi
 printf '%s\n' "$ordered"

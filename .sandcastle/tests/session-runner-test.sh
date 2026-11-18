@@ -113,6 +113,9 @@ case "$method $url" in
       [ -f "$cf" ] || echo '[]' > "$cf"
       cid="$(( $(cat "$seq_f" 2>/dev/null || echo 1000) + 1 ))"; echo "$cid" > "$seq_f"
       cbody="$(jq -r '.body // ""' <<<"$body" 2>/dev/null || echo "")"
+      # every posted comment body, so a test can assert a claim's exact first
+      # line even after the runner has released (deleted) the claim (#348).
+      printf '%s\n' "$cbody" >> "$FIXTURES_DIR/.comment-posts"
       if jq --argjson id "$cid" --arg b "$cbody" '. + [{id:$id, body:$b}]' "$cf" > "$cf.tmp" 2>/dev/null; then
         mv "$cf.tmp" "$cf"; else rm -f "$cf.tmp"; fi
       echo "{\"id\":$cid}" ;;
@@ -1040,6 +1043,7 @@ echo "ok 24a a losing host stands down before the session, releases its claim, b
 # 24b: no competing claim → this host's own marker is the lowest/live claim → it
 #      WINS and runs exactly one session, unchanged from today.
 reset_case
+: > "$tmp/fixtures/.comment-posts"
 mkissue 77
 jq -s '.' "$tmp/fixtures/issue-77.json" > "$tmp/fixtures/queue.json"
 out="$(run_runner)"
@@ -1049,6 +1053,14 @@ grep -q "POST http://fake/api/v1/repos/x/y/issues/77/comments" "$tmp/curl.log" \
 grep -qi "won the cross-host claim" <<<"$out" || fail "24b: the winner must report it won (got: $out)"
 [ "$(wc -l < "$tmp/claude.calls")" = 1 ] || fail "24b: the winner must run exactly one session (got: $(wc -l < "$tmp/claude.calls"))"
 grep -q "outcome: advanced" <<<"$out" || fail "24b: the winner works the ticket to completion (got: $out)"
+# #348: the claim says it is a SESSION claim and carries its ttl, so the swarm
+# janitor ages it instead of looking the runner's pid up among swarm runs (which
+# swept a live session's claim and let a second host start the same ticket); and
+# the winner re-asserts agent-working once the claim comment exists.
+grep -qE '^swarm-claim host=[^ ]+ run=[0-9]+ session-ttl=[0-9]+$' "$tmp/fixtures/.comment-posts" \
+  || fail "24b: the session claim must carry session-ttl=<seconds> on its first line (got: $(head -1 "$tmp/fixtures/.comment-posts"))"
+[ "$(grep -c "POST http://fake/api/v1/repos/x/y/issues/77/labels" "$tmp/curl.log")" -ge 2 ] \
+  || fail "24b: the winner must re-assert agent-working after it wins the claim (#348)"
 echo "ok 24b a host whose claim is lowest wins and runs exactly one session"
 
 # 24d (#1412): a TOMBSTONE claim — a peer's `swarm-claim` comment with a LOWER
@@ -1202,4 +1214,48 @@ grep -q "DELETE http://fake/api/v1/repos/x/y/issues/64/labels/106" "$tmp/curl.lo
   && fail "25e: with no PR opened, ready-for-session must NOT be dropped"
 echo "ok 25e a pr session that opens no PR is not-advanced and keeps the ticket queued"
 
-echo "session-runner: 25 groups passed"
+# 26: self-refresh BEFORE the pick (#319) — a tick whose queue is ALL skip-tickets
+#     (nothing workable: a deferred one + a dep-blocked one) must STILL fetch and
+#     reset the dedicated checkout to origin/main. Before #319 the fetch/reset ran
+#     only AFTER a pick, so a skip-everything queue froze the checkout and a host
+#     ran a week-old runner (#302 never arrived). The refresh now rides the owner
+#     lock at the top of the tick, so it runs whether or not a ticket is picked.
+reset_case
+mkissue 12 '{"id":98,"name":"deferred"}'
+mkissue 20
+echo '[{"number":9,"state":"open","title":"blocker"}]' > "$tmp/fixtures/deps-20.json"
+jq -s '.' "$tmp/fixtures/issue-12.json" "$tmp/fixtures/issue-20.json" > "$tmp/fixtures/queue.json"
+out="$(run_runner)"
+grep -qi "nothing workable" <<<"$out" || fail "26 setup: the queue must leave nothing workable (got: $out)"
+grep -q "fetch -q origin" "$tmp/git.log" \
+  || fail "26: a skip-everything tick must still fetch the dedicated checkout (got: $(cat "$tmp/git.log"))"
+grep -q "reset -q --hard origin/main" "$tmp/git.log" \
+  || fail "26: a skip-everything tick must still reset the checkout to origin/main (#319; got: $(cat "$tmp/git.log"))"
+echo "ok 26 a skip-everything tick still refreshes the dedicated checkout to origin/main (#319)"
+
+# 27: the refresh RE-EXECs the fresh entrypoint (#319) — when the checkout's own
+#     .sandcastle/session-runner.sh now DIFFERS from the running one (a pin the
+#     host hadn't adopted because every ticket was skipped), the runner must
+#     re-exec the fresh copy THIS tick so the new pick/skip rules apply at once,
+#     not only on the next cron run. Stand in a sentinel fresh copy (the git stub
+#     is a no-op, so it survives the reset) and prove it runs INSTEAD of the old
+#     flow. The checkout-owner lock is dropped before the exec so the fresh runner
+#     would re-acquire cleanly (here the sentinel takes no lock).
+reset_case
+mkdir -p "$tmp/checkout/.sandcastle"
+cat > "$tmp/checkout/.sandcastle/session-runner.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "session-runner: FRESH-REEXEC-SENTINEL ran"
+exit 0
+EOF
+out="$(run_runner)"
+grep -q "re-execing the fresh runner" <<<"$out" \
+  || fail "27: a changed entrypoint must announce the re-exec (got: $out)"
+grep -q "FRESH-REEXEC-SENTINEL ran" <<<"$out" \
+  || fail "27: the re-exec must run the FRESH checkout copy (got: $out)"
+grep -q "picked #25" <<<"$out" \
+  && fail "27: after re-exec the OLD flow must not continue to pick (got: $out)"
+rm -rf "$tmp/checkout/.sandcastle"
+echo "ok 27 a changed entrypoint re-execs the fresh checkout copy before the pick (#319)"
+
+echo "session-runner: 27 groups passed"

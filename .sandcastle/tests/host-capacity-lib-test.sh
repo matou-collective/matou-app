@@ -716,4 +716,44 @@ out="$(bash -c '
 rm -rf "$isd"
 pass=$((pass+1))
 
+# --- host_runner_file (#339): resolve the `.runner` file the way the factory
+#     actually writes it — $HOME/forgejo-runner/.runner, the ONBOARD_HOST_RUNNER_DIR
+#     default, NOT upstream's $HOME/.runner. The old heal.sh:304 / run-swarm.sh:175
+#     default never matched a factory-onboarded host, so #336's `here` state and
+#     #135's per-host runner name were dead on every pool box. ---
+rf="$(mktemp -d)"
+# Source the lib in a controlled env (clearing any ambient runner vars) and print
+# the resolution; each case passes exactly the env it wants to pin.
+hrf() { env -u SWARM_RUNNER_FILE -u ONBOARD_HOST_RUNNER_DIR "$@" \
+          bash -c '. "$1"; host_runner_file' _ "$lib"; }
+
+# 1: an explicit SWARM_RUNNER_FILE override wins and is honoured VERBATIM, even
+#    when the path is absent (a misconfigured override must be loud, not masked).
+got="$(hrf SWARM_RUNNER_FILE="$rf/explicit/.runner")"
+[ "$got" = "$rf/explicit/.runner" ] || fail "#339: SWARM_RUNNER_FILE must win verbatim even when absent, got: $got"
+
+# 2: with SWARM_RUNNER_FILE unset, the ONBOARD_HOST_RUNNER_DIR default wins when
+#    its .runner exists — the path the factory's own onboarding registers at.
+mkdir -p "$rf/onboard"; : > "$rf/onboard/.runner"
+got="$(hrf ONBOARD_HOST_RUNNER_DIR="$rf/onboard")"
+[ "$got" = "$rf/onboard/.runner" ] || fail "#339: the ONBOARD_HOST_RUNNER_DIR default must resolve to <dir>/.runner when present, got: $got"
+
+# 3: the onboarding default takes precedence over upstream's $HOME/.runner when
+#    BOTH exist (the factory-onboarded host is the common case).
+mkdir -p "$rf/home"; : > "$rf/home/.runner"
+got="$(hrf HOME="$rf/home" ONBOARD_HOST_RUNNER_DIR="$rf/onboard")"
+[ "$got" = "$rf/onboard/.runner" ] || fail "#339: the onboarding default must beat \$HOME/.runner when both exist, got: $got"
+
+# 4: a hand-registered host with ONLY $HOME/.runner (no onboarding dir) falls
+#    through to upstream's own default — the third probe.
+got="$(hrf HOME="$rf/home" ONBOARD_HOST_RUNNER_DIR="$rf/empty")"
+[ "$got" = "$rf/home/.runner" ] || fail "#339: with no onboarding .runner, \$HOME/.runner is the fallback, got: $got"
+
+# 5: nothing present → the onboarding-default PATH is returned (not upstream's),
+#    so a caller that only [ -f ]-tests it names what the factory would write.
+got="$(hrf HOME="$rf/empty" ONBOARD_HOST_RUNNER_DIR="$rf/none")"
+[ "$got" = "$rf/none/.runner" ] || fail "#339: with nothing present the onboarding-default path is the fallback, got: $got"
+rm -rf "$rf"
+pass=$((pass+1))
+
 echo "host-capacity-lib: $pass groups passed"

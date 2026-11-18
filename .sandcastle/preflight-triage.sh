@@ -35,14 +35,42 @@ fi
 # Absorb transient Forgejo blips (a single 503 storm killed triage run 1637,
 # #235): retry the paged calls with exponential backoff. A persistent outage
 # still exhausts the attempts and fails the job (the caller runs under set -e).
+#
+# #341: each attempt is BOUNDED (`--connect-timeout`/`--max-time`) and the real
+# fault is PROPAGATED, not swallowed. The old wrapper ran bare `curl -sf` (no
+# timeout, so an attempt could itself cost ~60s — the 2s/4s backoff was ~3% of
+# a 206s wall clock and absorbed nothing) and returned the CONSTANT 22 on
+# exhaustion with no stderr, so a 504, a 403, a DNS failure and a TLS error all
+# reddened triage identically and the heal bundle's verdict carried an EMPTY
+# `--- error lines ---` block (run 26700). Now: capture curl's rc AND
+# `%{http_code}` (via `-w`, which prints even under `-f`), emit one diagnostic
+# line per failed attempt for the verdict scrape to find, and return curl's REAL
+# rc so a timeout (28) is distinguishable from an HTTP error (22). PREFLIGHT_MAX_TIME
+# defaults ABOVE the issues-index endpoint's observed ~60s ceiling (it flaps
+# 504/200 right on the remote gateway's 60s cliff — 54.3s/59.4s/60.5s across
+# consecutive calls), so an attempt never masks a real server verdict as a
+# client timeout, yet a truly hung connection is still bounded; the retry then
+# rides the 504/200 flap. A POST is never routed here (preflight is read-only),
+# so retrying a GET stays idempotent.
 api() {
-  local attempt=1 max="${PREFLIGHT_RETRIES:-3}" delay="${PREFLIGHT_BACKOFF:-2}" out
+  local attempt=1 max="${PREFLIGHT_RETRIES:-3}" delay="${PREFLIGHT_BACKOFF:-2}"
+  local conn="${PREFLIGHT_CONNECT_TIMEOUT:-10}" maxt="${PREFLIGHT_MAX_TIME:-75}"
+  local out rc http url
+  url="${*: -1}"
   while :; do
-    if out="$(curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@")"; then
-      printf '%s' "$out"
+    if out="$(curl -sf --connect-timeout "$conn" --max-time "$maxt" \
+        -w '\n%{http_code}' -H "Authorization: token $FORGEJO_TOKEN" "$@")"; then
+      # -w appends "\n<code>" to the body; strip it before emitting.
+      printf '%s' "${out%$'\n'*}"
       return 0
+    else
+      # Capture curl's rc HERE: a branchless `if` returns 0, so rc=$? after fi
+      # would read the if-statement's status, not curl's.
+      rc=$?
     fi
-    [ "$attempt" -ge "$max" ] && return 22
+    http="${out##*$'\n'}"
+    echo "preflight-triage: GET $url -> http=${http:-000} curl=$rc, attempt $attempt/$max" >&2
+    [ "$attempt" -ge "$max" ] && return "$rc"
     sleep "$delay"
     delay=$((delay * 2))
     attempt=$((attempt + 1))

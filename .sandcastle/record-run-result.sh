@@ -14,11 +14,11 @@
 #
 #   SANDCASTLE_ATTEMPT issue=<N> outcome=<success|blocked|refused> commits=<csv>
 #
-# This is a deliberate protocol line this script parses out of
-# RunResult.stdout (combined across every iteration) — NOT the worker
-# chain-of-thought prose grep verdict-lib.sh's header warns against — and
-# zips against RunResult.iterations[] IN ORDER (prompt.md rule 7: one issue
-# per iteration). A retry within one iteration (close-report refused, the
+# This is a deliberate protocol line this script parses out of the host-mounted
+# attempts sink (.attemptsSink; #2110), falling back to RunResult.stdout — NOT the
+# worker chain-of-thought prose grep verdict-lib.sh's header warns against — and
+# zips against RunResult.iterations[] IN ORDER (prompt.md rule 7: one issue per
+# iteration). A retry within one iteration (close-report refused, the
 # agent fixed the envelope and re-ran it — up to twice, prompt.md) emits TWO
 # markers for the SAME issue; markers are deduped by issue (last occurrence —
 # the iteration's final outcome wins), first-seen order preserved for the zip.
@@ -91,7 +91,24 @@ jq -e . "$payload" >/dev/null 2>&1 \
 
 # Dedup by issue (last occurrence wins), first-seen order preserved — see the
 # retry note above.
-jq -r '.stdout // ""' "$payload" 2>/dev/null \
+#
+# #2110: the markers are read from the host-mounted SINK (.attemptsSink) in
+# preference to the worker's stdout. close-report.sh appends every
+# SANDCASTLE_ATTEMPT line to that sink (#2106) — a channel no `| tail`/`| head` on
+# close-report's stdout can truncate — and main.mts reads it into the payload
+# before tearing the mount down. The #574 stdout parse had the SAME fragility
+# #2106 fixed for the #283 reconcile: a worker that piped close-report dropped the
+# line from `.stdout`, which here not only lost that iteration's attempt/spend
+# telemetry but MISALIGNED the positional zip (markers[i] -> iteration i) for every
+# later iteration. The sink preserves the exact per-iteration append order the zip
+# relies on (close-report.sh runs once per iteration, in order), so it is a drop-in
+# source — complete where stdout was lossy. Prefer it, do NOT sort -u union it with
+# stdout the way the reconcile does: that consumer needs only the SET and may
+# reorder; this one needs the ORDER. Fall back to `.stdout` when no sink was
+# captured (a bare `pnpm run sandcastle` outside run-swarm.sh, or a best-effort sink
+# write skipped) so that path degrades to exactly pre-#2110. The #200 account-fp
+# lines below stay on `.stdout`: close-report.sh does not emit them to the sink.
+jq -r 'if (.attemptsSink // "") != "" then .attemptsSink else .stdout // "" end' "$payload" 2>/dev/null \
   | grep -E '^SANDCASTLE_ATTEMPT issue=[0-9]+ outcome=\S+ commits=' \
   | awk '
       {

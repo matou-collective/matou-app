@@ -17,6 +17,7 @@ export HOST_CAPACITY_DRIVE_WANTED="$tmp/state/drive-wanted"
 export FLEET_QUEUE_CACHE="$tmp/state/fleet-queue.json"
 export FLEET_QUEUE_STAMP="$tmp/state/fleet-queue-dispatched"
 export FLEET_QUEUE_RECENT_CLOSES="$tmp/state/fleet-recent-closes"
+export FLEET_QUEUE_STRIKES="$tmp/state/fleet-queue-strikes"
 export FORGEJO_TOKEN=t HOST_NAME=box-07 CURL_LOG="$tmp/curl.log" LISTER_LOG="$tmp/listers.log"
 mkdir -p "$tmp/state"
 
@@ -45,7 +46,7 @@ case "$url" in
 esac
 SH
 
-reset() { : >"$CURL_LOG"; : >"$LISTER_LOG"; rm -f "$FLEET_QUEUE_STAMP" "$FLEET_QUEUE_CACHE" "$FLEET_QUEUE_RECENT_CLOSES" "$HOST_CAPACITY_DRIVE_WANTED"; }
+reset() { : >"$CURL_LOG"; : >"$LISTER_LOG"; rm -f "$FLEET_QUEUE_STAMP" "$FLEET_QUEUE_CACHE" "$FLEET_QUEUE_RECENT_CLOSES" "$FLEET_QUEUE_STRIKES" "$HOST_CAPACITY_DRIVE_WANTED"; }
 run() { bash "$sc/fleet-queue.sh" "$@" 2>&1; }
 dispatched() { local n; n="$(grep -c "POST .*dispatches" "$CURL_LOG" 2>/dev/null)" || true; echo "${n:-0}"; }
 dispatch_body() { grep "dispatches" "$CURL_LOG" | tail -1 | cut -d' ' -f3-; }
@@ -124,6 +125,52 @@ reset; printf '%s Acme/alpha 10\n' "$(date +%s)" >"$FLEET_QUEUE_RECENT_CLOSES"
 out="$(run tick)"
 check "tick promotes the dependants of a recent recorded close" \
   'grep -q "repos/Acme/beta/actions" "$CURL_LOG" && grep -q "dependant of Acme/alpha#10" <<<"$out"'
+
+# ── disk-headroom gate (#315): a host under its floor reports no free slot ──
+reset
+shim df <<'SH'
+echo "Filesystem 1024-blocks Used Available Capacity Mounted"
+echo "/dev/fake 999999999 0 ${FAKE_DF_AVAIL_KB:-999999999} 1% /"
+SH
+out="$(FLEET_QUEUE_MIN_FREE_GB=5 FLEET_QUEUE_ACT_CACHE="$tmp/state" FAKE_DF_AVAIL_KB=$((2 * 1024 * 1024)) run tick)"
+check "tick below the disk floor runs NO lister and dispatches nothing" \
+  '[ ! -s "$LISTER_LOG" ] && [ "$(dispatched)" -eq 0 ]'
+out="$(FLEET_QUEUE_MIN_FREE_GB=5 FLEET_QUEUE_ACT_CACHE="$tmp/state" FAKE_DF_AVAIL_KB=$((9 * 1024 * 1024)) run tick)"
+check "tick above the disk floor proceeds and dispatches" \
+  '[ -s "$LISTER_LOG" ] && [ "$(dispatched)" -eq 1 ]'
+
+# ── strikes + stand-down (#315): a host whose dispatches never claim backs off ─
+reset
+printf '%s Acme/alpha 10\n' "$(( $(date +%s) - 99999 ))" >"$FLEET_QUEUE_STAMP"
+out="$(run tick)"
+check "a re-dispatch of the SAME unclaimed head (still the fleet head) counts a strike" \
+  '[ "$(cut -d" " -f1 "$FLEET_QUEUE_STRIKES")" -eq 1 ] && grep -q "never claimed (strike 1)" <<<"$out"'
+
+reset
+printf '2 %s\n' "$(date +%s)" >"$FLEET_QUEUE_STRIKES"
+printf '%s Acme/beta 5\n' "$(( $(date +%s) - 99999 ))" >"$FLEET_QUEUE_STAMP"
+out="$(run tick)"
+check "a tick whose head differs from the last dispatch resets the strikes and dispatches" \
+  '[ ! -f "$FLEET_QUEUE_STRIKES" ] && [ "$(dispatched)" -eq 1 ]'
+
+reset
+printf '2 %s\n' "$(date +%s)" >"$FLEET_QUEUE_STRIKES"
+printf '%s Acme/alpha 10\n' "$(( $(date +%s) - 99999 ))" >"$FLEET_QUEUE_STAMP"
+out="$(run tick)"
+check "the strike that REACHES the threshold stands down WITHOUT one more dispatch" \
+  '[ "$(cut -d" " -f1 "$FLEET_QUEUE_STRIKES")" -eq 3 ] && [ "$(dispatched)" -eq 0 ] && grep -q "backing off" <<<"$out"'
+
+reset
+printf '3 %s\n' "$(date +%s)" >"$FLEET_QUEUE_STRIKES"
+out="$(run tick)"
+check "once stood down, tick lists nothing and dispatches nothing until the backoff lapses" \
+  'grep -q "consecutive unclaimed dispatch" <<<"$out" && [ ! -s "$LISTER_LOG" ] && [ "$(dispatched)" -eq 0 ]'
+
+reset
+printf '5 %s\n' "$(date +%s)" >"$FLEET_QUEUE_STRIKES"
+out="$(run rearm)"
+check "a rearm (a run that just finished on this host) clears the strikes" \
+  '[ ! -f "$FLEET_QUEUE_STRIKES" ] && [ "$(dispatched)" -eq 1 ]'
 
 # ── pick: print the head, dispatch nothing ─────────────────────────────────
 reset

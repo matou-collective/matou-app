@@ -630,14 +630,19 @@ open_issues="$(forgejo_get "/issues?labels=$REHEARSAL_LABEL&state=open&type=issu
 # a misleading "priority label missing" WARN downstream (drive
 # 20260812T214238Z). Fail LOUD, retry once paced; fail-open stays — blockers
 # still file, unlabelled, when the tracker is truly unreachable.
+# Both fetches are deliberately SINGLE-attempt (FORGEJO_GET_RETRIES=1):
+# forgejo_get's own bounded retry (idss #2048) would ride out a blip silently,
+# so this WARN would never fire and a double failure would never be named —
+# #495's exact hole reopened under a quieter name. #495's contract is the
+# observable here: one loud paced retry, then a named degrade.
 : "${REPORTER_LABELS_RETRY_DELAY:=5}"
 labels_rc=0
-labels_json="$(forgejo_get "/labels?limit=100")" || labels_rc=$?
+labels_json="$(FORGEJO_GET_RETRIES=1 forgejo_get "/labels?limit=100")" || labels_rc=$?
 if [ "$labels_rc" -ne 0 ]; then
   echo "reporter: WARN labels fetch failed (curl rc=$labels_rc) — retrying once in ${REPORTER_LABELS_RETRY_DELAY}s"
   sleep "$REPORTER_LABELS_RETRY_DELAY"
   labels_rc=0
-  labels_json="$(forgejo_get "/labels?limit=100")" || labels_rc=$?
+  labels_json="$(FORGEJO_GET_RETRIES=1 forgejo_get "/labels?limit=100")" || labels_rc=$?
   if [ "$labels_rc" -ne 0 ]; then
     echo "reporter: WARN labels re-fetch failed (curl rc=$labels_rc) — label ops DEGRADED for this run: blockers file unlabelled, priority float and ready-for-agent/-human flips skip"
     labels_json='[]'

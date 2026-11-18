@@ -217,14 +217,29 @@ grep -qE 'verify_protected_paths .* \|\| (exit 1|\{)' "$sc/run-swarm.sh" \
   || fail "a protected-path breach must red the run before landing_stage is ever reached (#193)"
 pass=$((pass+1))
 
-# (a') STATIC #283: a rolled-back land must reconcile the stranded closes — the
-# host reopens every issue a sandbox close-report closed against the worker branch
-# before it exits. Wired on BOTH the verify-breach path and the land-parked path.
+# (a') STATIC #283/#328: a rolled-back land — AND a red that arrives after a
+# sandbox close-report — must reconcile the stranded closes: the host reopens
+# every issue a sandbox close-report closed against the worker branch before it
+# exits. Wired on THREE exits now: the generic execute red (#328), the
+# verify-breach path, and the land-parked path (#283).
 rc_lines="$(grep -c 'landing_reopen_stranded_closes ' "$sc/run-swarm.sh")"
-[ "${rc_lines:-0}" -ge 2 ] \
-  || fail "run-swarm.sh must call landing_reopen_stranded_closes on BOTH the verify-breach and land-rollback exits (#283), found $rc_lines"
+[ "${rc_lines:-0}" -ge 3 ] \
+  || fail "run-swarm.sh must call landing_reopen_stranded_closes on the execute-red, verify-breach, AND land-rollback exits (#283/#328), found $rc_lines"
 grep -q 'export EXECUTE_ATTEMPTS_FILE=' "$sc/run-swarm.sh" \
   || fail "run-swarm.sh must wire EXECUTE_ATTEMPTS_FILE so the attempt lines survive the log cleanup (#283)"
+# #328: the execute-red reconcile is the EARLIEST of the three — it sits on the
+# `execute_sandcastle_run` failure exit, strictly BEFORE verify_protected_paths
+# (where the next-earliest #283 reconcile lives). A merge-to-head SyncError under
+# LANDING=push reds that stage two stages before landing_stage, so without a
+# reconcile there the close outlived its unlanded commit (#324).
+# Anchor the seam greps to a line-start call so a comment that merely NAMES the
+# seam (e.g. this fix's explanatory block) is not mistaken for the call site.
+first_reopen_ln="$(grep -nE '(^|[[:space:]])landing_reopen_stranded_closes ' "$sc/run-swarm.sh" | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1)"
+vpp_ln="$(grep -n '^verify_protected_paths ' "$sc/run-swarm.sh" | head -1 | cut -d: -f1)"
+exec_ln="$(grep -n '^execute_sandcastle_run ' "$sc/run-swarm.sh" | head -1 | cut -d: -f1)"
+[ -n "$first_reopen_ln" ] && [ -n "$vpp_ln" ] && [ -n "$exec_ln" ] \
+  && [ "$first_reopen_ln" -gt "$exec_ln" ] && [ "$first_reopen_ln" -lt "$vpp_ln" ] \
+  || fail "#328: the execute-red reconcile must sit after execute_sandcastle_run ($exec_ln) and BEFORE verify_protected_paths ($vpp_ln), found first reopen at $first_reopen_ln"
 pass=$((pass+1))
 
 # (b) BEHAVIOURAL: when verify flagged a breach (VERIFY_PP_VIOLATION=1), the land

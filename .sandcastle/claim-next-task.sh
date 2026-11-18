@@ -167,9 +167,23 @@ alive_rc=0; wait "$alive_pid" || alive_rc=$?
 
 if [ "$lister_rc" -ne 0 ]; then
   if [ "$lister_rc" -eq 124 ]; then
-    echo "claim-next-task: the lister exceeded its ${CLAIM_LISTER_MAX_TIME}s wall-clock bound — emitting [] inside the 30s prompt-expansion budget rather than letting its retry schedule run the tick past it; cron/backstop re-fires." >&2
-    echo '[]'
-    exit 0
+    # idss#2145: finish idss#1425 on THIS leg. A lister that could not complete
+    # inside its ${CLAIM_LISTER_MAX_TIME}s bound used to be laundered into a
+    # graceful [] — but the prompt shell-expansion renders [] as an EMPTY
+    # ready-tasks queue, which a worker's "Done" check reads as a completion
+    # candidate: fail-closed at the script, fail-OPEN at the surface that
+    # matters. When the forge's own open-issues page sat at 8-22s every tick
+    # (idss#2145), that laundered [] fired on every iteration and the whole lane
+    # read as "nothing to do" while red main sat unclaimed and NOTHING in the
+    # fleet reported a fault. So rc 124 now fails LOUD, exactly like the
+    # alive-runs arm below: a non-zero exit that run-swarm re-keys to the "list
+    # ready tasks" stage and the healer sees, never a silent empty queue. The
+    # production fast path (list-ready-tasks.sh's #2145 single-issue fetch when
+    # the host has already picked this run's one ticket) keeps the lister well
+    # under the bound, so this loud arm is the genuine-fault backstop, not the
+    # routine outcome it had become.
+    echo "claim-next-task: the lister exceeded its ${CLAIM_LISTER_MAX_TIME}s wall-clock bound — failing LOUD (non-zero, no []) rather than laundering it into an empty ready queue a worker reads as 'nothing to do' (idss#1425, idss#2145). run-swarm re-keys this to the 'list ready tasks' stage and the cron/backstop re-fires." >&2
+    exit "$lister_rc"
   fi
   exit "$lister_rc"
 fi
@@ -193,7 +207,7 @@ n="$(jq length <<<"$ready")"
 # untouched — only the LOUDNESS changes. (Ben's fail-closed ruling, 2026-08-11,
 # review of commit 68fb911; loudness added idss#1425.)
 if [ "$alive_rc" -ne 0 ]; then
-  echo "claim-next-task: the alive-runs fetch (the actions-API tasks list) faulted (rc=$alive_rc) — failing LOUD rather than laundering it into a [] that renders as an empty ready queue and reads as 'nothing to do' (idss#1425). No claim posted; run-swarm re-keys this to the claim stage and the cron/backstop re-fires." >&2
+  echo "claim-next-task: the alive-runs fetch (the actions-API tasks list) faulted (rc=$alive_rc) — failing LOUD rather than laundering it into a [] that renders as an empty ready queue and reads as 'nothing to do' (idss#1425). No claim posted; #325: this in-sandbox fault surfaces as a PromptError under the host's 'sandcastle run (workers)' verdict stage (execute-lib.sh) — there is NO dedicated claim stage re-key, so it shares a stage key with a genuine worker crash — and the cron/backstop re-fires." >&2
   exit "$alive_rc"
 fi
 alive="$(cat "$alive_file")"

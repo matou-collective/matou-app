@@ -571,6 +571,63 @@ landing_land_resolved_conflict() {
   return 1
 }
 
+# landing_classify_push_failure <captured-push-output> — WHY a `git push` failed,
+# read from its combined stdout+stderr (#346). A LOCAL pre-push hook refuses the
+# push BEFORE any network transport, so its output carries neither git's transport
+# fatals (`unable to access`, `Could not resolve host`, …) nor the server's
+# ref-rejection lines (`! [rejected]`, `fetch first`, …) — only the hook's own
+# output plus git's generic `failed to push some refs`. A stale `main` is a server
+# rejection; a down forge is a transport fatal; anything that still printed
+# `failed to push some refs` with neither signature is a local refusal. Echoes
+# exactly one of: transport | rejected | hook. An empty/unknown output defaults to
+# `rejected` so the existing fetch+rebase ladder is preserved — the hook verdict is
+# POSITIVE-only, so a classification miss never diverts a transport/stale failure.
+landing_classify_push_failure() {
+  case "$1" in
+    *"unable to access"*|*"Could not resolve host"*|*"Could not read from remote repository"*|\
+    *"Connection refused"*|*"Connection timed out"*|*"Failed to connect"*|\
+    *"Operation timed out"*|*"The requested URL returned error"*|*"SSL connect error"*)
+      echo transport ;;
+    *"[rejected]"*|*"[remote rejected]"*|*"fetch first"*|*"non-fast-forward"*|\
+    *"Updates were rejected"*|*"tip of your current branch is behind"*)
+      echo rejected ;;
+    *"failed to push some refs"*)
+      echo hook ;;
+    *)
+      echo rejected ;;
+  esac
+}
+
+# landing_park_hook_refusal <repo-slug> <captured-push-output> — the #346 honest
+# park. A LOCAL pre-push hook refused the push to `main`; the forge was reachable
+# and `main` was not stale, so this is NOT push-rescue-unreachable (the old ladder's
+# "forge unreachable / rescue branch exists" was doubly false). Park the commits on
+# a rescue branch with the hook BYPASSED (`--no-verify`): a rescue branch exists to
+# preserve work that could not land and NEVER auto-lands — a human re-reviews before
+# it reaches `main` — so gating the park only strands the commits for the next run's
+# reset --hard to destroy (ruled a two-way door under ADR 0174: revertible, and the
+# offline test proves the park survives). The alarm names the hook refusal and
+# surfaces its output, and claims the branch EXISTS only when its push returned
+# success (#141 class). SWARM_EXIT_REASON names which outcome.
+landing_park_hook_refusal() {
+  local repo_slug="$1" hook_out rescue
+  hook_out="$(printf '%s\n' "$2" | tail -n 40)"
+  rescue="sandcastle/rescue-$(date -u +%Y%m%d-%H%M%S)"
+  if git push --no-verify origin "HEAD:refs/heads/$rescue"; then
+    _landing_notify ":rotating_light: **Swarm push to \`main\` was refused by a LOCAL pre-push hook** in \`$repo_slug\` — NOT a transport fault (the forge was reachable) and NOT a stale \`main\`. The commits are parked on \`$rescue\` with the hook bypassed (\`--no-verify\`; a rescue branch never auto-lands — a human re-reviews before it reaches \`main\`). Fix the hook, then cherry-pick from \`$rescue\` onto main (the issues will NOT retry). The pre-push hook said:
+\`\`\`
+$hook_out
+\`\`\`"
+    SWARM_EXIT_REASON="push-refused-by-local-hook"
+  else
+    _landing_notify ":rotating_light: **Swarm push to \`main\` was refused by a LOCAL pre-push hook AND the rescue park (hook bypassed) could not be pushed** in \`$repo_slug\` — the commits live ONLY in the runner workdir \`$(pwd)\` at \`$(git rev-parse --short HEAD 2>/dev/null)\`; do NOT let it reset. The pre-push hook said:
+\`\`\`
+$hook_out
+\`\`\`"
+    SWARM_EXIT_REASON="push-refused-by-local-hook-rescue-unreachable"
+  fi
+}
+
 # landing_push_main_with_rescue <repo-slug> — push mode's ladder.
 #
 # A human may have pushed to main during the (long) sandcastle run. The agent's
@@ -601,8 +658,26 @@ landing_land_resolved_conflict() {
 #     next run resets --hard.
 # rc 1 on every non-landing path; SWARM_EXIT_REASON names which one.
 landing_push_main_with_rescue() {
-  local repo_slug="$1" pushed="" rescue body log
-  git push origin HEAD:main && return 0
+  local repo_slug="$1" pushed="" rescue body log push_out push_rc
+  # #2119: this function OWNS the SHA-preserving-promote signal run-swarm.sh's
+  # land-SUCCESS #283 reconcile reads — clear any prior value on entry. A
+  # first-try push to main is a clean fast-forward or a no-op "Everything
+  # up-to-date": either the worker SHAs are preserved on main or main never
+  # moved, so a by-SHA reachability re-check on the success path is SAFE. The
+  # rebase ladder below rewrites the SHAs, so it leaves the flag cleared and the
+  # success-path reconcile skips it (never false-reopening rebased-landed work).
+  LANDING_PROMOTE_CLEAN=""
+  push_out="$(git push origin HEAD:main 2>&1)"; push_rc=$?
+  if [ "$push_rc" = 0 ]; then LANDING_PROMOTE_CLEAN=1; return 0; fi
+  # #346: a LOCAL pre-push hook refusal is neither a transport fault nor a stale
+  # main — the SAME hook refuses the rebase-retry and the rescue push, so the old
+  # ladder bottomed out at push-rescue-unreachable and alarmed "forge unreachable /
+  # rescue branch exists", both false. Catch it at the top — before the futile
+  # rebase+resolver — and park with the hook bypassed, naming the hook + its output.
+  if [ "$(landing_classify_push_failure "$push_out")" = hook ]; then
+    landing_park_hook_refusal "$repo_slug" "$push_out"
+    return 1
+  fi
   git fetch origin main
   if git rebase origin/main; then
     # CLEAN rebase — the text merge needed no judgement, so no LLM touched the
@@ -758,7 +833,7 @@ landing_reopen_stranded_closes() {
 # when push mode could not land (parked, or could not even park).
 landing_stage() {
   local repo_slug="$1" ready="$2" start_sha="$3" nums
-  LANDING_OPENED_PRS=""; LANDING_MERGED_PRS=""
+  LANDING_OPENED_PRS=""; LANDING_MERGED_PRS=""; LANDING_PROMOTE_CLEAN=""   # #2119
   # idss ADR 0267 — a push-default repo whose run was fixed to ONE landing-pr
   # ticket (preflight_landing_gate). HEAD carries that ticket's commits, so this
   # run NEVER pushes main: refresh the ticket's branch + PR (the worker's
@@ -822,6 +897,22 @@ landing_stage() {
   # breach to main, even reached directly. (run-swarm's ordering already reds the
   # run before here; this makes the land seam safe on its own.)
   landing_pp_breach_guard "$repo_slug" || return 1
+  # #347: a push run with NO commits of its own must never push main. In push mode
+  # HEAD carries exactly the commits execute_adopt_worker_branch moved onto this
+  # run's base (start_sha) from the per-run worker branch; an empty start_sha..HEAD
+  # means the worker committed nothing, so there is nothing of OURS to land. Pushing
+  # regardless would promote whatever HEAD happens to point at — notably a SIBLING
+  # run's adopted commit reached through the shared workdir (two-runs-one-checkout,
+  # #347), landing another run's work under this run's name. The swarm.yml workdir
+  # lock now spans the whole run so that race can no longer arise; this is the land
+  # seam's own independent refusal. Fail-OPEN when rev-list cannot answer (an odd
+  # checkout with no base): only a PROVABLE empty range refuses, mirroring the
+  # pr-mode empty-shell guard (matou-app#145). A clean no-op, not a red.
+  local own; own="$(git rev-list --count "$start_sha"..HEAD 2>/dev/null)" || own=""
+  if [ "$own" = 0 ]; then
+    echo "landing: push run has no commits of its own beyond its base ($start_sha) — nothing to land; not pushing main (#347)" >&2
+    return 0
+  fi
   # The guard (idss ADR 0267): a push run should never hold a landing-pr ticket's
   # commit (the lister hides such tickets from it), but "should never" is what a
   # guard is for. Fail-OPEN on an unreadable tracker — see landing_pr_tickets_cited.
@@ -840,7 +931,26 @@ landing_stage() {
     SWARM_EXIT_REASON="pr-ticket-in-push-run"
     return 1
   fi
-  landing_push_main_with_rescue "$repo_slug"
+  landing_push_main_with_rescue "$repo_slug" || return 1
+  # #2119: a first-try promote can be a NO-OP "Everything up-to-date" — the
+  # worker's commit never reached the runner HEAD, so main never advanced yet the
+  # push returned 0 and we are here on the success path. The two #283 reconciles
+  # in run-swarm.sh only fire when landing_stage FAILS, so this silent no-op left
+  # #2100/#2102 `closed success` against worker branches that were never promoted
+  # (2026-10-31; #2097/#2099 before). Re-run the reconcile here, but ONLY when the
+  # promote was SHA-preserving (a first-try fast-forward/no-op sets
+  # LANDING_PROMOTE_CLEAN): a rebase landing rewrites the worker SHAs onto main,
+  # so a by-SHA reachability check would false-reopen genuinely-landed work. The
+  # attempt lines ride the exported EXECUTE_ATTEMPTS_FILE run-swarm.sh wired for
+  # the failure-path reconciles; refetch origin/main so a sibling-promoted commit
+  # reads as reachable (fewer false reopens). Never red the run on this — a clean
+  # land already succeeded; `|| true` keeps the summary path intact.
+  if [ -n "${LANDING_PROMOTE_CLEAN:-}" ]; then
+    git fetch origin main >/dev/null 2>&1 || true
+    SWARM_EXIT_REASON="the promote did not advance main (a no-op push to main)" \
+      landing_reopen_stranded_closes "${EXECUTE_ATTEMPTS_FILE:-}" "$repo_slug" origin/main || true
+  fi
+  return 0
 }
 
 fi

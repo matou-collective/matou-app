@@ -20,7 +20,25 @@ eq "go"    "$(printf '.golangci.yml\n'                   | gate_langs_for_files)
 eq "ts"    "$(printf 'dashboard/src/lib/api/x.ts\n'      | gate_langs_for_files)" "a .ts file is a TS change"
 eq "ts"    "$(printf 'pnpm-lock.yaml\n'                  | gate_langs_for_files)" "the lockfile is a TS change"
 eq $'go\nts' "$(printf 'a.go\nb.ts\n'                    | gate_langs_for_files)" "a mixed change reports both"
-eq ""      "$(printf 'README.md\ndocs/adr/0040.md\n'     | gate_langs_for_files)" "docs-only touches no gate"
+eq ""      "$(printf 'README.md\ndocs/adr/0040.md\n'     | gate_langs_for_files)" "a plain doc/ADR touches no gate"
+# The docs-diagram tier (GOTCHAS #143): the three trees whose mermaid/slice-map
+# contracts the seam enforces, which carry no go/ts token.
+# The docs tier's trees are per-repo (#47 — a vendored script names no consumer
+# doc path): with no GATE_DOCS_GLOBS there is no docs tier at all.
+eq ""      "$(printf 'docs/slices/x.mermaid\n' | GATE_DOCS_GLOBS='' gate_langs_for_files)" "no GATE_DOCS_GLOBS -> no docs tier"
+globsroot="$(mktemp -d)"; mkdir -p "$globsroot/.sandcastle"
+printf '# diagram sources\ndocs/slices/*\n\ndocs/ux/flows/*   # flows\n' > "$globsroot/.sandcastle/docs-gate.globs"
+eq "docs/slices/* docs/ux/flows/* " "$(GATE_DOCS_GLOBS='' gate_docs_globs "$globsroot")" "gate_docs_globs reads the per-repo .sandcastle/docs-gate.globs"
+eq "a/*" "$(GATE_DOCS_GLOBS='a/*' gate_docs_globs "$globsroot")" "GATE_DOCS_GLOBS wins over the per-repo file"
+eq "" "$(GATE_DOCS_GLOBS='' gate_docs_globs "$(mktemp -d)")" "no env and no file -> no globs"
+rm -rf "$globsroot"
+# Everything below runs with idss's diagram trees declared, as its per-repo file does.
+export GATE_DOCS_GLOBS='docs/architecture/* docs/slices/* docs/ux/flows/*'
+eq "docs"  "$(printf 'docs/slices/report-and-request.mermaid\n' | gate_langs_for_files)" "a slice-DAG source is a docs change"
+eq "docs"  "$(printf 'docs/architecture/09-founding-sequence.md\n' | gate_langs_for_files)" "an architecture diagram is a docs change"
+eq "docs"  "$(printf 'docs/ux/flows/p6-members-idip.mermaid\n' | gate_langs_for_files)" "a UX flow source is a docs change"
+eq ""      "$(printf 'docs/adr/0174-two-way-doors.md\n'  | gate_langs_for_files)" "an ADR under docs/ is NOT a docs-diagram change"
+eq $'docs\nts' "$(printf 'docs/slices/x.mermaid\nb.ts\n' | gate_langs_for_files)" "a docs+TS change reports both"
 
 # --- the gate: a Go change runs the Go stage; red is caught, green passes ---
 marker="$(mktemp -u)"
@@ -153,13 +171,14 @@ pass=$((pass+1))
 
 # A non-executable .sandcastle/go-gate.sh is NOT honoured: with no GATE_GO_CMD
 # and no nix it still fails closed (an un-lintable Go change never ships).
-if ! command -v nix >/dev/null 2>&1; then
-  chmod -x "$gateroot/.sandcastle/go-gate.sh"
-  rc=0
-  gate_go_stage "$gateroot" 2>/dev/null || rc=$?
-  [ "$rc" -ne 0 ] || fail "a non-executable .sandcastle/go-gate.sh must not satisfy the gate — fail closed"
-  pass=$((pass+1))
-fi
+# GATE_NO_NIX=1 forces the no-toolchain path so this runs on a nix host too — the
+# `command -v nix` skip it replaces made the fail-closed arms green locally and
+# red on CI (#314).
+chmod -x "$gateroot/.sandcastle/go-gate.sh"
+rc=0
+GATE_NO_NIX=1 gate_go_stage "$gateroot" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a non-executable .sandcastle/go-gate.sh must not satisfy the gate — fail closed"
+pass=$((pass+1))
 rm -rf "$gateroot"
 
 # --- per-repo override: an executable .sandcastle/ts-gate.sh runs (#1252) -----
@@ -203,27 +222,33 @@ pass=$((pass+1))
 
 # Fail-closed: a TS change with no GATE_TS_CMD, no ts-gate.sh and no nix blocks
 # the push — a TS change that cannot be linted never ships un-linted (#1252).
-if ! command -v nix >/dev/null 2>&1; then
-  rm -f "$tsroot/.sandcastle/ts-gate.sh"
-  rc=0
-  gate_ts_stage "$tsroot" 2>/dev/null || rc=$?
-  [ "$rc" -ne 0 ] || fail "a TS change with no toolchain must fail closed, not ship un-linted"
-  pass=$((pass+1))
-  rc=0
-  printf 'dashboard/src/x.ts\n' | gate_run "$PWD" 2>/dev/null || rc=$?
-  [ "$rc" -ne 0 ] || fail "gate_run must fail closed on an un-lintable TS change"
-  pass=$((pass+1))
-fi
+# GATE_NO_NIX=1 forces the no-toolchain path so this runs on a nix host too, and
+# the root is the override-free $tsroot — NOT $PWD, which carries this repo's own
+# self-consumer .sandcastle/ts-gate.sh (#312): that override resolves tier 2, so
+# `gate_run "$PWD"` did NOT fail closed, and the `command -v nix` skip hid it on
+# every nix host while CI went red (#314). Both arms must fail closed.
+rm -f "$tsroot/.sandcastle/ts-gate.sh"
+rc=0
+GATE_NO_NIX=1 gate_ts_stage "$tsroot" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a TS change with no toolchain must fail closed, not ship un-linted"
+pass=$((pass+1))
+rc=0
+printf 'dashboard/src/x.ts\n' | GATE_NO_NIX=1 gate_run "$tsroot" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "gate_run must fail closed on an un-lintable TS change"
+pass=$((pass+1))
 rm -rf "$tsroot"
 
 # --- fail-closed: a Go change with no GATE_GO_CMD and no nix blocks the push -
-# (no executable .sandcastle/go-gate.sh here either — none of the three resolve.)
-if ! command -v nix >/dev/null 2>&1; then
-  rc=0
-  printf 'internal/x.go\n' | gate_run "$PWD" 2>/dev/null || rc=$?
-  [ "$rc" -ne 0 ] || fail "a Go change with no toolchain must fail closed, not ship un-linted"
-  pass=$((pass+1))
-fi
+# Over an override-free root (a fresh tmp dir, NOT $PWD — a self-consumer
+# .sandcastle/go-gate.sh would resolve tier 2, the Go twin of #312/#314), with
+# GATE_NO_NIX=1 forcing the no-toolchain path so this runs on a nix host too:
+# none of the three resolve.
+goroot="$(mktemp -d)"
+rc=0
+printf 'internal/x.go\n' | GATE_NO_NIX=1 gate_run "$goroot" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a Go change with no toolchain must fail closed, not ship un-linted"
+pass=$((pass+1))
+rm -rf "$goroot"
 
 # --- Gate 3b: the gofmt-only host gate (#1458) ------------------------------
 # gofmt debt reaches main through the HOST push, not the sandbox (f291b547/#1429
@@ -310,6 +335,165 @@ if ! command -v gofmt >/dev/null 2>&1; then
 fi
 rm -f "$fmtmarker"
 
+# --- the docs-diagram tier (GOTCHAS #143) -----------------------------------
+# A docs-only change carries no go/ts token, so the pre-push gate was blind to it
+# and a bare `%%` (or a `;`, or an unquoted `#`) red CI one run too late, on a
+# branch a human had to re-open. The docs tier runs the cheap in-repo mermaid /
+# slice-map checkers on EVERY push path. GATE_DOCS_CMD is its offline test seam.
+docsmarker="$(mktemp -u)"
+
+# A red docs slice: the stage fails → the push is refused.
+rc=0
+printf 'docs/slices/x.mermaid\n' | GATE_DOCS_CMD="rm -f '$docsmarker'; false" gate_run "$PWD" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a red docs stage must make the gate fail (the push is refused)"
+pass=$((pass+1))
+
+# A green docs slice: the stage passes AND actually ran.
+rm -f "$docsmarker"; rc=0
+printf 'docs/slices/x.mermaid\n' | GATE_DOCS_CMD="touch '$docsmarker'; true" gate_run "$PWD" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "a green docs stage must let the gate pass"
+[ -f "$docsmarker" ] || fail "the docs stage must actually run on a docs change"
+pass=$((pass+1))
+
+# A docs-only change runs ONLY the docs stage — not Go, not TS.
+rm -f "$marker" "$tsmarker" "$docsmarker"; rc=0
+printf 'docs/ux/flows/p6.mermaid\n' | \
+  GATE_GO_CMD="touch '$marker'; true" GATE_TS_CMD="touch '$tsmarker'; true" \
+  GATE_DOCS_CMD="touch '$docsmarker'; true" gate_run "$PWD" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "a clean docs-only change must pass the gate"
+[ ! -f "$marker" ] || fail "a docs-only change must NOT run the Go stage"
+[ ! -f "$tsmarker" ] || fail "a docs-only change must NOT run the TS stage"
+[ -f "$docsmarker" ] || fail "a docs-only change MUST run the docs stage (GOTCHAS #143)"
+pass=$((pass+1))
+
+# The docs tier runs under the HOST profile too (go_tier=gofmt): GOTCHAS #143's
+# incident was a HOST-path docs push, so it must fire there, not only the sandbox.
+rm -f "$docsmarker"; rc=0
+printf 'docs/slices/x.mermaid\n' | GATE_DOCS_CMD="touch '$docsmarker'; true" \
+  gate_run "$PWD" "" gofmt 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "a clean docs change must pass under the host profile"
+[ -f "$docsmarker" ] || fail "the host profile MUST run the docs stage (GOTCHAS #143)"
+pass=$((pass+1))
+
+# The docs stage runs with git's hook env scrubbed (like the Go/TS/gofmt stages).
+rc=0
+printf 'docs/slices/x.mermaid\n' | \
+  GIT_DIR=/somewhere/.git GIT_INDEX_FILE=/somewhere/.git/index \
+  GATE_DOCS_CMD='[ -z "${GIT_DIR:-}${GIT_INDEX_FILE:-}" ] || exit 7' \
+  gate_run "$PWD" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "the docs stage must run with git's hook env scrubbed"
+pass=$((pass+1))
+
+# Per-repo override: an executable .sandcastle/docs-gate.sh runs when no
+# GATE_DOCS_CMD is set (mirrors the Go/TS overrides).
+docsroot="$(mktemp -d)"
+mkdir -p "$docsroot/.sandcastle"
+printf '#!/usr/bin/env bash\ntouch %q\n' "$docsmarker" > "$docsroot/.sandcastle/docs-gate.sh"
+chmod +x "$docsroot/.sandcastle/docs-gate.sh"
+rm -f "$docsmarker"; rc=0
+gate_docs_stage "$docsroot" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "an executable .sandcastle/docs-gate.sh must run and its exit propagate"
+[ -f "$docsmarker" ] || fail "the docs stage must run .sandcastle/docs-gate.sh when no GATE_DOCS_CMD is set"
+pass=$((pass+1))
+
+# GATE_DOCS_CMD takes precedence over an executable .sandcastle/docs-gate.sh.
+rm -f "$docsmarker"; rc=0
+GATE_DOCS_CMD="true" gate_docs_stage "$docsroot" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "GATE_DOCS_CMD must resolve when set"
+[ ! -f "$docsmarker" ] || fail "GATE_DOCS_CMD must take precedence over .sandcastle/docs-gate.sh"
+pass=$((pass+1))
+
+# The docs-gate.sh branch runs under the git-env scrub, like the other stages.
+printf '#!/usr/bin/env bash\n[ -z "${GIT_DIR:-}${GIT_INDEX_FILE:-}" ] || exit 7\n' \
+  > "$docsroot/.sandcastle/docs-gate.sh"
+chmod +x "$docsroot/.sandcastle/docs-gate.sh"
+rc=0
+GIT_DIR=/somewhere/.git GIT_INDEX_FILE=/somewhere/.git/index \
+  gate_docs_stage "$docsroot" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail ".sandcastle/docs-gate.sh must run with git's hook env scrubbed"
+pass=$((pass+1))
+rm -rf "$docsroot"
+
+# Fail-closed: a docs change with no GATE_DOCS_CMD, no docs-gate.sh and no `node`
+# blocks the push — a docs change that cannot be checked never ships un-checked.
+if ! command -v node >/dev/null 2>&1; then
+  docsroot="$(mktemp -d)"
+  rc=0; gate_docs_stage "$docsroot" 2>/dev/null || rc=$?
+  [ "$rc" -ne 0 ] || fail "a docs change with no node must fail closed, not ship un-checked"
+  pass=$((pass+1))
+  rc=0
+  printf 'docs/slices/x.mermaid\n' | gate_run "$PWD" 2>/dev/null || rc=$?
+  [ "$rc" -ne 0 ] || fail "gate_run must fail closed on an un-checkable docs change"
+  pass=$((pass+1))
+  rm -rf "$docsroot"
+fi
+
+# --- the DEFAULT docs command: the real checkers over a real fixture --------
+# Like the real-gofmt checks above, exercise gate_docs_default_cmd WITHOUT a stub
+# (the #400 lesson: a gate's real default command gets at least one test that
+# does not stub it). Guarded on the presence of `node`, the in-repo checkers, the
+# vendored mermaid and an installed happy-dom — all present in the product repo's
+# seam, none in the factory's bash-only test env, so this block simply skips
+# there. An isolated root (copied checkers + vendored parser, symlinked app tree)
+# keeps the scan off the live docs trees.
+realroot="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+if command -v node >/dev/null 2>&1 \
+   && [ -f "$realroot/scripts/check-mermaid.mjs" ] \
+   && [ -f "$realroot/scripts/check-slices-yaml.mjs" ] \
+   && [ -f "$realroot/docs/architecture/vendor/mermaid.min.js" ] \
+   && [ -d "$realroot/app/node_modules/happy-dom" ]; then
+  docsroot="$(mktemp -d)"
+  mkdir -p "$docsroot/scripts" "$docsroot/docs/architecture/vendor" \
+           "$docsroot/docs/slices" "$docsroot/docs/ux/flows"
+  cp "$realroot/scripts/check-mermaid.mjs" "$realroot/scripts/check-slices-yaml.mjs" "$docsroot/scripts/"
+  cp "$realroot/docs/architecture/vendor/mermaid.min.js" "$docsroot/docs/architecture/vendor/"
+  ln -s "$realroot/app" "$docsroot/app"
+
+  # The bare-`%%` source from the #143 incident: a comment with content on lines
+  # 1–4, a BARE `%%` on line 5. The stripper removes the content lines with their
+  # newlines; the bare `%%` survives and glues onto `flowchart TD` → a line-1
+  # parse error. This is the exact shape that red CI on PR #2067 (run 52773).
+  cat > "$docsroot/docs/slices/report-and-request.mermaid" <<'MMD'
+%% report-and-request fixture — GOTCHAS #143 bare-%% regression (block opens line 1)
+%% a comment line with content, so the stripper removes it and its trailing newline
+%% another content comment line, likewise removed
+%% a fourth content comment line
+%%
+flowchart TD
+    A["start"] --> B["end"]
+MMD
+  rc=0; out="$(gate_docs_stage "$docsroot" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "the bare-%% incident source must be REFUSED by the docs gate (GOTCHAS #143)"
+  printf '%s\n' "$out" | grep -q 'will not parse' \
+    || fail "the docs gate must name the parse failure, got: $out"
+  pass=$((pass+1))
+
+  # The SAME file with line 5 given content (`%% —`) parses — the gate accepts it.
+  sed -i '5s/^%%$/%% —/' "$docsroot/docs/slices/report-and-request.mermaid"
+  rc=0; gate_docs_stage "$docsroot" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 0 ] || fail "the same source with line 5 given content must be ACCEPTED"
+  pass=$((pass+1))
+
+  # A missing happy-dom (the sandbox-with-no-install case, #400) CRASHES the
+  # checker (exit 2). It must be reported as a HARNESS fault naming happy-dom —
+  # never as a broken diagram, never silently skipped. Drop the app symlink so
+  # happy-dom no longer resolves; the fixture itself now parses, proving the
+  # verdict is about the crash, not the diagram.
+  rm -f "$docsroot/app"
+  rc=0; out="$(gate_docs_stage "$docsroot" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a missing happy-dom must make the docs gate fail (a harness fault)"
+  printf '%s\n' "$out" | grep -qi 'happy-dom' \
+    || fail "the harness fault must NAME happy-dom, got: $out"
+  printf '%s\n' "$out" | grep -qi 'HARNESS fault' \
+    || fail "the crash must be reported as a harness fault, got: $out"
+  if printf '%s\n' "$out" | grep -q 'will not parse'; then
+    fail "a crash must NOT be reported as a broken diagram, got: $out"
+  fi
+  pass=$((pass+1))
+  rm -rf "$docsroot"
+fi
+rm -f "$docsmarker"
+
 # --- pre-push stdin → changed files, over a throwaway repo -----------------
 repo="$(mktemp -d)"; trap 'rm -rf "$repo" "$marker" "$tsmarker" "$fmtmarker"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
@@ -395,17 +579,24 @@ rm -rf "$staler"
 # distribution's own src/, ~340 files gofmt calls unformatted plus a wall of
 # deliberately-malformed testdata parse errors: the host gate blocked EVERY Go
 # push with a verdict about files this repo cannot fix, so it got bypassed and
-# gofmt debt reached main again (ce04cd10). These checks pin the scan's shape.
+# gofmt debt reached main again (ce04cd10). These checks pin the scan's shape —
+# including `.sandcastle/worktrees/` (#2134): the gitignored dir holding every
+# SIBLING worker's live worktree, so a concurrent worker's in-flight un-gofmt'd
+# Go must not refuse this worker's push (it is a foreign tree, same as nix-store).
 if command -v gofmt >/dev/null 2>&1; then
   fmtrepo="$(mktemp -d)"
   mkdir -p "$fmtrepo/internal" "$fmtrepo/node_modules/dep" \
-           "$fmtrepo/.sandcastle/nix-store/store/go-1.23.8/share/go/src/cmd"
+           "$fmtrepo/.sandcastle/nix-store/store/go-1.23.8/share/go/src/cmd" \
+           "$fmtrepo/.sandcastle/worktrees/sandcastle-worker-sibling/internal/breakglass"
   # gofmt wants a tab indent; two spaces is debt.
   debt='package p\n\nfunc f() {\n  return\n}\n'
   clean='package p\n\nfunc f() {\n\treturn\n}\n'
   printf "$clean" > "$fmtrepo/internal/ours.go"
   printf "$debt"  > "$fmtrepo/node_modules/dep/vendored.go"
   printf "$debt"  > "$fmtrepo/.sandcastle/nix-store/store/go-1.23.8/share/go/src/cmd/foreign.go"
+  # a SIBLING worker's in-flight un-gofmt'd Go, in the shared gitignored worktrees
+  # dir — foreign to this worker, must never enter the scan (#2134).
+  printf "$debt"  > "$fmtrepo/.sandcastle/worktrees/sandcastle-worker-sibling/internal/breakglass/actions.go"
   # and the malformed testdata that makes gofmt print parse errors, not a verdict
   printf 'package p\nfunc f() { if x := 1 {} }\n' \
     > "$fmtrepo/.sandcastle/nix-store/store/go-1.23.8/share/go/src/cmd/broken.go"
@@ -424,6 +615,8 @@ if command -v gofmt >/dev/null 2>&1; then
     || fail "the verdict must name the offending file root-relative, got: $out"
   printf '%s\n' "$out" | grep -qv 'nix-store' \
     || fail "the verdict must not mention nix-store, got: $out"
+  printf '%s\n' "$out" | grep -qv 'worktrees' \
+    || fail "the verdict must not mention a sibling worker's worktree (#2134), got: $out"
   [ "$(printf '%s\n' "$out" | wc -l)" -le 2 ] \
     || fail "the verdict must be the debt and nothing else, got: $out"
   pass=$((pass+1))
@@ -436,5 +629,16 @@ if command -v gofmt >/dev/null 2>&1; then
 
   rm -rf "$fmtrepo"
 fi
+
+# End to end: with the env unset, gate_run takes the docs tier from the repo's own
+# .sandcastle/docs-gate.globs — and a repo without one has no docs tier.
+gr="$(mktemp -d)"; mkdir -p "$gr/.sandcastle"; echo 'docs/slices/*' > "$gr/.sandcastle/docs-gate.globs"
+grmark="$gr/ran"
+printf 'docs/slices/x.mermaid\n' | GATE_DOCS_GLOBS='' GATE_DOCS_CMD="touch '$grmark'" gate_run "$gr" 2>/dev/null
+[ -f "$grmark" ] || fail "gate_run must read the per-repo docs-gate.globs and run the docs stage"; pass=$((pass+1))
+rm -f "$gr/.sandcastle/docs-gate.globs" "$grmark"
+printf 'docs/slices/x.mermaid\n' | GATE_DOCS_GLOBS='' GATE_DOCS_CMD="touch '$grmark'" gate_run "$gr" 2>/dev/null
+[ ! -f "$grmark" ] || fail "a repo with no docs-gate.globs must have no docs tier (#47)"; pass=$((pass+1))
+rm -rf "$gr"
 
 echo "gate-lib: $pass checks passed"

@@ -333,8 +333,24 @@ grep -q " Acme/widget 5$" "$FLEET_QUEUE_RECENT_CLOSES" || fail "a closed leg mus
 # the mirror: a pick lands as <signals-dir>/fleet-pick, no pick leaves nothing
 SCHEDULE_FLEET_PICK=9 schedule_fleet_pick_signal "$tmp/sig"
 [ "$(cat "$tmp/sig/fleet-pick")" = 9 ] || fail "the pick must be mirrored into the host-signals dir"
+# #327: no ready JSON passed → the number file only, no task file (the legacy shape)
+[ ! -e "$tmp/sig/fleet-pick-task" ] || fail "no ready JSON must leave no task signal"
 rm -rf "$tmp/sig"; SCHEDULE_FLEET_PICK="" schedule_fleet_pick_signal "$tmp/sig"
 [ ! -e "$tmp/sig/fleet-pick" ] || fail "no pick must leave no signal"
+# #327: with the pick's ready JSON, the FULL task object also lands as
+# fleet-pick-task, so the in-sandbox lister emits it with zero forge reads.
+rm -rf "$tmp/sig"
+SCHEDULE_FLEET_PICK=9 schedule_fleet_pick_signal "$tmp/sig" \
+  '[{"number":9,"title":"nine","body":"b","url":"u/9","landing":"push","blocker":false}]'
+[ "$(cat "$tmp/sig/fleet-pick")" = 9 ] || fail "the pick number must still be mirrored (#327)"
+[ "$(jq -r '.[0].number' "$tmp/sig/fleet-pick-task")" = 9 ] || fail "the pick's task object must be mirrored as fleet-pick-task (#327)"
+[ "$(jq -r 'length' "$tmp/sig/fleet-pick-task")" = 1 ] || fail "the task signal must be exactly the one pick (#327)"
+# #327: a garbled ready JSON leaves the number but no task file (the sandbox then
+# falls back to the single-issue fast path, never a silent empty queue).
+rm -rf "$tmp/sig"
+SCHEDULE_FLEET_PICK=9 schedule_fleet_pick_signal "$tmp/sig" 'not json'
+[ "$(cat "$tmp/sig/fleet-pick")" = 9 ] || fail "a garbled ready JSON must still mirror the number (#327)"
+[ ! -e "$tmp/sig/fleet-pick-task" ] || fail "a garbled ready JSON must leave no task file (#327)"
 pass=$((pass+1))
 
 echo "schedule-lib: $pass groups passed"

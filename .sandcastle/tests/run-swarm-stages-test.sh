@@ -59,6 +59,8 @@ run_swarm() { # run_swarm [extra env assignments...] -> stdout+stderr, sets RC
     PATH="$tmp/bin:$PATH" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://x/api/v1/repos/Acme/widget \
     REPO_SLUG=Acme/widget SWARM_HOST=box1 \
+    HOST_CAPACITY_STATE_DIR="$tmp/host-state" \
+    SWARM_FLEET_PICK_SIGNAL="$tmp/no-such-fleet-pick" \
     HOST_CAPACITY_DRIVE_WANTED="$tmp/no-such-reservation" \
     SWARM_DRIVE_DEFER_COUNT="$tmp/defer" \
     SWARM_VERDICT_PATH="$verdict" SWARM_RUNLOG="$runlog" \
@@ -97,6 +99,21 @@ grep -q 'exit=0' "$runlog" || fail "the runlog must carry the exit code: $(cat "
 # #135: the runlog row names the executing pool host + runner
 grep -q 'host=box1' "$runlog" || fail "the runlog must carry the executing host (#135): $(cat "$runlog")"
 grep -q 'runner=unknown' "$runlog" || fail "the runlog must carry the runner name (#135): $(cat "$runlog")"
+pass=$((pass+1))
+
+# #339: the host/cron path (no Actions RUNNER_NAME) resolves the runner name from
+# this host's .runner the way the factory WRITES it — <ONBOARD_HOST_RUNNER_DIR>/.runner,
+# not the old `${SWARM_RUNNER_FILE:-$HOME/.runner}` default that named a path
+# onboarding never creates, which silently lost the #135 runner name on every
+# factory-onboarded host. SWARM_RUNNER_FILE empty, onboarding default present.
+mkdir -p "$tmp/forgejo-runner"
+printf '{"uuid":"4ff4a71f-dead-beef-0000-111111111111","name":"swarm-01"}\n' > "$tmp/forgejo-runner/.runner"
+rm -f "$verdict" "$runlog" "$tmp/stamp"; : > "$curl_log"
+run_swarm SCHEDULE_LIST_READY="$tmp/list-ready-empty" \
+  SWARM_RUNNER_FILE= ONBOARD_HOST_RUNNER_DIR="$tmp/forgejo-runner"
+[ "$RC" = 0 ] || fail "#339 run must exit 0, got $RC: $out"
+grep -q 'runner=swarm-01' "$runlog" \
+  || fail "#339: with no RUNNER_NAME and SWARM_RUNNER_FILE unset, the runner name must come from <ONBOARD_HOST_RUNNER_DIR>/.runner, not the dead \$HOME/.runner default: $(cat "$runlog")"
 pass=$((pass+1))
 
 # the PRESENT-policy-file branch, given explicit coverage (#101). The whole-script
@@ -239,6 +256,10 @@ pass=$((pass+1))
 hp="$(stage_line host_capacity_holder_write)"; fp="$(stage_line schedule_fleet_pick)"
 [ -n "$hp" ] && [ -n "$fp" ] && [ "$hp" -gt "$fp" ] \
   || fail "host_capacity_holder_write must come after schedule_fleet_pick (holder line $hp, pick line $fp)"
+# The holder NAMES the fleet pick (ref = the ticket number) so the Floor shows
+# the ticket on its slot from claim time, not "ticket —" until the run ends.
+grep -q 'host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket "${SCHEDULE_FLEET_PICK:-run}"' "$rs" \
+  || fail "the ticket holder's ref must be the fleet pick (SCHEDULE_FLEET_PICK), falling back to run"
 grep -q 'report_self_rearm "\$worker_ran" "\$repo_slug" "\$sandcastle_attempts"' "$rs" \
   || fail "report_self_rearm must be handed the repo slug and the attempts file (#301)"
 pass=$((pass+1))

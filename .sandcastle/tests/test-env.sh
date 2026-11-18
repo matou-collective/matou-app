@@ -51,6 +51,29 @@ test_env_hermetic() {
   # override the PREFIX, not each path, so a test still exercises the real
   # derivation logic (test 13, #35) inside its own sandbox.
   export SESSION_RUNNER_TMP="$d/host-env"
+  # #326: the HOST CAPACITY state dir — host-capacity-lib.sh and fleet-queue-
+  # lib.sh derive a whole family of live host paths from it: the slot locks
+  # (matou-swarm.lock, matou-host-slot-2.lock), matou-drive-wanted,
+  # drive-log.jsonl, and the fleet-queue cache + recent-closes + dispatch stamp
+  # (fleet-queue.json, fleet-recent-closes, fleet-queue-dispatched). Left at its
+  # $HOME/swarm/state default, a test that execs an orchestrator by path READS
+  # the live fleet-queue cache of the host it runs on — so schedule_fleet_pick
+  # can stand the run down on a fresh head of another repo BEFORE the seam the
+  # test exists to pin, flapping red with the host's queue (#326). Redirect the
+  # whole derivation into the sandbox; a per-invocation override of any single
+  # derived path (HOST_CAPACITY_SLOTS, HOST_CAPACITY_DRIVE_WANTED, …) still wins.
+  export HOST_CAPACITY_STATE_DIR="$d/host-env"
+  # #330: the in-sandbox fleet-pick SIGNAL — list-ready-tasks.sh reads THIS run's
+  # claimed ticket from ${SWARM_FLEET_PICK_SIGNAL:-/run/host-signals/fleet-pick}
+  # and, when present, narrows every listing to that single issue (idss#2145
+  # single-issue fast path, commit 7f9d8e1). That file exists in EVERY worker
+  # sandbox (it carries this run's pick) but is absent on the CI host, so a test
+  # that drives the lister without pinning it reads the live pick in-sandbox and
+  # narrows to a ticket its fixtures do not carry (404/503 → wrong verdict), green
+  # on CI yet red in-sandbox (#330, sibling of #326's fleet-queue cache leak).
+  # Point it at an ABSENT sandbox path so the full-page lister path always runs; a
+  # test that exercises the fast path overrides it inline with its own pick file.
+  export SWARM_FLEET_PICK_SIGNAL="$d/host-env/fleet-pick"
 }
 
 # ── self-guard: only when executed directly, never when sourced ──────────────
@@ -64,7 +87,8 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   # 1: the redirect points every host-state var under the given temp dir.
   test_env_hermetic "$tmp"
   for v in SWARM_RUNLOG SWARM_DB SWARM_VERDICT_PATH SESSION_RUNNER_TMP \
-           CLAUDE_LIMIT_MARKER CLAUDE_ACTIVE_MARKER SWARMDB_ASSERT_UNDER; do
+           CLAUDE_LIMIT_MARKER CLAUDE_ACTIVE_MARKER SWARMDB_ASSERT_UNDER \
+           HOST_CAPACITY_STATE_DIR SWARM_FLEET_PICK_SIGNAL; do
     case "${!v}" in
       "$tmp"|"$tmp"/*) : ;;
       *) fail "$v must resolve under the test temp dir, got: ${!v}" ;;
@@ -73,6 +97,9 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   # the tripwire root must equal the sandbox (a prefix-only match would let a
   # sibling temp dir through), and SWARM_DB must sit under it (#116).
   [ "$SWARMDB_ASSERT_UNDER" = "$tmp" ] || fail "SWARMDB_ASSERT_UNDER must be the sandbox root, got: $SWARMDB_ASSERT_UNDER"
+  # the fleet-pick signal redirect must name an ABSENT file, so the lister takes
+  # the full-page path by default rather than narrowing to a leaked live pick (#330).
+  [ ! -e "$SWARM_FLEET_PICK_SIGNAL" ] || fail "the redirected fleet-pick signal must not exist, got a file at: $SWARM_FLEET_PICK_SIGNAL"
   pass=$((pass+1))
 
   # 2: the derived session-runner lock path lands under the redirected prefix,

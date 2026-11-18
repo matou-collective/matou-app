@@ -52,16 +52,28 @@ body=$'a\r\n```\r\nx\r\n```\r\nb\r\n'
   || fail "CRLF must be tolerated, got '$(body_outside_fences "$body" | od -c | head -3)'"
 pass=$((pass+1))
 
-# 7: body_marker — first wins, value trimmed, a marker sharing a line with prose
-#    still parses, a marker inside a fence is NOT a marker.
+# 7: body_marker — value trimmed, first wins; a marker that merely shares its
+#    line with prose STILL parses (the harness writes close-report's gates-passed
+#    marker that way, #206); a marker wrapped in an INLINE code span is NOT
+#    honoured (#2111); a marker inside a BLOCK fence is NOT honoured.
 [ "$(body_marker $'x <!--   session-host:   box2   --> y' session-host)" = "box2" ] \
-  || fail "marker: surrounding whitespace must be trimmed"
+  || fail "marker: a marker sharing its line with prose parses, whitespace trimmed"
+[ "$(body_marker $'<!-- close-report: gates-passed --> cleared for merge' close-report)" = "gates-passed" ] \
+  || fail "marker: a prose-adjacent marker (not in a span) parses, e.g. close-report #206"
+[ -z "$(body_marker $'see the \x60<!-- session-host: box2 -->\x60 span' session-host)" ] \
+  || fail "marker: a marker in an inline code span is NOT honoured (#2111)"
+[ -z "$(body_marker $'and \x60\x60<!-- session-host: box2 -->\x60\x60 too' session-host)" ] \
+  || fail "marker: a marker in a double-backtick inline span is NOT honoured (#2111)"
+[ "$(body_marker $'quoted \x60<!-- session-host: phantom -->\x60 then\n<!-- session-host: real -->' session-host)" = "real" ] \
+  || fail "marker: a real marker wins over an earlier inline-span phantom (#2111)"
 [ "$(body_marker $'<!-- session-host: a -->\n<!-- session-host: b -->' session-host)" = "a" ] \
   || fail "marker: the first marker must win"
 [ -z "$(body_marker $'````\n<!-- session-host: evil -->\n````' session-host)" ] \
   || fail "marker: a marker inside a fence must NOT be honoured"
 [ "$(body_marker $'````\n<!-- session-host: evil -->\n````\n<!-- session-host: real -->' session-host)" = "real" ] \
   || fail "marker: the first marker OUTSIDE a fence must win over one inside"
+[ "$(body_marker $'an unbalanced \x60 backtick then <!-- session-host: kept -->' session-host)" = "kept" ] \
+  || fail "marker: a lone unmatched backtick opens no span (#2111)"
 [ -z "$(body_marker "" session-host)" ] || fail "marker: an empty body yields empty"
 pass=$((pass+1))
 
@@ -71,6 +83,37 @@ pass=$((pass+1))
 [ -z "$(origin_marker '<!-- origin: app-report #12abc -->')" ] || fail "origin: a non-numeric root is no marker"
 [ -z "$(origin_marker '<!-- origin: somewhere-else -->')" ] || fail "origin: an unknown origin is no marker"
 [ -z "$(origin_marker $'````\n<!-- origin: app-report #5 -->\n````')" ] || fail "origin: inside a fence is no marker"
+[ -z "$(origin_marker $'investigating \x60<!-- origin: app-report -->\x60 always-red')" ] \
+  || fail "origin: an inline-span marker in prose is NOT a root report (#2036/#2111)"
+pass=$((pass+1))
+
+# 9: an inline code span is literal text, not a comment — a marker QUOTED in
+#    backticks (an agent reporting on another ticket's marker) is no marker.
+#    Seen live 2026-11-03: idss #2036's body said "#1819 carries
+#    `<!-- origin: app-report -->`", and the landing tripwire's leg 2 read it as
+#    #2036's own origin and red every push to main.
+[ -z "$(origin_marker 'x carries `<!-- origin: app-report -->` but no label')" ] \
+  || fail "code span: a marker quoted in single backticks must NOT be honoured"
+[ -z "$(body_marker 'a ``x ` <!-- session-host: evil --> y`` b' session-host)" ] \
+  || fail "code span: a double-backtick span holding a lone backtick still hides its marker"
+[ "$(body_marker 'see `x` then <!-- session-host: real -->' session-host)" = "real" ] \
+  || fail "code span: a bare marker after an unrelated code span on the same line must still parse"
+[ "$(body_marker $'quoted `<!-- session-host: evil -->`\n<!-- session-host: real -->' session-host)" = "real" ] \
+  || fail "code span: the first marker OUTSIDE a code span must win over a quoted one"
+[ "$(body_marker 'an `unclosed span <!-- session-host: real -->' session-host)" = "real" ] \
+  || fail "code span: an unmatched backtick opens no span (CommonMark), so the marker stands"
+# session_host_marker reads through body_marker_text, not marker() — it
+# must inherit the same rule (sourced in a subshell: it is its own lib).
+[ -z "$(. "$here/../session-host-lib.sh"; session_host_marker 'q `<!-- session-host: evil -->`')" ] \
+  || fail "code span: session_host_marker must not honour a quoted marker either"
+[ "$(origin_marker '<!-- origin: app-report -->')" = "report" ] || fail "code span: a bare marker still parses"
+# A stripped span must not SPLICE a marker out of the text on either side.
+[ -z "$(body_marker '<!-- `x` session-host: evil -->' session-host)" ] \
+  || fail "code span: removing a span must not join its neighbours into a marker"
+# ...but body_outside_fences (the reference scan's text) KEEPS code spans: a
+# descendant citing its root as `#1701` must still be found and inherit.
+[ "$(body_outside_fences 'from `#1701` here')" = 'from `#1701` here' ] \
+  || fail "code span: body_outside_fences must keep inline code (reference scans over-include by design)"
 pass=$((pass+1))
 
 echo "body-marker-lib-test: $pass groups passed"

@@ -637,3 +637,41 @@ host_capacity_drive_log_end() {
   [ -n "$slots" ] || slots="$(_host_capacity_drive_slots)"
   for slot in $slots; do host_capacity_holder_clear "$slot"; done
 }
+
+# --- this host's forgejo runner registration file (#339) ---------------------
+# host_runner_file — the forgejo act_runner `.runner` JSON this host registered,
+# carrying its runner `uuid` (heal.sh's pool-locality signal, #336) and `name`
+# (run-swarm.sh's #135 per-host trace). Resolved the way the FACTORY actually
+# writes it, not upstream act_runner's own default:
+# `onboard_host_runner_register` runs `forgejo-runner register` with
+# ONBOARD_HOST_RUNNER_DIR (default $HOME/forgejo-runner) as cwd, so the file
+# lands at $HOME/forgejo-runner/.runner — NOT $HOME/.runner. heal.sh:304 and
+# run-swarm.sh:175 used to default to $HOME/.runner, a path the factory never
+# creates on any host it onboarded, so on every factory-onboarded host the uuid
+# came back empty and #336's `here` state was dead code (#339).
+#
+# First match wins:
+#   1. $SWARM_RUNNER_FILE               — explicit operator override / the offline
+#                                         test seam; honoured VERBATIM (even when
+#                                         absent, so a misconfigured path is loud,
+#                                         not silently masked by a fallback).
+#   2. <ONBOARD_HOST_RUNNER_DIR>/.runner — how the factory onboards every pool
+#                                         host (default $HOME/forgejo-runner). The
+#                                         SAME knob onboarding reads, so the writer
+#                                         and the reader share one override and
+#                                         cannot drift (ADR 0004 point 6's mirror-
+#                                         with-a-comment convention — this lib is
+#                                         not sourced by the onboarding tree, so
+#                                         the literal is mirrored, not shared).
+#   3. $HOME/.runner                     — upstream act_runner's own default, for a
+#                                         host registered by hand outside onboarding.
+# When none exist, falls back to the onboarding-default path (#2) so a caller that
+# only `[ -f ]`-tests the result still names the path the factory would write.
+# Pure (no network); safe under set -e (only printf + path tests).
+host_runner_file() {
+  if [ -n "${SWARM_RUNNER_FILE:-}" ]; then printf '%s\n' "$SWARM_RUNNER_FILE"; return 0; fi
+  local onboard="${ONBOARD_HOST_RUNNER_DIR:-$HOME/forgejo-runner}/.runner"
+  [ -f "$onboard" ]       && { printf '%s\n' "$onboard";       return 0; }
+  [ -f "$HOME/.runner" ]  && { printf '%s\n' "$HOME/.runner";  return 0; }
+  printf '%s\n' "$onboard"
+}

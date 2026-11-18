@@ -50,6 +50,31 @@ FLEET_QUEUE_MAX_TIME="${FLEET_QUEUE_MAX_TIME:-30}"
 FLEET_QUEUE_LISTER="${FLEET_QUEUE_LISTER:-list-ready-tasks.sh}"
 FLEET_QUEUE_IDENTITY="${FLEET_QUEUE_IDENTITY:-swarm-identity.sh}"
 
+# ── stand-down of a host whose dispatches never claim (#315) ─────────────────
+# A dispatch that dies before it can claim (a sick host: no disk to mkdir the
+# runner's act cache, a name it cannot resolve — #191) leaves the fleet head
+# unchanged, so once the redispatch window lapses this host dispatches the SAME
+# ticket to itself forever. The caller counts consecutive unclaimed dispatches
+# (the fleet head is still the ticket we last stamped) and, past the threshold,
+# stands this host down with a DECAYING backoff so a recovered host rejoins on
+# its own the moment a probe dispatch claims.
+FLEET_QUEUE_STRIKES_MAX="${FLEET_QUEUE_STRIKES_MAX:-3}"   # unclaimed dispatches before standing down
+FLEET_QUEUE_BACKOFF_BASE="${FLEET_QUEUE_BACKOFF_BASE:-600}"  # first backoff, seconds
+FLEET_QUEUE_BACKOFF_MAX="${FLEET_QUEUE_BACKOFF_MAX:-7200}"   # backoff cap, seconds (doubles each strike)
+
+# ── disk-headroom floor for slot_free (#315) ─────────────────────────────────
+# A host with no room to mkdir the runner's act cache reports a free slot today
+# (slot_free gates only on a drive reservation and a pooled flock), wins the
+# dispatch, and dies at `workflow prepared` before step one. A declared floor
+# (the registry's `min-free-gb`, rendered into FLEET_QUEUE_MIN_FREE_GB) checked
+# against the filesystem that holds the act cache closes that: 0 disables it, so
+# a host that declares nothing behaves exactly as before. The cache path is
+# $HOME/.cache/act by default (the act runner's own layout — not `/`, which can
+# have room while the runner's $HOME does not); overridable for a test or an
+# unusual host, never a product literal in the harness.
+FLEET_QUEUE_MIN_FREE_GB="${FLEET_QUEUE_MIN_FREE_GB:-0}"
+FLEET_QUEUE_ACT_CACHE="${FLEET_QUEUE_ACT_CACHE:-$HOME/.cache/act}"
+
 # _fleet_queue_file <checkout> <basename> — the VENDORED copy (.sandcastle/)
 # when the checkout is a consumer, else the root copy (the self-hosting
 # factory checkout); rc 1 when neither exists (a pin that predates the file).
@@ -210,14 +235,114 @@ fleet_queue_stamp_fresh() {
   [ "$age" -lt "$window" ] || return 1
   printf '%s %s %s' "$slug" "$n" "$age"
 }
+# fleet_queue_stamp_ticket -> "slug n" of the last dispatch regardless of its
+# age (rc 1, no output, when no stamp exists). The strike accounting reads it to
+# ask "is the ticket we last dispatched STILL the fleet head?" — a healthy claim
+# relabels the ticket agent-working and it leaves every lister, so the head
+# moves; only a dispatch that never claimed leaves it standing.
+fleet_queue_stamp_ticket() {
+  local f at slug n
+  f="$(fleet_queue_stamp_path)"
+  [ -s "$f" ] || return 1
+  read -r at slug n <"$f" || return 1
+  { [ -n "${slug:-}" ] && [ -n "${n:-}" ]; } || return 1
+  printf '%s %s' "$slug" "$n"
+}
+
+# ── strikes: consecutive dispatches that never claimed (#315) ────────────────
+# The strike file carries "<count> <last-strike-epoch>". A healthy progression
+# (the head moved) resets it; each unclaimed-expiry bumps it. Past the threshold
+# the host stands down with a backoff that doubles per strike (capped), so a
+# sick host is probed ever less often yet rejoins the instant a probe claims.
+fleet_queue_strikes_path() { printf '%s' "${FLEET_QUEUE_STRIKES:-$HOST_CAPACITY_STATE_DIR/fleet-queue-strikes}"; }
+# fleet_queue_strikes -> the current strike count (0 when absent or malformed).
+fleet_queue_strikes() {
+  local f n rest
+  f="$(fleet_queue_strikes_path)"
+  [ -s "$f" ] || { echo 0; return 0; }
+  read -r n rest <"$f" || { echo 0; return 0; }
+  case "$n" in ''|*[!0-9]*) echo 0; return 0 ;; esac
+  echo "$n"
+}
+# fleet_queue_strike_bump -> increment the counter, stamping NOW as the strike
+# time, and echo the new count.
+fleet_queue_strike_bump() {
+  local f n
+  f="$(fleet_queue_strikes_path)"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  n="$(fleet_queue_strikes)"
+  n=$(( n + 1 ))
+  printf '%s %s\n' "$n" "$(date +%s)" >"$f"
+  echo "$n"
+}
+# fleet_queue_strike_reset -> clear the counter (the host demonstrably claimed).
+fleet_queue_strike_reset() { rm -f "$(fleet_queue_strikes_path)"; }
+
+# fleet_queue_standdown -> rc 0 (and "<strikes> <remaining-seconds>" on stdout)
+# when this host has >= FLEET_QUEUE_STRIKES_MAX consecutive unclaimed dispatches
+# AND the decaying backoff since the last strike has not yet elapsed; rc 1
+# otherwise (healthy, below the threshold, or the backoff lapsed so a probe
+# dispatch is due now). The backoff doubles for each strike past the threshold,
+# capped at FLEET_QUEUE_BACKOFF_MAX.
+fleet_queue_standdown() {
+  local f n last over backoff now elapsed remain
+  f="$(fleet_queue_strikes_path)"
+  [ -s "$f" ] || return 1
+  read -r n last <"$f" || return 1
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  case "$last" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$n" -ge "$FLEET_QUEUE_STRIKES_MAX" ] || return 1
+  over=$(( n - FLEET_QUEUE_STRIKES_MAX ))
+  backoff="$FLEET_QUEUE_BACKOFF_BASE"
+  while [ "$over" -gt 0 ] && [ "$backoff" -lt "$FLEET_QUEUE_BACKOFF_MAX" ]; do
+    backoff=$(( backoff * 2 )); over=$(( over - 1 ))
+  done
+  [ "$backoff" -le "$FLEET_QUEUE_BACKOFF_MAX" ] || backoff="$FLEET_QUEUE_BACKOFF_MAX"
+  now="$(date +%s)"
+  elapsed=$(( now - last ))
+  [ "$elapsed" -lt "$backoff" ] || return 1
+  remain=$(( backoff - elapsed ))
+  printf '%s %s' "$n" "$remain"
+}
+
+# fleet_queue_free_gb <path> -> whole GiB free on the filesystem holding <path>,
+# on stdout; rc 1 with no output when df cannot answer. The act cache dir may
+# not exist yet, so the probe walks up to the nearest existing ancestor (the
+# filesystem is the same). This is the ONE place df is called, so the offline
+# test shims df behind a full/empty-disk fixture.
+fleet_queue_free_gb() {
+  local p="$1" parent avail
+  while [ -n "$p" ] && [ ! -e "$p" ]; do
+    parent="${p%/*}"
+    [ -n "$parent" ] && [ "$parent" != "$p" ] || parent=/
+    p="$parent"
+  done
+  [ -n "$p" ] || p=/
+  # -P: POSIX one-line-per-fs (never wrapped); -k: 1K blocks (portable — -BG is
+  # GNU-only). Available is the 4th column of the data row.
+  avail="$(df -Pk "$p" 2>/dev/null | awk 'NR==2 {print $4}')" || return 1
+  case "$avail" in ''|*[!0-9]*) return 1 ;; esac
+  echo $(( avail / 1024 / 1024 ))
+}
 
 # fleet_queue_slot_free -> rc 0 iff this host could start a run NOW: no fresh
-# rehearsal-drive reservation, and at least one pooled slot flocks non-blocking
-# (probed and released at once — never camp, never hold; the leg takes it for
-# real). Sourced into the caller's shell so the probe fds close here.
+# rehearsal-drive reservation, enough headroom on the runner's act-cache
+# filesystem (FLEET_QUEUE_MIN_FREE_GB, 0 = unchecked), and at least one pooled
+# slot flocks non-blocking (probed and released at once — never camp, never
+# hold; the leg takes it for real). Sourced into the caller's shell so the
+# probe fds close here. The disk gate FAILS OPEN (a df blip never blinds the
+# host) but FAILS CLOSED on a concrete under-floor reading — a host that cannot
+# mkdir the act cache must not report a free slot (#315).
 fleet_queue_slot_free() {
-  local slot fd
+  local slot fd free
   host_capacity_drive_wanted && return 1
+  if [ "${FLEET_QUEUE_MIN_FREE_GB:-0}" -gt 0 ]; then
+    free="$(fleet_queue_free_gb "$FLEET_QUEUE_ACT_CACHE")" || free=""
+    if [ -n "$free" ] && [ "$free" -lt "$FLEET_QUEUE_MIN_FREE_GB" ]; then
+      echo "fleet-queue: ${free}G free on the runner cache filesystem ($FLEET_QUEUE_ACT_CACHE, < ${FLEET_QUEUE_MIN_FREE_GB}G floor) — no free slot until the disk recovers" >&2
+      return 1
+    fi
+  fi
   host_capacity_statedir_ensure
   for slot in $HOST_CAPACITY_SLOTS; do
     exec {fd}>"$slot" || continue

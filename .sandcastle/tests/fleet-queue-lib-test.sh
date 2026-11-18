@@ -179,6 +179,69 @@ rm -f "$HOST_CAPACITY_DRIVE_WANTED"
 check "slot_free leaves no lock held behind it (a second probe still succeeds)" \
   'fleet_queue_slot_free && fleet_queue_slot_free'
 
+# ── disk headroom: a host with no room for the act cache is NOT free (#315) ──
+# df is the one external probe; shim it behind a KB-available fixture so a full
+# or roomy disk is a value, not a real filesystem.
+shim df <<'SH'
+echo "Filesystem 1024-blocks Used Available Capacity Mounted"
+echo "/dev/fake 999999999 0 ${FAKE_DF_AVAIL_KB:-999999999} 1% /"
+SH
+export FLEET_QUEUE_ACT_CACHE="$tmp/state"   # exists: no ancestor walk
+check "free_gb reports whole GiB from df's available KB" \
+  '[ "$(FAKE_DF_AVAIL_KB=$((7 * 1024 * 1024)) fleet_queue_free_gb "$tmp/state")" -eq 7 ]'
+check "free_gb walks up to an existing ancestor for a cache dir not yet created" \
+  '[ "$(FAKE_DF_AVAIL_KB=$((3 * 1024 * 1024)) fleet_queue_free_gb "$tmp/state/nope/act")" -eq 3 ]'
+check "slot_free with the floor off (0) never consults the disk" \
+  'FLEET_QUEUE_MIN_FREE_GB=0 FAKE_DF_AVAIL_KB=1 fleet_queue_slot_free'
+check "slot_free is FALSE when free GiB is under the declared floor" \
+  '! FLEET_QUEUE_MIN_FREE_GB=5 FAKE_DF_AVAIL_KB=$((2 * 1024 * 1024)) fleet_queue_slot_free 2>/dev/null'
+check "slot_free names the shortfall on its stderr line" \
+  'FLEET_QUEUE_MIN_FREE_GB=5 FAKE_DF_AVAIL_KB=$((2 * 1024 * 1024)) fleet_queue_slot_free 2>"$tmp/df.err"; grep -q "2G free" "$tmp/df.err" && grep -q "5G floor" "$tmp/df.err"'
+check "slot_free is TRUE when free GiB clears the floor" \
+  'FLEET_QUEUE_MIN_FREE_GB=5 FAKE_DF_AVAIL_KB=$((9 * 1024 * 1024)) fleet_queue_slot_free'
+check "slot_free admits the host when the df probe returns nothing (fail-open, no blinding on a blip)" \
+  'fleet_queue_free_gb() { return 1; }; FLEET_QUEUE_MIN_FREE_GB=5 fleet_queue_slot_free; rc=$?; unset -f fleet_queue_free_gb; [ "$rc" -eq 0 ]'
+unset FLEET_QUEUE_ACT_CACHE
+
+# ── stamp_ticket: the last dispatch regardless of age (#315) ────────────────
+rm -f "$FLEET_QUEUE_STAMP"
+check "stamp_ticket is rc 1 with no stamp" '! fleet_queue_stamp_ticket >/dev/null'
+fleet_queue_stamp_write Acme/beta 5
+check "stamp_ticket names the last dispatch slug and number" \
+  '[ "$(fleet_queue_stamp_ticket)" = "Acme/beta 5" ]'
+printf '%s Acme/beta 5\n' "$(( $(date +%s) - 99999 ))" >"$FLEET_QUEUE_STAMP"
+check "stamp_ticket reports a stale stamp too (freshness-independent)" \
+  '[ "$(fleet_queue_stamp_ticket)" = "Acme/beta 5" ]'
+
+# ── strikes + stand-down: back off a host whose dispatches never claim (#315) ─
+export FLEET_QUEUE_STRIKES="$tmp/state/fleet-queue-strikes"
+export FLEET_QUEUE_STRIKES_MAX=3 FLEET_QUEUE_BACKOFF_BASE=600 FLEET_QUEUE_BACKOFF_MAX=7200
+rm -f "$FLEET_QUEUE_STRIKES"
+check "strikes is 0 with no file" '[ "$(fleet_queue_strikes)" -eq 0 ]'
+check "strike_bump counts up and persists" \
+  '[ "$(fleet_queue_strike_bump)" -eq 1 ] && [ "$(fleet_queue_strike_bump)" -eq 2 ] && [ "$(fleet_queue_strikes)" -eq 2 ]'
+check "standdown is rc 1 below the threshold" '! fleet_queue_standdown >/dev/null'
+check "the third strike reaches the threshold" '[ "$(fleet_queue_strike_bump)" -eq 3 ]'
+check "standdown is rc 0 at the threshold, naming the strikes and a remaining backoff" \
+  'out="$(fleet_queue_standdown)" && [ "$(cut -d" " -f1 <<<"$out")" -eq 3 ] && [ "$(cut -d" " -f2 <<<"$out")" -gt 0 ]'
+check "standdown's first backoff is the base window" \
+  '[ "$(fleet_queue_standdown | cut -d" " -f2)" -le 600 ]'
+# A strike past the threshold doubles the backoff; a far-past last-strike time
+# lets the window elapse so a probe is due.
+printf '4 %s\n' "$(( $(date +%s) - 10 ))" >"$FLEET_QUEUE_STRIKES"
+check "standdown doubles the backoff for a strike past the threshold" \
+  '[ "$(fleet_queue_standdown | cut -d" " -f2)" -gt 600 ]'
+printf '3 %s\n' "$(( $(date +%s) - 1000 ))" >"$FLEET_QUEUE_STRIKES"
+check "standdown is rc 1 once the backoff has elapsed (a probe is due)" \
+  '! fleet_queue_standdown >/dev/null'
+printf '50 %s\n' "$(( $(date +%s) - 10 ))" >"$FLEET_QUEUE_STRIKES"
+check "standdown caps the backoff at the max" \
+  '[ "$(fleet_queue_standdown | cut -d" " -f2)" -le 7200 ]'
+fleet_queue_strike_reset
+check "strike_reset clears the counter" \
+  '[ "$(fleet_queue_strikes)" -eq 0 ] && ! fleet_queue_standdown >/dev/null'
+unset FLEET_QUEUE_STRIKES_MAX FLEET_QUEUE_BACKOFF_BASE FLEET_QUEUE_BACKOFF_MAX FLEET_QUEUE_STRIKES
+
 # ── dispatch: ONE repo's swarm.yml with inputs.ticket + inputs.host ─────────
 : >"$CURL_LOG"
 code="$(fleet_queue_dispatch https://forge.test/api/v1 Acme/beta 5 box-07)"

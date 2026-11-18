@@ -162,6 +162,17 @@ const HOST_SIGNALS_DIR =
   process.env.SWARM_HOST_SIGNALS_DIR ?? `${tmpdir()}/matou-host-signals-${swarmDbRunId ?? String(process.pid)}`;
 const DRIVE_SIGNAL = `${HOST_SIGNALS_DIR}/drive-wanted`;
 mkdirSync(HOST_SIGNALS_DIR, { recursive: true });
+// #2106: the run-scoped WRITABLE sink for the sandbox->host attempt record. #283's
+// stranded-close reconcile used to read close-report's SANDCASTLE_ATTEMPT line only
+// out of the worker's stdout (the sandcastle log), which a worker's own
+// `| tail`/`| head` on close-report can truncate away (run 57327 stranded #2099).
+// close-report.sh ALSO appends the line here — a channel no trailing pipe on its
+// stdout can drop. Writable (sandbox->host), unlike the read-only host-signals
+// mount; run-scoped and removed on exit the same way. run-swarm.sh exports the same
+// SWARM_HOST_ATTEMPTS_DIR so the host side reads what the sandbox wrote.
+const HOST_ATTEMPTS_DIR =
+  process.env.SWARM_HOST_ATTEMPTS_DIR ?? `${tmpdir()}/matou-host-attempts-${swarmDbRunId ?? String(process.pid)}`;
+mkdirSync(HOST_ATTEMPTS_DIR, { recursive: true });
 try {
   rmSync(DRIVE_SIGNAL); // a stale signal from a crashed run must not silence this one
 } catch {
@@ -292,6 +303,11 @@ function driveMirrorStop(): void {
   } catch {
     // best effort
   }
+  try {
+    rmSync(HOST_ATTEMPTS_DIR, { recursive: true, force: true }); // #2106
+  } catch {
+    // best effort
+  }
 }
 
 let result;
@@ -340,6 +356,11 @@ try {
         { hostPath: ".sandcastle/worktrees", sandboxPath: `${process.cwd()}/.sandcastle/worktrees`, readonly: false },
         // #111: the host's drive-reservation mirror — read-only, run-scoped.
         { hostPath: HOST_SIGNALS_DIR, sandboxPath: "/run/host-signals", readonly: true },
+        // #2106: the WRITABLE sink for close-report's SANDCASTLE_ATTEMPT line — the
+        // sandbox->host half of #283's reconcile, read independently of how the
+        // worker pipes close-report's stdout. The fixed container path matches
+        // close-report.sh's SANDCASTLE_ATTEMPT_SINK default.
+        { hostPath: HOST_ATTEMPTS_DIR, sandboxPath: "/run/host-attempts", readonly: false },
       ],
     }),
 
@@ -371,23 +392,29 @@ try {
     // what a longer run saved was one dispatch + one leg per ticket.
     maxIterations: 1,
 
-    // Branch strategy — LANDING-aware (#230; branch-strategy.mts has the full
-    // why). merge-to-head runs the agent on a temp worktree branch and merges
-    // it back to HEAD (`main`) when the run completes — right under
-    // LANDING=push, where `main` is the landing surface. Under LANDING=pr the
-    // landing already happened via the worker's pull request, so that post-run
-    // merge is redundant AND is the thing that reds the run on a STATUS.md
-    // concurrent-write conflict (SyncError; GOTCHAS 72): there we pin the
-    // worktree to a per-run-unique NAMED branch, which Sandcastle collects
-    // commits from but never merges onto `main`. The temp branch is discarded
-    // by the next run's `git reset --hard origin/main`, like the
-    // `sandcastle/worker/*` branches merge-to-head already leaves behind.
+    // Branch strategy — LANDING-aware (#230; deepened by #329 — branch-strategy.mts
+    // has the full why). BOTH LANDING=push and LANDING=pr pin a per-run NAMED
+    // worktree branch, so Sandcastle collects the worker's commits onto it but
+    // performs NO merge onto `main` (the `hostCurrentBranch === null` path). That
+    // keeps the conflict-prone merge OUT of the Sandcastle lifecycle: under pr the
+    // worker's land-pr.sh already opened the PR, and under push the HOST adopts the
+    // branch (execute-lib.sh) and landing_push_main_with_rescue owns the only
+    // rebase against the live `origin/main`, inside the GOTCHAS 66 ladder, where a
+    // stale-base conflict PARKS instead of reding (GOTCHAS 72). An UNSET LANDING (a
+    // bare `pnpm run sandcastle` with no policy layer and no host to adopt the
+    // branch) keeps merge-to-head, the historical local-dev default.
+    //
+    // The branch NAME is run-swarm.sh's SWARM_WORKER_BRANCH when it launched us —
+    // the host generates it so it knows the ref it must adopt after the run — and
+    // falls back to a locally-generated one for a bare run. Discarded by the next
+    // run's `git reset --hard origin/main` like the `sandcastle/worker/*` branches.
     branchStrategy: resolveBranchStrategy(
       process.env.SWARM_POLICY_LANDING,
-      `sandcastle/worker/${new Date()
-        .toISOString()
-        .replace(/[^0-9]/g, "")
-        .slice(0, 14)}-${Math.random().toString(16).slice(2, 8)}`,
+      process.env.SWARM_WORKER_BRANCH?.trim() ||
+        `sandcastle/worker/${new Date()
+          .toISOString()
+          .replace(/[^0-9]/g, "")
+          .slice(0, 14)}-${Math.random().toString(16).slice(2, 8)}`,
     ),
 
     // node_modules is NOT copied from the host: the host's pnpm layout records
@@ -479,6 +506,38 @@ try {
   throw err;
 }
 if (cancelTimer) clearInterval(cancelTimer);
+// #2110: capture the attempts sink BEFORE driveMirrorStop removes HOST_ATTEMPTS_DIR.
+// close-report.sh appends every SANDCASTLE_ATTEMPT line here (#2106) — a channel no
+// `| tail`/`| head` on the worker's stdout can truncate. record-run-result.sh's #574
+// telemetry parse reads this in preference to result.stdout, so a worker that piped
+// close-report no longer silently drops its attempt/spend rows (and misaligns every
+// later iteration's) from swarm.db. Read HERE, not in record-run-result.sh: the mount
+// is gone by the time it runs. Best-effort — an absent sink (a bare run, or a
+// best-effort skip) leaves it empty and the recorder falls back to result.stdout.
+let attemptsSink = "";
+try {
+  attemptsSink = readFileSync(`${HOST_ATTEMPTS_DIR}/attempts.log`, "utf8");
+} catch {
+  // best effort — no sink written this run
+}
+// #2112: the #283 stranded-close reconcile (execute-lib.sh, the OTHER host-side
+// consumer of this same sink) reads EXECUTE_ATTEMPTS_SINK only AFTER this process
+// exits — but driveMirrorStop() below rmSync's HOST_ATTEMPTS_DIR on every exit path,
+// so a sink left inside the run-scoped mount is gone before execute-lib can read it
+// and the #2106 union silently degrades to the truncatable log grep. Persist the
+// captured sink to a host path OUTSIDE the mount (run-swarm.sh's
+// SWARM_HOST_ATTEMPTS_SINK, cleaned by its EXIT trap) that outlives this teardown —
+// symmetric to the read-before-teardown just above (#2110). Best-effort: a bare run
+// (no env var) or a write error leaves it empty and execute-lib falls back to the
+// log grep, exactly as before.
+const attemptsSinkPersist = process.env.SWARM_HOST_ATTEMPTS_SINK;
+if (attemptsSinkPersist) {
+  try {
+    writeFileSync(attemptsSinkPersist, attemptsSink);
+  } catch (err) {
+    console.log(`worker: could not persist the attempts sink for the #283 reconcile (reconcile mirror only, non-fatal): ${err}`);
+  }
+}
 driveMirrorStop();
 
 // #574: RunResult capture — this used to be discarded entirely, leaving
@@ -487,8 +546,9 @@ driveMirrorStop();
 // record-run-result.sh (host-side, same process posture as this script — it
 // shells out to python3 directly, same as swarm-db-lib.sh) does the actual
 // parsing/writing: it pairs close-report.sh's SANDCASTLE_ATTEMPT marker lines
-// (parsed out of the combined stdout) against `result.iterations` in order,
-// since IterationResult carries no issue number of its own.
+// (read from the host-mounted sink — attemptsSink above, #2110 — or stdout when no
+// sink was captured) against `result.iterations` in order, since IterationResult
+// carries no issue number of its own.
 //
 // SWARM_DB_RUN_ID is exported by run-swarm.sh as the SAME run_db_id every
 // other swarm-db write in that script uses — main.mts runs on the host as a
@@ -502,6 +562,7 @@ if (swarmDbRunId) {
   try {
     const payload = JSON.stringify({
       stdout: result.stdout,
+      attemptsSink, // #2110: the untruncatable sink channel, preferred for the markers
       logFilePath: result.logFilePath ?? null,
       iterations: result.iterations.map((it) => ({
         sessionId: it.sessionId ?? null,

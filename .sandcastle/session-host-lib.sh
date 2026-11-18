@@ -35,17 +35,17 @@
 # when the body carries no marker (the default: any host may take it). The
 # FIRST marker wins if a body somehow carries two.
 #
-# Markers are read OUTSIDE fenced blocks only (body-marker-lib.sh): a fence can
-# hold text typed by someone outside the project, and a host pin is an
-# instruction to the factory.
+# This reads through body_marker (-> body-marker.jq's marker()), the ONE place
+# fence semantics live, so a host pin is honoured only OUTSIDE fenced blocks AND
+# OUTSIDE inline code spans: a fence or a pair of backticks can hold text typed
+# by someone outside the project, or prose merely describing the marker, and a
+# host pin is an instruction to the factory (#2114, sibling of #2111). A pin
+# that merely shares its line with prose but is not wrapped in a span still
+# parses — that is a real harness shape.
 # shellcheck source=body-marker-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/body-marker-lib.sh"
 session_host_marker() {
-  local raw
-  raw="$(sed -n -E 's/.*<!--[[:space:]]*session-host:[[:space:]]*([^>]*)-->.*/\1/p' <<<"$(body_outside_fences "${1:-}")" | head -1)"
-  raw="${raw#"${raw%%[![:space:]]*}"}"   # ltrim
-  raw="${raw%"${raw##*[![:space:]]}"}"   # rtrim
-  printf '%s\n' "$raw"
+  body_marker "${1:-}" session-host
 }
 
 # session_host_match <declared-hosts> <this-host> -> 0 when this host may work

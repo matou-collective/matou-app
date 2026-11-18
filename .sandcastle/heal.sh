@@ -290,6 +290,117 @@ collect_job_logs() { # <run-url>
   return 0
 }
 
+# The per-repo workdir lock heal.sh reads to tell a local run from a remote leg
+# (#2048). triage.yml / swarm.yml take `exec 8>"$lock"` each tick, which
+# TRUNCATES it, so a fresh mtime means a checkout happened HERE this window. A
+# test seam; the default is the path triage.yml/swarm.yml compute from REPO_TAG.
+HEAL_WORKDIR_LOCK="${HEAL_WORKDIR_LOCK:-/tmp/matou-workdir-$REPO_TAG.lock}"
+
+# This host's OWN runner-registration file (#336): the Forgejo act_runner
+# `.runner` JSON, carrying this host's registered runner `uuid` — the one
+# identity that can tell "ran HERE" from "ran on a sibling pool host". Resolved
+# by host_runner_file (host-capacity-lib.sh) the way the factory ACTUALLY writes
+# it — $HOME/forgejo-runner/.runner (the ONBOARD_HOST_RUNNER_DIR default),
+# SWARM_RUNNER_FILE when set as the override/test seam, $HOME/.runner only for a
+# hand-registered host. The old `${SWARM_RUNNER_FILE:-$HOME/.runner}` default
+# named a path the factory never creates, so on every onboarded host the uuid
+# was empty and job_locality's `here` arm was dead code (#339).
+HEAL_RUNNER_FILE="$(host_runner_file)"
+
+# this_host_runner_uuid — this host's registered runner uuid (lower-cased), or
+# empty when the file is absent/unreadable (an odd host, the offline test).
+# Always exits 0 (a missing file / jq miss must never red the healer under -e).
+this_host_runner_uuid() {
+  [ -f "$HEAL_RUNNER_FILE" ] || return 0
+  jq -r '.uuid // empty' "$HEAL_RUNNER_FILE" 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -1 || true
+}
+
+# job_log_runner_uuid — the runner uuid the FAILING leg's OWN job log names
+# (lower-cased), or empty. The job log (collect_job_logs) is the only per-leg
+# identity in the bundle: a line naming the runner carries its uuid. This is the
+# DECISIVE signal — repo-scoped siblings cannot speak for the failing leg. Always
+# exits 0 (a no-match grep must never red the healer under `set -e`/pipefail).
+job_log_runner_uuid() {
+  local jl="$EVIDENCE/job-log.txt" u=""
+  [ -s "$jl" ] || return 0
+  u="$(grep -iE 'runner' "$jl" 2>/dev/null \
+    | grep -ioE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+    | tr '[:upper:]' '[:lower:]' | head -1 || true)"
+  printf '%s' "$u"
+}
+
+# repo_scoped_signal_fired — the two REPO-scoped signals the old (removed)
+# job_ran_here keyed on: a fresh workdir-lock mtime (a local checkout this
+# window), or the runner journal naming this repo (`repo is <owner/repo>`). On a
+# multi-host pool BOTH also fire for the host's OTHER green runs of the SAME repo
+# in the window (coa#186), so they can no longer EARN the "ran here" claim — they
+# only separate "undecidable" from "no signal at all" when the failing leg's job
+# log carries no runner uuid to compare.
+repo_scoped_signal_fired() {
+  [ -n "$(find "$HEAL_WORKDIR_LOCK" -newermt "-$RUN_WINDOW" 2>/dev/null)" ] && return 0
+  local slug="${FORGEJO_API##*/repos/}"
+  [ -f "$EVIDENCE/runner-journal.txt" ] && [ -n "$slug" ] \
+    && grep -qiE "repo is ($slug|$REPO_TAG)\b" "$EVIDENCE/runner-journal.txt" 2>/dev/null && return 0
+  return 1
+}
+
+# job_locality — tri-state locality of the FAILING leg (#336), decided by the
+# leg's own job-log runner uuid vs this host's `.runner` uuid. The old boolean
+# job_ran_here keyed on repo-scoped signals ALONE, so on `swarm` (a multi-host
+# pool) it returned "here" for the host's green siblings and the bundle asserted
+# the confident wrong "NOT a leg on another pool host" for a leg that provably
+# ran on another box (coa#186: an out-of-disk bens-mac-04 leg whose job log named
+# a different runner uuid). The tri-state never asserts that negative on evidence
+# that cannot distinguish the two:
+#   here      — the job-log uuid MATCHES this host's .runner uuid (the ONLY state
+#               that earns the confident "NOT a leg on another pool host");
+#   elsewhere — a job-log uuid that is present but NOT ours, OR no signal at all
+#               (the #135 premise: a bare-empty bundle is a leg that ran away);
+#   unknown   — repo-scoped signals fire but there is NO job-log uuid to compare,
+#               so which pool host ran this leg cannot be determined.
+job_locality() {
+  local theirs mine
+  theirs="$(job_log_runner_uuid)"
+  if [ -n "$theirs" ]; then
+    mine="$(this_host_runner_uuid)"
+    if [ -n "$mine" ] && [ "$theirs" = "$mine" ]; then echo here; else echo elsewhere; fi
+    return 0
+  fi
+  if repo_scoped_signal_fired; then echo unknown; else echo elsewhere; fi
+}
+
+# write_locality_artefacts — the FINAL locality ruling (#336). Called from
+# handle_incident AFTER collect_job_logs (job-log.txt does not exist at
+# gather_evidence time), so the decisive job-log uuid is available. A no-op
+# unless gather_evidence dropped the `no-local-run` marker (no fresh worker log
+# AND no fresh verdict this window); then it writes the locality-aware message
+# into the three files the diagnosis agent reads first.
+write_locality_artefacts() {
+  [ -f "$EVIDENCE/no-local-run" ] || return 0
+  local runid; runid="$(sed -n 's/^runid=//p' "$EVIDENCE/no-local-run" | head -1)"
+  local loc msg; loc="$(job_locality)"
+  case "$loc" in
+    here)
+      # The failing leg's own job log names THIS host's runner (#336): a fault in
+      # the SAME job BEFORE Sandcastle span and OUTSIDE the verdict seam leaves no
+      # worker log and no verdict, but it ran HERE — name the real shape, a
+      # pre-Sandcastle fault this host owns, NOT a leg on another pool host.
+      msg="no worker log or fresh verdict for run ${runid} in the last ${RUN_WINDOW}, but the failing leg's own job log names THIS host's runner — THIS repo's job ran on this host; the fault was in the job BEFORE Sandcastle span, outside the verdict seam, NOT a leg on another pool host (healer-host: ${HEAL_EVIDENCE_HOST})" ;;
+    unknown)
+      # Repo-scoped signals fire (a fresh workdir lock / a journal match) but the
+      # failing leg's job log carries NO runner uuid to compare (#336): those
+      # signals also fire for the host's green siblings, so they cannot speak for
+      # THIS leg. Decline to assert the negative — say the locality is undecided.
+      msg="no worker log or fresh verdict for run ${runid} in the last ${RUN_WINDOW}, and the failing leg's job log carries no runner identity to compare against this host's — could not determine which pool host ran this leg (healer-host: ${HEAL_EVIDENCE_HOST})" ;;
+    *)
+      msg="no local evidence for run ${runid} in the last ${RUN_WINDOW}: the failing leg ran on another swarm pool host (healer-host: ${HEAL_EVIDENCE_HOST})" ;;
+  esac
+  printf '%s\n' "$msg" > "$EVIDENCE/worker-logs.txt"
+  printf '%s\n' "$msg" > "$EVIDENCE/run-verdict.txt"
+  printf '%s\n' "$msg" > "$EVIDENCE/no-local-evidence.txt"
+  echo "heal: $msg"
+}
+
 gather_evidence() {
   # Probe the endpoint the automation actually depends on, paged: Forgejo
   # ignores limit without page and dumps the whole task table (~30s+ at
@@ -298,10 +409,18 @@ gather_evidence() {
   # answering inside 60 s on the big repos (GOTCHAS 16; the pointer this
   # comment used to carry named a research doc that did not come across in
   # the ADR 0180 extraction).
+  # #325: probe the SAME read shape claim_alive_runs (claim-lib.sh) depends on —
+  # `actions/tasks?limit=100&page=1`, the hot read whose CLAIM_ALIVE_MAX_TIME cap
+  # the claim prefetch blows under fleet contention — NOT the ~4-7x-cheaper
+  # limit=1, whose fast 2xx told the healer "API healthy" at the very moment the
+  # hot read was timing out (f99e8b1c38d7). A health probe must read the cost
+  # class of the read it certifies, or the bundle is systematically optimistic
+  # for exactly this signature. (Forgejo clamps the page at 50, so this matches
+  # claim_alive_runs' read verbatim, clamp included.)
   # probe_api records curl's own outcome (http/elapsed/exit) so auth, a genuine
   # timeout, and remote degradation are distinguishable in the evidence, instead
   # of one ambiguous `api_seconds=timeout` on any curl failure (#1462).
-  probe_api "$FORGEJO_API/actions/tasks?limit=1&page=1" "$FORGEJO_TOKEN" "$EVIDENCE/api-timing.txt"
+  probe_api "$FORGEJO_API/actions/tasks?limit=100&page=1" "$FORGEJO_TOKEN" "$EVIDENCE/api-timing.txt"
   api "$FORGEJO_API/actions/tasks?limit=50&page=1" > "$EVIDENCE/runs.json" 2>/dev/null \
     || echo '{"workflow_runs":[]}' > "$EVIDENCE/runs.json"
   # Scope worker logs to the triggering run (#235 AC2): only logs written within
@@ -324,8 +443,23 @@ gather_evidence() {
       nolder=$((nolder + 1))
     fi
   done
-  journalctl -u forgejo-runner --since "-2 hours" --no-pager -q 2>/dev/null | tail -100 \
-    > "$EVIDENCE/runner-journal.txt" || true
+  # The Forgejo Actions runner's systemd unit varies by pool host (#2048): this
+  # host's is `forgejo-runner-swarm.service`, not the bare `forgejo-runner` the
+  # healer used to hardcode — so runner-journal.txt came back EMPTY on every
+  # incident, and the runner journal is exactly what named the host and the
+  # degraded window in the 2026-10-16 latency incident. Resolve the REAL unit off
+  # systemd instead of guessing; HEAL_RUNNER_UNIT overrides (an odd host / the
+  # offline test); fall back to the known swarm unit so a box where detection
+  # finds nothing still reads a real unit, never the empty bare name.
+  local runner_unit="${HEAL_RUNNER_UNIT:-}"
+  if [ -z "$runner_unit" ]; then
+    runner_unit="$(systemctl list-units --all --no-legend --type=service 'forgejo-runner*' 2>/dev/null \
+      | awk '{print $1}' | grep -m1 -E '^forgejo-runner' || true)"
+    [ -n "$runner_unit" ] || runner_unit="forgejo-runner-swarm.service"
+  fi
+  { echo "# runner unit: $runner_unit"
+    journalctl -u "$runner_unit" --since "-2 hours" --no-pager -q 2>/dev/null | tail -100
+  } > "$EVIDENCE/runner-journal.txt" || true
   {
     git -C "$WORKDIR" status --short 2>&1 | head -20
     git -C "$WORKDIR" log --oneline -5 2>&1
@@ -351,14 +485,16 @@ gather_evidence() {
   # diagnosis agent reads, instead of handing it empty worker-logs.txt /
   # run-verdict.txt that read like a fault that vanished. A run that DID execute
   # on this host keeps its real artefacts untouched.
+  #
+  # #336: the FINAL locality call needs the failing leg's own job log (its runner
+  # uuid), and job-log.txt does not exist at gather_evidence time — it is fetched
+  # per incident in handle_incident. So drop only a `no-local-run` marker carrying
+  # the runid here; write_locality_artefacts (called after collect_job_logs) makes
+  # the tri-state ruling and writes the three files.
   if [ "$nfresh" -eq 0 ] && [ -z "$have_local_verdict" ]; then
     local runid="${RUN_URL:-}"; runid="${runid##*/}"
     { [ -n "$runid" ] && [ "$runid" != "${RUN_URL:-}" ]; } || runid="${SWARM_RUN_ID:-watchdog}"
-    local msg="no local evidence for run ${runid} in the last ${RUN_WINDOW}: the failing leg ran on another swarm pool host (healer-host: ${HEAL_EVIDENCE_HOST})"
-    printf '%s\n' "$msg" > "$EVIDENCE/worker-logs.txt"
-    printf '%s\n' "$msg" > "$EVIDENCE/run-verdict.txt"
-    printf '%s\n' "$msg" > "$EVIDENCE/no-local-evidence.txt"
-    echo "heal: $msg"
+    printf 'runid=%s\n' "$runid" > "$EVIDENCE/no-local-run"
   fi
   # GLOBAL by design (#238): the swarm lock serializes one heavy worker per
   # host across both repos, so the healer probes the same shared lock. Probe
@@ -643,6 +779,10 @@ handle_incident() { # <workflow> <errline> [<run-url>]
   # distinct runs each get their own leg logs, and the file is fresh for the
   # run_agent call below.
   collect_job_logs "$run_url"
+  # #336: with the failing leg's own job log now in the bundle, make the tri-state
+  # pool-locality ruling (here / elsewhere / unknown) and write the three artefact
+  # files — a no-op unless gather_evidence dropped the `no-local-run` marker.
+  write_locality_artefacts
   sig="$(compute_signature "$wf" "$errline")"
   decision="$(ledger_decide "$sig" "$NOW")"
   thread="$(ledger_get "$sig" thread_id)"

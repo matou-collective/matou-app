@@ -37,6 +37,13 @@ export FORGEJO_API="http://fj.test/api/v1/repos/Matou/dev-factory"
 # Fast, deterministic retries: no backoff sleep, three attempts.
 export LIST_READY_BACKOFF=0 LIST_READY_RETRIES=3
 export FAKE_CURL_DIR="$tmp"
+# #330: pin the in-sandbox fleet-pick SIGNAL to an ABSENT path. The lister reads
+# this run's claimed ticket from ${SWARM_FLEET_PICK_SIGNAL:-/run/host-signals/fleet-pick}
+# and, when present, takes the single-issue fast path (idss#2145) instead of the
+# ready-list read these 5xx/retry scenarios exist to pin. That signal exists in
+# every worker sandbox but not on the CI host, so an unpinned run is green on CI
+# yet red in-sandbox. Point it at an absent path so the full-page read always runs.
+export SWARM_FLEET_PICK_SIGNAL="$tmp/no-such-fleet-pick"
 
 # A shimmed curl on PATH, driving the REAL list-ready-tasks.sh. Two countdown
 # files simulate a degraded forge: while >0 the matching endpoint answers a 503
