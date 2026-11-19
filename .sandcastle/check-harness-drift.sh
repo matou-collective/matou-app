@@ -156,6 +156,23 @@ while IFS= read -r name; do
   fi
 done <"$manifest"
 
+# HEAL_WORKDIR portability guard (#352), a HARD failure. swarm-identity.sh is
+# consumer-owned (vendor-excluded), so the byte-comparison above never sees it —
+# but a committed literal `/home/<user>/...` HEAL_WORKDIR default kills the
+# healer and the swarm/triage failure hooks on every pool host whose runner home
+# differs (healer.yml is runs-on: swarm, so the value is read on EVERY host). An
+# installer who measured one host can commit such a literal; this surfaces it on
+# every drift run, not only at first enrol. The shared guard lives in the
+# vendored identity-lib.sh (both arrive at the same pin); skip gracefully on a
+# pin that predates it.
+if [ -f "$here/identity-lib.sh" ] && [ -f "$here/swarm-identity.sh" ]; then
+  # shellcheck source=identity-lib.sh
+  . "$here/identity-lib.sh"
+  if command -v identity_check_heal_workdir >/dev/null 2>&1; then
+    identity_check_heal_workdir "$here/swarm-identity.sh" || drift=1
+  fi
+fi
+
 if [ "$drift" -ne 0 ]; then
   echo "check-harness-drift: FAILED — vendored factory copies drifted from $FACTORY_REPO@$factory_ref." >&2
   exit 1

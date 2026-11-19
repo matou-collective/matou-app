@@ -125,8 +125,8 @@ chmod +x "$tmp/bin/curl"
 run_swarm HOST_CAPACITY_HELD_SLOT="$slot" HELD_HOLDER="$slot.holder" HOLDER_SEEN="$seen" >/dev/null 2>&1 || true
 [ ! -s "$seen" ] || fail "a run that never reached its ticket must write NO slot holder (#301), saw: $(cat "$seen")"
 [ ! -e "$slot.holder" ] || fail "no holder may be left behind on exit"
-grep -q '^host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket "${SCHEDULE_FLEET_PICK:-run}" "$repo_slug" swarm-worker "$run_db_id"$' "$here/../run-swarm.sh" \
-  || fail "run-swarm.sh must still write the ticket/run holder once it has a ticket"
+grep -q '^host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket "${SCHEDULE_FLEET_PICK:-run}" "$repo_slug" swarm-worker "$run_db_id" "" "" "" "$SWARM_HOST_ATTEMPTS_DIR"$' "$here/../run-swarm.sh" \
+  || fail "run-swarm.sh must still write the ticket/run holder once it has a ticket, pointing at its claim sink (#350)"
 pass=$((pass+1))
 
 echo "run-swarm-drive-yield: $pass scenarios passed"

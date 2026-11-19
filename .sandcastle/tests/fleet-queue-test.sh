@@ -18,6 +18,8 @@ export FLEET_QUEUE_CACHE="$tmp/state/fleet-queue.json"
 export FLEET_QUEUE_STAMP="$tmp/state/fleet-queue-dispatched"
 export FLEET_QUEUE_RECENT_CLOSES="$tmp/state/fleet-recent-closes"
 export FLEET_QUEUE_STRIKES="$tmp/state/fleet-queue-strikes"
+export FLEET_QUEUE_MARKS="$tmp/state/fleet-queue-marks"
+export COMMENTS_DIR="$tmp/comments"
 export FORGEJO_TOKEN=t HOST_NAME=box-07 CURL_LOG="$tmp/curl.log" LISTER_LOG="$tmp/listers.log"
 mkdir -p "$tmp/state"
 
@@ -38,15 +40,51 @@ while [ $# -gt 0 ]; do
 done
 [ "$data" = "@-" ] && data="$(cat)"
 printf '%s %s %s\n' "$method" "$url" "$data" >>"${CURL_LOG:?}"
-case "$url" in
-  */repos/Acme/alpha/issues/10/blocks*) printf '[{"number":5,"state":"open","repository":{"full_name":"Acme/beta"}}]' ;;
-  */blocks*) printf '[]' ;;
-  */dispatches) printf '204' ;;
-  *) printf '[]' ;;
+# A tiny tracker: one JSON array of comments per issue under $COMMENTS_DIR, ids
+# strictly increasing across the whole forge (the property arbitration rests on).
+store="${COMMENTS_DIR:?}"; mkdir -p "$store"
+cfile() { local k="${url#*/repos/}"; k="${k%/comments}"; printf '%s/%s.json' "$store" "${k//\//_}"; }
+nextid() { local i; i=$(( $(cat "$store/seq" 2>/dev/null || echo 100) + 1 )); echo "$i" >"$store/seq"; echo "$i"; }
+put() { # <file> <host-or-empty> <body> -> the stored comment
+  local f="$1" id c; id="$(nextid)"; [ -f "$f" ] || echo '[]' >"$f"
+  c="$(jq -cn --argjson id "$id" --arg b "$3" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{id: $id, body: $b, created_at: $t}')"
+  jq -c --argjson c "$c" '. + [$c]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"; printf '%s' "$c"
+}
+case "$method $url" in
+  "GET "*/issues/*/comments)
+    [ -n "${COMMENTS_GET_FAIL:-}" ] && exit 22
+    f="$(cfile)"; if [ -f "$f" ]; then cat "$f"; else printf '[]'; fi ;;
+  "POST "*/issues/*/comments)
+    [ -n "${COMMENTS_POST_FAIL:-}" ] && exit 22
+    f="$(cfile)"
+    # RACE_FIRST=<host>: a peer's marker lands just BEFORE ours (lower id);
+    # RACE_AFTER=<host>: just after (higher id) — two ticks in the same second.
+    # RACE_ONLY=<n> confines the peer to that one issue.
+    case "$url" in */issues/${RACE_ONLY:-*}/comments) ;; *) RACE_FIRST=""; RACE_AFTER="" ;; esac
+    if [ -n "${RACE_FIRST:-}" ]; then put "$f" x "fleet-dispatch host=$RACE_FIRST" >/dev/null; fi
+    put "$f" x "$(jq -r .body <<<"$data")"
+    if [ -n "${RACE_AFTER:-}" ]; then put "$f" x "fleet-dispatch host=$RACE_AFTER" >/dev/null; fi ;;
+  "DELETE "*/issues/comments/*)
+    [ -n "${COMMENTS_DELETE_FAIL:-}" ] && { printf '500'; exit 0; }
+    id="${url##*/}"; hit=404
+    for f in "$store"/*.json; do
+      [ -f "$f" ] || continue
+      if jq -e --argjson id "$id" 'any(.[]; .id == $id)' "$f" >/dev/null; then
+        jq -c --argjson id "$id" 'map(select(.id != $id))' "$f" >"$f.tmp" && mv "$f.tmp" "$f"; hit=204
+      fi
+    done
+    printf '%s' "$hit" ;;
+  *)
+    case "$url" in
+      */repos/Acme/alpha/issues/10/blocks*) printf '[{"number":5,"state":"open","repository":{"full_name":"Acme/beta"}}]' ;;
+      */blocks*) printf '[]' ;;
+      */dispatches) [ -n "${DISPATCH_FAIL:-}" ] && { printf '500'; exit 0; }; printf '204' ;;
+      *) printf '[]' ;;
+    esac ;;
 esac
 SH
 
-reset() { : >"$CURL_LOG"; : >"$LISTER_LOG"; rm -f "$FLEET_QUEUE_STAMP" "$FLEET_QUEUE_CACHE" "$FLEET_QUEUE_RECENT_CLOSES" "$FLEET_QUEUE_STRIKES" "$HOST_CAPACITY_DRIVE_WANTED"; }
+reset() { : >"$CURL_LOG"; : >"$LISTER_LOG"; rm -f "$FLEET_QUEUE_STAMP" "$FLEET_QUEUE_CACHE" "$FLEET_QUEUE_RECENT_CLOSES" "$FLEET_QUEUE_STRIKES" "$FLEET_QUEUE_MARKS" "$HOST_CAPACITY_DRIVE_WANTED"; rm -rf "$COMMENTS_DIR"; }
 run() { bash "$sc/fleet-queue.sh" "$@" 2>&1; }
 dispatched() { local n; n="$(grep -c "POST .*dispatches" "$CURL_LOG" 2>/dev/null)" || true; echo "${n:-0}"; }
 dispatch_body() { grep "dispatches" "$CURL_LOG" | tail -1 | cut -d' ' -f3-; }
@@ -172,6 +210,72 @@ out="$(run rearm)"
 check "a rearm (a run that just finished on this host) clears the strikes" \
   '[ ! -f "$FLEET_QUEUE_STRIKES" ] && [ "$(dispatched)" -eq 1 ]'
 
+# ── dispatch arbitration (#351): one ticket goes to ONE host ────────────────
+marker() { # <repo> <n> <id> <host> <age-seconds> — a peer's fleet-dispatch marker on a ticket
+  local f="$COMMENTS_DIR/Acme_$1_issues_$2.json"; mkdir -p "$COMMENTS_DIR"; [ -f "$f" ] || echo '[]' >"$f"
+  jq -c --argjson id "$3" --arg b "fleet-dispatch host=$4" --arg t "$(date -u -d "@$(( $(date +%s) - $5 ))" +%Y-%m-%dT%H:%M:%SZ)" \
+    '. + [{id: $id, body: $b, created_at: $t}]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+}
+reset
+out="$(run tick)"
+check "tick marks the ticket it dispatches (a fleet-dispatch comment naming this host)" \
+  '[ "$(jq -r ".[0].body" "$COMMENTS_DIR/Acme_alpha_issues_10.json" | head -1)" = "fleet-dispatch host=box-07" ] && [ "$(dispatched)" -eq 1 ]'
+check "the marker is posted BEFORE the dispatch" \
+  '[ "$(grep -n "^POST .*/issues/10/comments" "$CURL_LOG" | cut -d: -f1)" -lt "$(grep -n "dispatches" "$CURL_LOG" | cut -d: -f1)" ]'
+
+reset; marker alpha 10 50 box-02 20
+out="$(run tick)"
+check "a head another host is already dispatching is SKIPPED: this host takes the next in line (beta#5)" \
+  '[ "$(dispatched)" -eq 1 ] && grep -q "repos/Acme/beta/actions" "$CURL_LOG" && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 5 ]'
+check "the skip is named, with the holder, and the dispatch says it was next in line" \
+  'grep -q "Acme/alpha#10 is being dispatched to box-02 — taking the next ticket in line" <<<"$out" && grep -q "dispatched Acme/beta#5 to box-07 (next in line; 1 ahead held by another host" <<<"$out"'
+check "the skipped head gets no marker from this host; the stamp names what was dispatched" \
+  '[ "$(jq length "$COMMENTS_DIR/Acme_alpha_issues_10.json")" -eq 1 ] && [ "$(cut -d" " -f2,3 "$FLEET_QUEUE_STAMP")" = "Acme/beta 5" ]'
+check "a skipped head counts NO strike against this host (it never dispatched it)" \
+  '[ ! -f "$FLEET_QUEUE_STRIKES" ]'
+
+reset; marker alpha 10 50 box-02 20; marker beta 5 51 box-03 20; marker alpha 12 52 box-02 20
+out="$(run tick)"
+check "when every ready ticket is already being dispatched elsewhere, this host dispatches nothing and says so" \
+  '[ "$(dispatched)" -eq 0 ] && grep -q "already being dispatched to another host" <<<"$out" && [ ! -f "$FLEET_QUEUE_STAMP" ]'
+
+reset; marker alpha 10 50 box-02 99999
+out="$(run tick)"
+check "an EXPIRED peer marker holds nothing — the head is dispatched here" \
+  '[ "$(dispatched)" -eq 1 ] && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 10 ]'
+
+reset
+out="$(RACE_FIRST=box-02 RACE_ONLY=10 run tick)"
+check "two hosts ticking in the same second: the loser dispatches the NEXT ticket, never the same one" \
+  '[ "$(dispatched)" -eq 1 ] && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 5 ] && ! grep -q "repos/Acme/alpha/actions" "$CURL_LOG"'
+
+reset
+out="$(COMMENTS_GET_FAIL=1 run tick)"
+check "a tracker that cannot answer the comments read fails OPEN: the head is still dispatched" \
+  '[ "$(dispatched)" -eq 1 ] && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 10 ] && grep -q "unarbitrated" <<<"$out"'
+
+reset; marker alpha 10 50 box-02 20
+( exec 7>"$tmp/state/slot-1.lock"; flock 7; sleep 30 ) & h1=$!
+( exec 7>"$tmp/state/slot-2.lock"; flock 7; sleep 30 ) & h2=$!
+sleep 0.3
+out="$(run rearm)"
+check "a finishing run's rearm arbitrates too: a head held elsewhere → the next in line" \
+  '[ "$(dispatched)" -eq 1 ] && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 5 ]'
+kill "$h1" "$h2" 2>/dev/null; wait "$h1" "$h2" 2>/dev/null
+
+reset; marker alpha 10 50 box-02 20
+out="$(run pick)"
+check "pick still prints the true fleet head and writes no marker" \
+  '[ "$out" = "Acme/alpha 10" ] && ! grep -q "^POST" "$CURL_LOG"'
+
+reset
+marker beta 5 60 box-07 99999
+printf '%s Acme/beta 5 60\n' "$(( $(date +%s) - 99999 ))" >"$FLEET_QUEUE_MARKS"
+printf '%s Acme/beta 5\n' "$(date +%s)" >"$FLEET_QUEUE_STAMP"
+out="$(run tick)"
+check "every tick sweeps this host's expired markers, even one that then waits on a fresh stamp" \
+  '[ "$(jq length "$COMMENTS_DIR/Acme_beta_issues_5.json")" -eq 0 ] && [ "$(dispatched)" -eq 0 ]'
+
 # ── pick: print the head, dispatch nothing ─────────────────────────────────
 reset
 out="$(run pick)"
@@ -188,13 +292,11 @@ check "pick on an empty fleet prints nothing" '[ -z "$out" ]'
 
 # ── a failed dispatch is reported, not stamped, so the next tick retries ────
 reset
-shim curl <<'SH'
-printf '%s\n' "$*" >>"${CURL_LOG:?}"
-case "$*" in *dispatches*) cat >/dev/null; printf '500' ;; *) printf '[]' ;; esac
-SH
-out="$(run tick)"
+out="$(DISPATCH_FAIL=1 run tick)"
 check "a non-2xx dispatch is named with its code and leaves no stamp" \
   'grep -q "FAILED (http=500)" <<<"$out" && [ ! -f "$FLEET_QUEUE_STAMP" ]'
+check "a failed dispatch releases its marker at once (another host may take the ticket)" \
+  '[ "$(jq length "$COMMENTS_DIR/Acme_alpha_issues_10.json")" -eq 0 ]'
 
 # ── usage ──────────────────────────────────────────────────────────────────
 check "an unknown mode is a usage error (2)" '! run bogus >/dev/null; [ "$(run bogus >/dev/null 2>&1; echo $?)" -eq 2 ]'

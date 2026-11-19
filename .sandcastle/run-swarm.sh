@@ -350,8 +350,19 @@ swarmdb_event "$run_db_id" "" ready-set "$n ready task(s)" "[$ready_nums]"
 # pick (#301) IS the ticket this run works, so ref names it and the Floor shows
 # the ticket on its slot from claim time — swarm.db attempts land only at run
 # END. With no pick (no fleet view) the claim happens in the sandbox, so
-# ref=run and the monitor resolves the issue from the run's ready-set/attempts.
-host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket "${SCHEDULE_FLEET_PICK:-run}" "$repo_slug" swarm-worker "$run_db_id"
+# ref=run and the monitor resolves the issue from the claim sink (#350), else
+# the run's ready-set/attempts.
+#
+# #2106: the run-scoped WRITABLE attempts sink main.mts mounts at /run/host-attempts
+# (unlike the read-only host-signals mount below). close-report.sh appends its
+# SANDCASTLE_ATTEMPT line here — the sandbox->host channel the #283 reconcile reads
+# independently of how the worker pipes close-report's stdout — and #350:
+# claim-next-task.sh appends the ticket it WON (claimed.log) the moment it wins.
+# Named HERE, before the holder write, so the holder records it (attempts_dir)
+# and main.mts and the execute seam below agree on the same host dir.
+SWARM_HOST_ATTEMPTS_DIR="${SWARM_HOST_ATTEMPTS_DIR:-${TMPDIR:-/tmp}/matou-host-attempts-$run_db_id}"
+export SWARM_HOST_ATTEMPTS_DIR
+host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket "${SCHEDULE_FLEET_PICK:-run}" "$repo_slug" swarm-worker "$run_db_id" "" "" "" "$SWARM_HOST_ATTEMPTS_DIR"
 
 stamp="$(schedule_stamp_path "$repo_tag")"
 # #213: fold origin/main's head SHA into the debounce digest so a landed fix on
@@ -374,13 +385,8 @@ stamp_written=1   # from here a quiet death without a worker must clear the stam
 # and removes it on exit.
 SWARM_HOST_SIGNALS_DIR="${SWARM_HOST_SIGNALS_DIR:-${TMPDIR:-/tmp}/matou-host-signals-$run_db_id}"
 export SWARM_HOST_SIGNALS_DIR
-# #2106: the run-scoped WRITABLE attempts sink main.mts mounts at /run/host-attempts
-# (unlike the read-only host-signals mount above). close-report.sh appends its
-# SANDCASTLE_ATTEMPT line here — the sandbox->host channel the #283 reconcile reads
-# independently of how the worker pipes close-report's stdout. Named HERE so
-# main.mts and the execute seam below agree on the same host dir.
-SWARM_HOST_ATTEMPTS_DIR="${SWARM_HOST_ATTEMPTS_DIR:-${TMPDIR:-/tmp}/matou-host-attempts-$run_db_id}"
-export SWARM_HOST_ATTEMPTS_DIR
+# #2106: SWARM_HOST_ATTEMPTS_DIR (the WRITABLE /run/host-attempts sink) is named
+# above, at the slot-holder write (#350), so the holder can point at it.
 # #301: mirror the fleet pick into the sandbox (/run/host-signals/fleet-pick)
 # so the in-sandbox lister answers exactly that ticket, or [] once it is gone —
 # claim-next-task.sh then claims it or nothing. No pick (a host with no fleet

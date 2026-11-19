@@ -249,6 +249,18 @@ for i in $(seq 0 $((n - 1))); do
   cid="$(claim_post "$num" "$host" "$run")" || continue
   if claim_won "$num" "$cid" "$alive"; then
     claim_mark_working "$num" || true
+    # #350: tell the HOST which ticket this run claimed, the moment it is won.
+    # A run with no fleet pick claims here in the sandbox, so its slot holder
+    # says ref=run and swarm.db's attempt row lands only at run END — the
+    # Floor's slot showed "ticket —" for the whole run. Append the number to
+    # the writable sink main.mts mounts at /run/host-attempts (the mount
+    # close-report.sh's attempt line already uses, #2106); the host's probe
+    # reads it beside the slot holder. One short append is atomic; best-effort
+    # — a missing or unwritable sink changes nothing about the claim or stdout.
+    cn_sink="${SANDCASTLE_CLAIM_SINK:-/run/host-attempts/claimed.log}"
+    cn_sink_dir="$(dirname "$cn_sink")"
+    [ -d "$cn_sink_dir" ] && [ -w "$cn_sink_dir" ] &&
+      printf '%s\n' "$num" >> "$cn_sink" 2>/dev/null || true
     print_landing "$num" "$(jq -r ".[$i].landing // empty" <<<"$ready")"
     jq -c "[.[$i]]" <<<"$ready"
     exit 0

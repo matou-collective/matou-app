@@ -14,6 +14,7 @@
 #   promote   a closed ticket's dependants (Forgejo `blocks`) to the front
 #   cache     the order, on the host, so a leg can see where it stands
 #   stamp     the last dispatch, so the tick never piles on its own pick
+#   arbitrate a marker comment on the ticket, so ONE host dispatches it (#351)
 #   dispatch  workflow_dispatch of ONE repo with inputs.ticket + inputs.host
 #
 # Each repo's own lister is the authority on what is ready THERE (its DAG,
@@ -46,6 +47,14 @@ FLEET_QUEUE_CACHE_TTL="${FLEET_QUEUE_CACHE_TTL:-600}"
 FLEET_QUEUE_CLOSE_TTL="${FLEET_QUEUE_CLOSE_TTL:-900}"
 FLEET_QUEUE_REDISPATCH="${FLEET_QUEUE_REDISPATCH:-300}"
 FLEET_QUEUE_MAX_TIME="${FLEET_QUEUE_MAX_TIME:-30}"
+# Dispatch arbitration (#351). A marker holds its ticket for MARK_TTL seconds:
+# long enough to cover dispatch → the leg's in-sandbox claim (387 s on the run
+# that prompted this; the claim relabels the ticket and it leaves every lister),
+# short enough that a dispatch that died frees its ticket for another host. A
+# host arbitrates at most ARBITRATE_MAX tickets from the front of the order per
+# call, so a long queue held elsewhere costs a bounded number of tracker reads.
+FLEET_QUEUE_MARK_TTL="${FLEET_QUEUE_MARK_TTL:-600}"
+FLEET_QUEUE_ARBITRATE_MAX="${FLEET_QUEUE_ARBITRATE_MAX:-5}"
 # The lister / identity basenames looked up in each checkout (tests swap them).
 FLEET_QUEUE_LISTER="${FLEET_QUEUE_LISTER:-list-ready-tasks.sh}"
 FLEET_QUEUE_IDENTITY="${FLEET_QUEUE_IDENTITY:-swarm-identity.sh}"
@@ -247,6 +256,156 @@ fleet_queue_stamp_ticket() {
   read -r at slug n <"$f" || return 1
   { [ -n "${slug:-}" ] && [ -n "${n:-}" ]; } || return 1
   printf '%s %s' "$slug" "$n"
+}
+
+# ── dispatch arbitration: one ticket goes to ONE host (#351) ────────────────
+# Every pool host runs its own tick with no view of its peers, and the ticks
+# fire in the same cron minute — so each idle host saw the same fleet head and
+# dispatched it to ITSELF. The in-sandbox claim then settled it, minutes later,
+# after every loser had booted a sandbox and held a heavy slot for a worker with
+# nothing to do. The dispatch stamp could not help: it is a file on one host.
+#
+# The one channel every host shares is the tracker, and the claim already rests
+# on a primitive there: comment ids are strictly increasing. So a host posts a
+# MARKER comment on the ticket (`fleet-dispatch host=<h>`) before it dispatches,
+# and the host of the LOWEST live marker is the one that dispatches. A host that
+# finds a peer's live marker posts nothing and takes the next ticket in line.
+#
+# Liveness is age: a marker older than FLEET_QUEUE_MARK_TTL holds nothing, so a
+# dispatch that died never wedges its ticket. The posting host records each
+# marker on disk and deletes it once expired (fleet_queue_marks_sweep).
+#
+# Every failure here FAILS OPEN — rc 0, "dispatch it", with one stderr line. A
+# duplicate dispatch is safe (the claim guards the ticket, as it did before
+# #351); a tick that stood down on a tracker blip would stall the fleet.
+_fleet_queue_api() { curl -sf --max-time "$FLEET_QUEUE_MAX_TIME" -H "Authorization: token ${FORGEJO_TOKEN:-}" "$@"; }
+
+fleet_queue_marks_path() { printf '%s' "${FLEET_QUEUE_MARKS:-$HOST_CAPACITY_STATE_DIR/fleet-queue-marks}"; }
+
+# fleet_queue_marks <api-root> <slug> <n> -> "id host" per LIVE marker on the
+# ticket, lowest id first; rc 1 when the comments read fails (raw-capture then
+# filter, claim-lib's rule: a failed read must never look like "nobody holds
+# it"). A marker whose created_at cannot be parsed counts as live — the host
+# that posted it still sweeps it by its own clock.
+fleet_queue_marks() {
+  local raw
+  raw="$(_fleet_queue_api "$1/repos/$2/issues/$3/comments" 2>/dev/null)" || return 1
+  jq -r --argjson now "$(date +%s)" --argjson ttl "$FLEET_QUEUE_MARK_TTL" '
+    [ .[]?
+      | select((.body // "") | test("^fleet-dispatch host=\\S+"))
+      | (try (.created_at | fromdateiso8601) catch null) as $t
+      | select($t == null or ($now - $t) < $ttl)
+      | {id, host: (.body | capture("^fleet-dispatch host=(?<h>\\S+)").h)} ]
+    | sort_by(.id) | .[] | "\(.id) \(.host)"' <<<"$raw" 2>/dev/null || return 1
+}
+
+# fleet_queue_mark_post <api-root> <slug> <n> <host> -> the new comment id; rc 1
+# on a failed post. The marker is recorded on the host BEFORE it is returned, so
+# a tick that dies right after still sweeps it.
+fleet_queue_mark_post() {
+  local raw id f
+  raw="$(jq -n --arg h "$4" --argjson m "$(( FLEET_QUEUE_MARK_TTL / 60 ))" \
+      '{body: ("fleet-dispatch host=" + $h + "\n(automated — the fleet queue is dispatching this ticket to that host, so other hosts take the next ticket in line; this note expires after " + ($m | tostring) + " min and is then removed)")}' |
+    _fleet_queue_api -X POST -H 'Content-Type: application/json' -d @- \
+      "$1/repos/$2/issues/$3/comments" 2>/dev/null)" || return 1
+  id="$(jq -r '.id // empty' <<<"$raw" 2>/dev/null)" || return 1
+  case "$id" in ''|*[!0-9]*) return 1 ;; esac
+  f="$(fleet_queue_marks_path)"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  printf '%s %s %s %s\n' "$(date +%s)" "$2" "$3" "$id" >>"$f" 2>/dev/null || true
+  printf '%s' "$id"
+}
+
+# _fleet_queue_mark_delete <api-root> <slug> <comment-id> -> the HTTP code.
+_fleet_queue_mark_delete() {
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "$FLEET_QUEUE_MAX_TIME" \
+    -X DELETE -H "Authorization: token ${FORGEJO_TOKEN:-}" \
+    "$1/repos/$2/issues/comments/$3" 2>/dev/null)" || true
+  printf '%s' "${code:-000}"
+}
+
+# fleet_queue_mark_release <api-root> <comment-id> — delete a marker this host
+# recorded, NOW (it lost the arbitration, or its dispatch failed), and forget
+# it. A delete that does not land leaves the record for the sweep to retry.
+fleet_queue_mark_release() {
+  local f at slug n cid code kept=""
+  f="$(fleet_queue_marks_path)"
+  [ -s "$f" ] || return 0
+  while read -r at slug n cid; do
+    [ -n "${cid:-}" ] || continue
+    if [ "$cid" = "$2" ]; then
+      code="$(_fleet_queue_mark_delete "$1" "$slug" "$cid")"
+      case "$code" in 2??|404) continue ;; esac
+    fi
+    kept="$kept$at $slug $n $cid"$'\n'
+  done <"$f"
+  printf '%s' "$kept" >"$f.tmp" && mv -f "$f.tmp" "$f"
+}
+
+# fleet_queue_marks_sweep <api-root> — delete this host's EXPIRED markers from
+# their tickets (a marker past its TTL holds nothing and is only litter on the
+# thread). A live marker is left alone; a delete the forge refuses keeps its
+# record so the next tick retries; a record ten TTLs old is dropped regardless
+# (never an unbounded file). Quiet, rc 0, and no tracker call when nothing is
+# recorded.
+fleet_queue_marks_sweep() {
+  local f at slug n cid now age code kept=""
+  f="$(fleet_queue_marks_path)"
+  [ -s "$f" ] || return 0
+  now="$(date +%s)"
+  while read -r at slug n cid; do
+    [ -n "${cid:-}" ] || continue
+    case "$at" in ''|*[!0-9]*) continue ;; esac
+    age=$(( now - at ))
+    if [ "$age" -ge "$FLEET_QUEUE_MARK_TTL" ]; then
+      code="$(_fleet_queue_mark_delete "$1" "$slug" "$cid")"
+      case "$code" in 2??|404) continue ;; esac
+      [ "$age" -lt $(( FLEET_QUEUE_MARK_TTL * 10 )) ] || continue
+    fi
+    kept="$kept$at $slug $n $cid"$'\n'
+  done <"$f"
+  printf '%s' "$kept" >"$f.tmp" && mv -f "$f.tmp" "$f"
+  return 0
+}
+
+# fleet_queue_arbitrate <api-root> <slug> <n> <host>
+#   rc 0  this host dispatches the ticket. FLEET_QUEUE_ARB_MARK is the marker it
+#         holds (empty when it failed open and holds none).
+#   rc 1  another host's live marker is lower: FLEET_QUEUE_ARB_HOLDER names it.
+#         The caller takes the next ticket in line.
+# Called in the caller's own shell (never `$(...)`): the two results are globals.
+fleet_queue_arbitrate() {
+  local root="$1" slug="$2" n="$3" host="$4" marks first_id first_host mine
+  FLEET_QUEUE_ARB_MARK=""; FLEET_QUEUE_ARB_HOLDER=""
+  if ! marks="$(fleet_queue_marks "$root" "$slug" "$n")"; then
+    echo "fleet-queue: could not read the dispatch markers on $slug#$n — dispatching unarbitrated (the claim still guards it)" >&2
+    return 0
+  fi
+  read -r first_id first_host <<<"$marks" || true
+  if [ -n "${first_id:-}" ]; then
+    # A live marker already stands. Ours → carry on with it (a re-dispatch after
+    # the stamp lapsed posts no second comment). A peer's → theirs, post nothing.
+    if [ "$first_host" = "$host" ]; then FLEET_QUEUE_ARB_MARK="$first_id"; return 0; fi
+    FLEET_QUEUE_ARB_HOLDER="$first_host"; return 1
+  fi
+  if ! mine="$(fleet_queue_mark_post "$root" "$slug" "$n" "$host")"; then
+    echo "fleet-queue: could not post a dispatch marker on $slug#$n — dispatching unarbitrated (the claim still guards it)" >&2
+    return 0
+  fi
+  # Re-read AFTER posting: ids are strictly increasing, so any peer marker with
+  # a lower id was posted before ours and is visible now.
+  if ! marks="$(fleet_queue_marks "$root" "$slug" "$n")"; then
+    echo "fleet-queue: could not re-read the dispatch markers on $slug#$n — dispatching unarbitrated (the claim still guards it)" >&2
+    FLEET_QUEUE_ARB_MARK="$mine"; return 0
+  fi
+  read -r first_id first_host <<<"$marks" || true
+  if [ -z "${first_id:-}" ] || [ "$first_id" = "$mine" ] || [ "$first_host" = "$host" ]; then
+    FLEET_QUEUE_ARB_MARK="$mine"; return 0
+  fi
+  fleet_queue_mark_release "$root" "$mine"
+  FLEET_QUEUE_ARB_HOLDER="$first_host"
+  return 1
 }
 
 # ── strikes: consecutive dispatches that never claimed (#315) ────────────────

@@ -219,16 +219,26 @@ and its `RUNNER_HOST`. Two of those are facts only the human can confirm:
   the human which. It is named in the rendered prompts, so getting it wrong
   sends a future session to the wrong machine. There is deliberately no
   cross-repo default.
-- **`HEAL_WORKDIR`** — where the healer's own checkout of this repo lives
-  on `RUNNER_HOST`. The generated default may not be where it actually is;
-  check it against the `<workdir>` you collected for that machine and
-  against the registry declaration written in step 8, and edit the file if
-  they disagree.
+- **`HEAL_WORKDIR`** — the healer's own checkout of this repo. Unlike
+  `RUNNER_HOST`, this is **not** a fact about one machine: it is evaluated on
+  **every pool host** — `healer.yml` is `runs-on: swarm`, and
+  `swarm.yml`/`triage.yml` run `heal.sh` on whichever host their failed run
+  landed on. The generated default `$HOME/swarm/<slug>` **is** the same place
+  as the `<workdir>` you collected on each of them, because every host's
+  `<workdir>` is `$HOME/swarm/<slug>` under its own runner user. So **leave it
+  as the `$HOME/...` form** — never rewrite it to a literal home path like
+  `/home/dev/swarm/<slug>` because one machine happened to measure that: that
+  literal dies on every host whose runner home differs, at `mkdir` with
+  `Permission denied`. The check is "does `$HOME/swarm/<slug>` exist on
+  **every** machine chosen" (step 8's `<workdir>` for each confirms it), not
+  "does the string match one machine's path". `onboard-host enrol` and the
+  drift check both now hard-refuse a committed literal `/home/...` default.
 
 Read the generated file back to the human, both lines, and confirm.
 
-**Proof:** the file sources cleanly (`bash -n`), and the two values above
-match what step 8 declares.
+**Proof:** the file sources cleanly (`bash -n`), `HEAL_WORKDIR` is the
+`$HOME/swarm/<slug>` form (not a literal `/home/...` path), and `RUNNER_HOST`
+matches the one machine step 8 names for it.
 
 ## 4 — Policy: the interview
 

@@ -18,6 +18,9 @@
 #                         the host cache, and workflow_dispatches the head
 #                         ticket's repo — inputs.ticket + inputs.host — so
 #                         exactly ONE leg (this host's) runs exactly that ticket.
+#                         The dispatch is ARBITRATED on the tracker (#351): a
+#                         ticket a peer host is already dispatching is skipped
+#                         for the next in line, so one ticket goes to one host.
 #   after-close <slug> <n>  a finishing run's self-rearm (report-lib.sh): the
 #                         close is recorded, that ticket's dependants come
 #                         first, and the pick is dispatched to THIS host with
@@ -59,6 +62,13 @@ if [ -z "${FORGEJO_TOKEN:-}" ]; then
   done
 fi
 export FORGEJO_TOKEN="${FORGEJO_TOKEN:-}"
+
+# Sweep this host's expired dispatch markers (#351) on EVERY call, before any
+# gate: a busy host's tick exits at the slot gate, and its markers must not
+# outlive their TTL on the tickets. No tracker call when none is recorded.
+if [ -s "$(fleet_queue_marks_path)" ] && sweep_root="$(fleet_queue_api_root "$first_checkout")"; then
+  fleet_queue_marks_sweep "$sweep_root"
+fi
 
 # ── the cheap gates (tick only): nothing is listed unless a run could start ──
 if [ "$mode" = tick ]; then
@@ -148,11 +158,41 @@ if [ "$mode" = pick ]; then
   exit 0
 fi
 
+# ── arbitrate (#351): one ticket goes to ONE host ───────────────────────────
+# Every pool host computes this same order in the same cron minute. Walk it
+# from the head: a ticket a peer host is already dispatching (its live marker
+# on the ticket is lower than ours) is theirs — take the next in line, so a
+# second idle host works the second ticket instead of racing for the first.
+total="$(jq length <<<"$ordered")"
+limit="$FLEET_QUEUE_ARBITRATE_MAX"; [ "$total" -lt "$limit" ] && limit="$total"
+pick_slug=""; pick_n=""; skipped=0
+for (( i = 0; i < limit; i++ )); do
+  cand_slug="$(jq -r --argjson i "$i" '.[$i].repo' <<<"$ordered")"
+  cand_n="$(jq -r --argjson i "$i" '.[$i].number' <<<"$ordered")"
+  if fleet_queue_arbitrate "$api_root" "$cand_slug" "$cand_n" "$host"; then
+    pick_slug="$cand_slug"; pick_n="$cand_n"; break
+  fi
+  skipped=$(( skipped + 1 ))
+  echo "fleet-queue: $cand_slug#$cand_n is being dispatched to $FLEET_QUEUE_ARB_HOLDER — taking the next ticket in line"
+done
+if [ -z "$pick_slug" ]; then
+  echo "fleet-queue: the first $skipped ready ticket(s) are already being dispatched to another host — nothing for $host to dispatch ($total ready fleet-wide)"
+  exit 0
+fi
+if [ "$skipped" -gt 0 ]; then
+  why="next in line; $skipped ahead held by another host"
+  if jq -e --arg s "$pick_slug" --argjson n "$pick_n" 'any(.[]; .repo == $s and .number == $n)' <<<"$deps" >/dev/null; then
+    why="dependant of $promoted_for; $skipped ahead held by another host"
+  fi
+fi
+
 # ── dispatch: one repo, one ticket, this host ──────────────────────────────
-if code="$(fleet_queue_dispatch "$api_root" "$head_slug" "$head_n" "$host")"; then
-  fleet_queue_stamp_write "$head_slug" "$head_n"
-  echo "fleet-queue: dispatched $head_slug#$head_n to $host ($why; $(jq length <<<"$ordered") ready fleet-wide)"
+if code="$(fleet_queue_dispatch "$api_root" "$pick_slug" "$pick_n" "$host")"; then
+  fleet_queue_stamp_write "$pick_slug" "$pick_n"
+  echo "fleet-queue: dispatched $pick_slug#$pick_n to $host ($why; $total ready fleet-wide)"
 else
-  echo "fleet-queue: dispatch of $head_slug#$head_n to $host FAILED (http=$code) — the next tick retries" >&2
+  # Nothing is running for this ticket: free it now rather than at the TTL.
+  [ -z "$FLEET_QUEUE_ARB_MARK" ] || fleet_queue_mark_release "$api_root" "$FLEET_QUEUE_ARB_MARK"
+  echo "fleet-queue: dispatch of $pick_slug#$pick_n to $host FAILED (http=$code) — the next tick retries" >&2
 fi
 exit 0

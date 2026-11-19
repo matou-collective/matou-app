@@ -23,6 +23,10 @@ setup() {
   jq -n '[{"id":36,"name":"ready-for-agent"},{"id":50,"name":"agent-working"}]' >"$FAKE_DIR/labels.json"
   jq -n '{"workflow_runs":[{"name":"swarm","status":"running","run_number":513}]}' >"$FAKE_DIR/tasks.json"
   echo 1000 >"$FAKE_DIR/comment-counter"
+  # #350: the claim sink — pinned per scenario so a suite run INSIDE a sandbox
+  # (where /run/host-attempts is the live mount) never writes a fake claim
+  # into the host's real sink.
+  export SANDCASTLE_CLAIM_SINK="$FAKE_DIR/sink/claimed.log"; mkdir -p "$FAKE_DIR/sink"
 }
 
 # T1: empty queue -> []
@@ -36,6 +40,14 @@ check "emits exactly one ticket" '[ "$(jq length <<<"$out")" = "1" ]'
 check "emits the head" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
 check "claim comment posted" 'grep -q "swarm-claim host=eb03 run=513" "$FAKE_DIR/comments-431.json"'
 check "agent-working added" 'grep -q "POST .*issues/431/labels" "$FAKE_DIR/calls.log"'
+# #350: the won ticket's number reaches the host sink at claim time, once
+check "#350: claimed number appended to the host claim sink" '[ "$(cat "$SANDCASTLE_CLAIM_SINK")" = "431" ]'
+# #350: no sink dir (the sandbox mount absent) is a silent no-op — same JSON out
+setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
+export SANDCASTLE_CLAIM_SINK="$FAKE_DIR/no-such-dir/claimed.log"
+out="$(bash "$script" 2>"$FAKE_DIR/nosink-err")"
+check "#350: missing sink dir still claims and emits the ticket" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
+check "#350: missing sink dir creates nothing" '[ ! -e "$FAKE_DIR/no-such-dir" ]'
 # #13: the landing instruction line — a PUSH policy prints push-to-main, on
 # stderr so the JSON stdout contract stays clean. #186: pin SWARM_POLICY_FILE to
 # a test-controlled push policy here too — leaving the seam unset made this
@@ -64,6 +76,7 @@ jq -n '[{id:900, body:"swarm-claim host=ws run=512\nx"}]' >"$FAKE_DIR/comments-4
 out="$(bash "$script")"
 check "loser takes the next ticket" '[ "$(jq -r ".[0].number" <<<"$out")" = "433" ]'
 check "loser deleted its own claim" 'grep -q "DELETE .*issues/comments/1001" "$FAKE_DIR/calls.log"'
+check "#350: a lost candidate is never written to the claim sink" '[ "$(cat "$SANDCASTLE_CLAIM_SINK")" = "433" ]'
 
 # T4: every ticket contested -> []
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
