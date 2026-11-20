@@ -85,6 +85,12 @@ gate_head="${CR_MAIN_HEAD:-origin/main}"
 # worker branch, so the comment never falsely claims "verified against main" when
 # it only verified the pushed worker branch the host has not yet promoted.
 gate_head_desc="main"
+# #359 gap A: set when this is a PRE-land push close — gate 1 verified the pushed
+# worker branch, NOT `main`, so the commits are not on `main` yet. On such a close
+# this script marks the issue `landing-pending`; the host clears it on the verified
+# land (landing_promote_landed). Stays empty when the close is already on `main`
+# (the #244 origin/main path, or a pr merge), where no mark is needed.
+cr_landing_pending=""
 pr_number="" pr_no_pr="" pr_merged="" pr_superseded=""
 if [ "$landing" = pr ]; then
   if pr_number="$(landing_merged_pr_for "$issue")"; then
@@ -141,6 +147,7 @@ else
           # that land can still roll back (#283). Say so, so the close comment is
           # honest about what it proved.
           gate_head_desc="the pushed worker branch \`$wb\` (pre-land — the host promotes it to \`main\` only after its post-run verify, #193/#283)"
+          cr_landing_pending=1   # #359 gap A: closed pre-land — mark landing-pending until the host lands main
         fi ;;
       *)
         # #244: a NON-worker-branch push-mode checkout gates against origin/main,
@@ -496,6 +503,30 @@ cr_release_claim_labels() { # cr_release_claim_labels <issue>
   done
 }
 
+# #359 gap A: mark a just-closed PRE-land push issue `landing-pending` — close-report
+# runs in the sandbox and closes against the pushed worker branch, so the commits
+# are NOT on `main` yet. While the mark sits on a CLOSED issue, list-ready-tasks.sh
+# counts it as a still-unmet dependency, closing the window in which a dependent is
+# handed out before this ticket's work reaches `main`. The host clears it on the
+# verified land (landing_promote_landed). Resolve the label id by NAME (differs per
+# repo) and ADD via the label endpoint (GOTCHAS 2: a `labels` field in an issue-PATCH
+# is ignored). Best-effort: the close has already stuck, and a repo that has not
+# minted the label is a no-op with one explanatory note.
+cr_mark_landing_pending() { # cr_mark_landing_pending <issue>
+  local labels_json lid code
+  labels_json="$(forgejo_get '/labels?limit=100' 2>/dev/null || true)"
+  lid="$(forgejo_label_id "$labels_json" "${LANDING_PENDING_LABEL:-landing-pending}")"
+  if [ -z "$lid" ]; then
+    echo "close-report: note: label '${LANDING_PENDING_LABEL:-landing-pending}' not minted here — #$1 closed but not marked landing-pending (#359); mint it to close the close-before-land window" >&2
+    return 0
+  fi
+  code="$(forgejo_add_labels "$1" "$lid")"
+  case "$code" in
+    2*|"") echo "close-report: marked #$1 landing-pending until the host verifies the land (#359)." ;;
+    *) echo "close-report: warning: could not mark #$1 landing-pending (HTTP $code) (#359)" >&2 ;;
+  esac
+}
+
 # #151: superseded — a multi-host race let another host WIN this ticket. Its PR
 # merged and `closes #$issue` closed the issue on main via a branch other than
 # agent/issue-$issue, so this run's work is redundant. Recognise the landed work
@@ -642,6 +673,13 @@ if [ "$state" = "closed" ]; then
   post_comment ":white_check_mark: **close-report gates passed** — every claim verified against $gate_head_desc; issue closed."
   echo "close-report: issue #$issue closed (all claim gates passed)."
   cr_release_claim_labels "$issue"   # #22: the close stuck — release the claim labels
+  # #359 gap A: a PRE-land push close is on the worker branch, not `main` yet. Mark
+  # it landing-pending so list-ready-tasks.sh counts it as a still-unmet dependency
+  # until the host promotes it to `main` and clears the mark (landing_promote_landed)
+  # — so a dependent is not handed out, blocks itself, and strands in the window
+  # between this close and its land. Best-effort: the close has already stuck, and
+  # a repo that has not minted the label is a byte-identical no-op.
+  if [ -n "$cr_landing_pending" ]; then cr_mark_landing_pending "$issue"; fi
 else
   post_comment ":warning: **close-report gates passed but the close FAILED: HTTP $close_code** — issue #$issue is still OPEN. The bot likely lacks issue-write permission on this repo (the \`machines\` team needs \`repo.issues\` write, not just \`repo.code\`)."
   echo "close-report: gates passed but the close PATCH FAILED (HTTP $close_code) — issue #$issue still OPEN; check the bot's issues permission on this repo." >&2

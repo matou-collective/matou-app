@@ -122,16 +122,20 @@ SUBJECTS='' SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=human \
 pass=$((pass+1))
 
 # --- 6. push mode's rescue ladder: when nothing lands the commits are PARKED,
-#        never stranded (run 330 lost three closed-issue commits) -----------
+#        never stranded (run 330 lost three closed-issue commits). A CLEAN rebase
+#        reaches the park without the conflict resolver: main moved, the rebase
+#        replays cleanly, but the re-push still fails (the forge went away) — so the
+#        park ladder, not the #207/#364 resolver, is under test here. (#364 repoint:
+#        the old shim reached this park via a rebase CONFLICT with claude absent,
+#        which now defers as `resolver-unusable` instead — see case 6b below.)
 cat > "$tmp/bin/git" <<'SH'
 #!/usr/bin/env bash
 echo "git $*" >> "${GIT_LOG:?}"
 case "$*" in
   "push origin HEAD:main") exit 1 ;;      # main moved under us, and stays moved
-  "rebase origin/main")    exit 1 ;;      # ...with a conflict claude can't fix
   "merge-base --is-ancestor HEAD origin/main") exit 1 ;;  # HEAD carries commits
 esac
-exit 0
+exit 0                                     # rebase replays cleanly; re-push still fails
 SH
 chmod +x "$tmp/bin/git"
 export LANDING_NOTIFY="$tmp/bin/notify.sh"
@@ -153,6 +157,37 @@ grep -q 'commits parked on' "$NOTIFY_LOG" || fail "the park must alarm so a huma
 grep -q 'will NOT retry' "$NOTIFY_LOG" || fail "the alarm must say the issues will not retry"
 pass=$((pass+1))
 
+# --- 6b. #364: a rebase CONFLICT with the resolver unable to START (claude absent)
+#         must DEFER quietly through landing_stage, not park+page. The pre-#364 code
+#         misclassified the never-run resolver as a failed merge and parked on a
+#         rescue branch, reopening the closed ticket on every run. Now it is a quiet
+#         `rebase-rescue-resolver-unusable` defer: no rescue branch, no page, retried
+#         next run. (claude absence: $tmp/bin has git/notify but no claude, and
+#         /usr/bin:/bin carry none — `command -v claude` fails.) ----------------
+cat > "$tmp/bin/git" <<'SH'
+#!/usr/bin/env bash
+echo "git $*" >> "${GIT_LOG:?}"
+case "$*" in
+  "push origin HEAD:main") exit 1 ;;      # main moved under us, and stays moved
+  "rebase origin/main")    exit 1 ;;      # ...with a conflict, and no resolver to fix it
+  "merge-base --is-ancestor HEAD origin/main") exit 1 ;;  # HEAD carries commits
+esac
+exit 0
+SH
+chmod +x "$tmp/bin/git"
+: > "$GIT_LOG"; : > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
+RC=0
+PATH="$tmp/bin:/usr/bin:/bin" SWARM_POLICY_LANDING=push \
+  landing_stage Matou/matou-app '[{"number":7}]' start || RC=$?
+[ "$RC" = 1 ] || fail "a could-not-start resolver must still fail the land, got $RC"
+[ "$SWARM_EXIT_REASON" = "rebase-rescue-resolver-unusable" ] \
+  || fail "claude-absent must defer as resolver-unusable, not park: got '$SWARM_EXIT_REASON'"
+! grep -q 'push origin HEAD:refs/heads/sandcastle/rescue-' "$GIT_LOG" \
+  || fail "a quiet defer must NOT park a rescue branch: $(cat "$GIT_LOG")"
+! grep -q 'rotating_light' "$NOTIFY_LOG" || fail "a defer must not page a rotating_light alarm: $(cat "$NOTIFY_LOG")"
+grep -q 'could not START' "$NOTIFY_LOG" || fail "the defer must name the could-not-start resolver: $(cat "$NOTIFY_LOG")"
+pass=$((pass+1))
+
 # --- 7. a failed push with NOTHING to land (HEAD already on origin/main) is a
 #        transport fault, not a park: no rescue branch, no cherry-pick alarm.
 #        (Run 22240, 2026-09-12: Forgejo flapped 503 and the ladder cried that
@@ -163,10 +198,9 @@ echo "git $*" >> "${GIT_LOG:?}"
 case "$*" in
   "push origin HEAD:main") exit 1 ;;      # the forge is 5xx, not moved
   "fetch origin main")     exit 1 ;;
-  "rebase origin/main")    exit 1 ;;
   "merge-base --is-ancestor HEAD origin/main") exit 0 ;;  # nothing of ours
 esac
-exit 0
+exit 0                                    # rebase replays cleanly; the forge is just down
 SH
 chmod +x "$tmp/bin/git"
 : > "$GIT_LOG"; : > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
@@ -188,11 +222,10 @@ cat > "$tmp/bin/git" <<'SH'
 echo "git $*" >> "${GIT_LOG:?}"
 case "$*" in
   push*)                   exit 1 ;;      # nothing reaches the forge, park included
-  "rebase origin/main")    exit 1 ;;
   "merge-base --is-ancestor HEAD origin/main") exit 1 ;;  # HEAD carries commits
   "rev-parse --short HEAD") echo deadbee0 ;;
 esac
-exit 0
+exit 0                                    # rebase replays cleanly; the forge is just down
 SH
 chmod +x "$tmp/bin/git"
 : > "$GIT_LOG"; : > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""

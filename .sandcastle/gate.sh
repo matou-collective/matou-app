@@ -16,6 +16,8 @@ mode="${1:-manual}"
 # --prepush-host — same stdin, HOST push profile: the TS lint gate (#1252)
 #                  plus the cheap gofmt-only Go gate (Gate 3b, #1458); the heavy
 #                  Go seam stays sandbox-only (#198). `--prepush-ts` is an alias.
+# The docs (GOTCHAS #143) and shellcheck (#379) tiers are cheap, so they run on
+# EVERY profile — including the HOST path, where #360/#371/#378 slipped past CI.
 # manual        — the working range against origin/main; run every language gate.
 case "$mode" in
   --prepush|--prepush-host|--prepush-ts)

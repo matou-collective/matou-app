@@ -39,6 +39,21 @@ eq "docs"  "$(printf 'docs/architecture/09-founding-sequence.md\n' | gate_langs_
 eq "docs"  "$(printf 'docs/ux/flows/p6-members-idip.mermaid\n' | gate_langs_for_files)" "a UX flow source is a docs change"
 eq ""      "$(printf 'docs/adr/0174-two-way-doors.md\n'  | gate_langs_for_files)" "an ADR under docs/ is NOT a docs-diagram change"
 eq $'docs\nts' "$(printf 'docs/slices/x.mermaid\nb.ts\n' | gate_langs_for_files)" "a docs+TS change reports both"
+# The shellcheck tier (#379): a shell-script change the ci/static shellcheck job
+# would scan. Mapped by EXTENSION / universal harness filename — never ci.yml's
+# factory-ROOT dir globs (onboarding/, tests/, .forgejo/), which a vendored file
+# must not name (CLAUDE.md blast radius; ci.yml is not vendored) — so ANY *.sh,
+# the extension-less hooks, and git-fence are sh in every consumer.
+eq "sh"    "$(printf 'run-swarm.sh\n'                    | gate_langs_for_files)" "a .sh file is a shell change"
+eq "sh"    "$(printf 'git-hooks/pre-push\n'              | gate_langs_for_files)" "an extension-less git hook is a shell change"
+eq "sh"    "$(printf 'git-fence\n'                       | gate_langs_for_files)" "git-fence is a shell change"
+eq "sh"    "$(printf '.sandcastle/swarm-policy.sh\n'     | gate_langs_for_files)" "a nested .sh is a shell change (extension superset of ci.yml's root-only scan)"
+eq $'go\nsh' "$(printf 'x.go\ny.sh\n'                     | gate_langs_for_files)" "a Go+shell change reports both"
+# gate_sh_files echoes only the shell files, in input order — the scoped list the
+# tier runs `shellcheck -S warning -x` over (never a whole-tree ~3 min scan).
+eq $'a.sh\ngit-fence\ngit-hooks/pre-push\nz/b.sh' \
+  "$(printf 'a.sh\nREADME.md\ngit-fence\ngit-hooks/pre-push\nx.go\nz/b.sh\n' | gate_sh_files)" \
+  "gate_sh_files keeps only the shell files, in input order"
 
 # --- the gate: a Go change runs the Go stage; red is caught, green passes ---
 marker="$(mktemp -u)"
@@ -493,6 +508,131 @@ MMD
   rm -rf "$docsroot"
 fi
 rm -f "$docsmarker"
+
+# --- the shellcheck tier (#379) ---------------------------------------------
+# An SC `-S warning` regression in a shell script was invisible to the push gate
+# and only red ci/static AFTER the push (the #360/#371/#378 family). The gate now
+# runs a changed-file-scoped `shellcheck -S warning -x` on EVERY push path.
+# GATE_SHELLCHECK_CMD is its offline test seam; GATE_NO_SHELLCHECK=1 forces the
+# no-binary path deterministically (like GATE_NO_NIX, #314) so the fail-OPEN
+# default AND the GATE_SHELLCHECK_REQUIRE fail-closed arm are both proven on a
+# host that has shellcheck.
+scmarker="$(mktemp -u)"
+
+# A red shellcheck stage: the push is refused.
+rc=0
+GATE_SHELLCHECK_CMD="rm -f '$scmarker'; false" gate_shellcheck_stage "$PWD" a.sh 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a red shellcheck stage must make the gate fail (the push is refused)"
+pass=$((pass+1))
+
+# A green shellcheck stage: it passes AND actually ran.
+rm -f "$scmarker"; rc=0
+GATE_SHELLCHECK_CMD="touch '$scmarker'; true" gate_shellcheck_stage "$PWD" a.sh 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "a green shellcheck stage must let the gate pass"
+[ -f "$scmarker" ] || fail "the shellcheck stage must actually run"
+pass=$((pass+1))
+
+# GATE_SHELLCHECK_CMD receives the changed shell files as positional params ($@),
+# so a per-repo override can stay changed-file-scoped.
+out="$(GATE_SHELLCHECK_CMD='printf "%s\n" "$@"' gate_shellcheck_stage "$PWD" a.sh git-fence 2>/dev/null)"
+[ "$out" = $'a.sh\ngit-fence' ] || fail "GATE_SHELLCHECK_CMD must receive the scoped files as \$@, got: $out"
+pass=$((pass+1))
+
+# The shellcheck stage runs with git's hook env scrubbed (like the sibling tiers).
+rc=0
+GIT_DIR=/somewhere/.git GIT_INDEX_FILE=/somewhere/.git/index \
+  GATE_SHELLCHECK_CMD='[ -z "${GIT_DIR:-}${GIT_INDEX_FILE:-}" ] || exit 7' \
+  gate_shellcheck_stage "$PWD" a.sh 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "the shellcheck stage must run with git's hook env scrubbed"
+pass=$((pass+1))
+
+# Fail-OPEN by default: no GATE_SHELLCHECK_CMD and no shellcheck resolves -> the
+# tier WARNS and PASSES (rc 0). The #379 ruling: shellcheck is not provisioned-by-
+# contract fleet-wide, so a fail-closed tier would block the reconcile rail for
+# every shell-touching push. GATE_NO_SHELLCHECK=1 forces the no-binary path so
+# this is proven even on a host that has shellcheck (the #314 lesson).
+rc=0
+GATE_NO_SHELLCHECK=1 gate_shellcheck_stage "$PWD" a.sh 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "with no shellcheck resolvable the tier must fail OPEN (warn + pass), not block the rail (#379)"
+pass=$((pass+1))
+
+# ...and it WARNS loudly (never a silent skip — the gofmt-bypass lesson).
+out="$(GATE_NO_SHELLCHECK=1 gate_shellcheck_stage "$PWD" a.sh 2>&1)"
+printf '%s\n' "$out" | grep -qi 'WARNING' || fail "the fail-open skip must warn loudly, got: $out"
+pass=$((pass+1))
+
+# GATE_SHELLCHECK_REQUIRE=1 flips the no-binary arm fail-CLOSED, for a consumer
+# that HAS provisioned shellcheck and wants it enforced at the push here.
+rc=0
+GATE_NO_SHELLCHECK=1 GATE_SHELLCHECK_REQUIRE=1 gate_shellcheck_stage "$PWD" a.sh 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "GATE_SHELLCHECK_REQUIRE=1 with no shellcheck must fail CLOSED (#379)"
+pass=$((pass+1))
+
+# GATE_SHELLCHECK_CMD takes precedence over a shellcheck on PATH: the override
+# (which fails) must win even when a real shellcheck is present.
+rc=0
+GATE_SHELLCHECK_CMD="false" gate_shellcheck_stage "$PWD" a.sh 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "GATE_SHELLCHECK_CMD must take precedence over a shellcheck on PATH"
+pass=$((pass+1))
+
+# A shell-only change runs ONLY the shellcheck tier — not Go, TS or docs.
+rm -f "$marker" "$tsmarker" "$docsmarker" "$scmarker"; rc=0
+printf 'run-swarm.sh\n' | \
+  GATE_GO_CMD="touch '$marker'; true" GATE_TS_CMD="touch '$tsmarker'; true" \
+  GATE_DOCS_CMD="touch '$docsmarker'; true" GATE_SHELLCHECK_CMD="touch '$scmarker'; true" \
+  gate_run "$PWD" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "a clean shell-only change must pass the gate"
+[ ! -f "$marker" ] || fail "a shell-only change must NOT run the Go stage"
+[ ! -f "$tsmarker" ] || fail "a shell-only change must NOT run the TS stage"
+[ ! -f "$docsmarker" ] || fail "a shell-only change must NOT run the docs stage"
+[ -f "$scmarker" ] || fail "a shell-only change MUST run the shellcheck tier (#379)"
+pass=$((pass+1))
+
+# The shellcheck tier runs under the HOST profile too (go_tier=gofmt) — that is
+# where #360/#371/#378 slipped past, so it must fire there, not only the sandbox.
+rm -f "$scmarker"; rc=0
+printf 'git-hooks/pre-push\n' | GATE_SHELLCHECK_CMD="touch '$scmarker'; true" \
+  gate_run "$PWD" "" gofmt 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "a clean shell change must pass under the host profile"
+[ -f "$scmarker" ] || fail "the host profile MUST run the shellcheck tier (#379)"
+pass=$((pass+1))
+
+# gate_run passes the SCOPED changed shell files to the tier (not a whole-tree
+# scan): the override echoes its args, which must be exactly the shell files.
+out="$(printf 'a.sh\nREADME.md\ngit-fence\n' | \
+  GATE_SHELLCHECK_CMD='printf "F:%s\n" "$@"' gate_run "$PWD" 2>/dev/null | grep '^F:')"
+[ "$out" = $'F:a.sh\nF:git-fence' ] || fail "gate_run must pass only the scoped shell files to the tier, got: $out"
+pass=$((pass+1))
+
+# The DEFAULT shellcheck command: the real binary over real fixtures, WITHOUT a
+# stub (the #400 lesson). Guarded on a shellcheck on PATH — absent in the
+# factory's bash-only test env and the `test` CI job, present in the sandbox image
+# / a provisioned host — so it simply skips where there is none.
+if command -v shellcheck >/dev/null 2>&1; then
+  scroot="$(mktemp -d)"
+  # A clean script: no `-S warning` finding.
+  printf '#!/usr/bin/env bash\nx="hi"\necho "$x"\n' > "$scroot/clean.sh"
+  # Warning-severity findings: SC2155 (declare+assign masks the return value — the
+  # exact #378 class) and SC2164 (cd without || exit). Both are severity "warning",
+  # so `-S warning` flags them.
+  printf '#!/usr/bin/env bash\nf() {\n  local v=$(false)\n  echo "$v"\n}\ncd /tmp\nf\n' > "$scroot/dirty.sh"
+
+  # Scoped to the clean file -> passes; scoped to the dirty file -> refused. The
+  # clean pass while a dirty sibling exists is the scoping proof: the tier scans
+  # only the files it is handed, never the whole tree.
+  rc=0; gate_shellcheck_default_cmd "$scroot" "$scroot/clean.sh" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 0 ] || fail "the real shellcheck tier must pass a clean script (scanning only what it is handed)"
+  pass=$((pass+1))
+  rc=0; gate_shellcheck_default_cmd "$scroot" "$scroot/dirty.sh" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "the real shellcheck tier must fail on an -S warning finding (the #378 class)"
+  pass=$((pass+1))
+  # ...and through the stage resolver's bare-shellcheck path (no override).
+  rc=0; gate_shellcheck_stage "$scroot" dirty.sh >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "the bare-shellcheck stage path must fail on a dirty file"
+  pass=$((pass+1))
+  rm -rf "$scroot"
+fi
+rm -f "$scmarker"
 
 # --- pre-push stdin → changed files, over a throwaway repo -----------------
 repo="$(mktemp -d)"; trap 'rm -rf "$repo" "$marker" "$tsmarker" "$fmtmarker"' EXIT

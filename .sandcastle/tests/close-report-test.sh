@@ -645,6 +645,58 @@ grep -q 'fetched at' "$FAKE_DIR/stdout.log" \
   || fail "ST-2: the gate-1 refusal must name when the live main head was fetched (#244): $(cat "$FAKE_DIR/stdout.log")"; ok
 grep -q "not reachable from $h1" "$FAKE_DIR/stdout.log" \
   || fail "ST-2: the gate-1 refusal must name the live head it compared against (#244)"; ok
+
+# WB-1 (#359 gap A) — a PRE-land push close runs INSIDE the sandbox on a
+# sandcastle/worker/* branch and gates against the PUSHED worker branch (the host
+# has not yet landed main). close-report must mark the verified close
+# `landing-pending`, so list-ready-tasks.sh counts it as a still-unmet dependency
+# until the host lands main and clears the mark — closing the window in which a
+# dependent is handed out and strands itself. Craft a worker branch off H0, commit
+# citing #52, and push it to origin so gate 1 can verify it pre-land.
+git -C "$st_local" checkout -q -b sandcastle/worker/wb "$h0"
+printf 'x\npending\n' > "$st_local/src.go"; git -C "$st_local" add -A
+git -C "$st_local" commit -qm "sandcastle: #52 — do the thing (pre-land, #359)"
+h_wb="$(git -C "$st_local" rev-parse HEAD)"
+git -C "$st_local" push -q origin sandcastle/worker/wb
+FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
+printf 'LANDING=push\n' > "$FAKE_DIR/swarm-policy.sh"
+printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"},{"id":60,"name":"landing-pending"}]\n' \
+  > "$FAKE_DIR/labels.json"
+wb_env="$(jq -n --arg c "$h_wb" '{
+  issue:52, status:"success", commits:[$c], changed_files:["src.go"],
+  tests:[{command:"t",exit_code:0}], summary:"do the thing", blockers:[]
+}')"
+printf '%s' "$wb_env" > "$FAKE_DIR/envelope.json"
+( cd "$st_local" && SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" CR_MAIN_HEAD="" \
+    bash "$here/../close-report.sh" 52 "$FAKE_DIR/envelope.json" ) >"$FAKE_DIR/stdout.log" 2>&1
+rc=$?
+[ "$rc" -eq 0 ] || fail "WB-1: a pre-land worker-branch close must pass gate 1 against the pushed branch, got $rc: $(cat "$FAKE_DIR/stdout.log")"; ok
+close_stuck 52 || fail "WB-1: the pre-land close must still close the issue"; ok
+grep -q 'pre-land' "$FAKE_DIR/forgejo.log" || fail "WB-1: the close comment must say it verified the worker branch pre-land"; ok
+grep -q '"labels":\[60\]' "$FAKE_DIR/forgejo.log" \
+  || fail "WB-1 (#359 gap A): a pre-land push close must mark the issue landing-pending (POST labels [60])"; ok
+grep -q 'marked #52 landing-pending' "$FAKE_DIR/stdout.log" \
+  || fail "WB-1: the run must announce the landing-pending mark (#359)"; ok
+
+# WB-2 (#359) — an ON-main push close (gate_head is live main, not a worker
+# branch) does NOT mark landing-pending: its commits are already on main, so there
+# is no window to close. Reuses the ST infra: H1 is on the live remote main.
+FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
+printf 'LANDING=push\n' > "$FAKE_DIR/swarm-policy.sh"
+printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"},{"id":60,"name":"landing-pending"}]\n' \
+  > "$FAKE_DIR/labels.json"
+git -C "$st_local" checkout -q main 2>/dev/null || true
+wb2_env="$(jq -n --arg c "$h1" '{
+  issue:444, status:"success", commits:[$c], changed_files:["src.go"],
+  tests:[{command:"t",exit_code:0}], summary:"already on main", blockers:[]
+}')"
+printf '%s' "$wb2_env" > "$FAKE_DIR/envelope.json"
+( cd "$st_local" && SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" CR_MAIN_HEAD="" \
+    bash "$here/../close-report.sh" 444 "$FAKE_DIR/envelope.json" ) >"$FAKE_DIR/stdout.log" 2>&1
+rc=$?
+[ "$rc" -eq 0 ] || fail "WB-2: an on-main close must verify, got $rc: $(cat "$FAKE_DIR/stdout.log")"; ok
+! grep -q '"labels":\[60\]' "$FAKE_DIR/forgejo.log" \
+  || fail "WB-2 (#359): an on-main close must NOT mark landing-pending (no window to close)"; ok
 rm -rf "$st_dir"
 
 echo "close-report: $pass checks passed"

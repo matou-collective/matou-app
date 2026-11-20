@@ -19,8 +19,14 @@ export FLEET_QUEUE_STAMP="$tmp/state/fleet-queue-dispatched"
 export FLEET_QUEUE_RECENT_CLOSES="$tmp/state/fleet-recent-closes"
 export FLEET_QUEUE_STRIKES="$tmp/state/fleet-queue-strikes"
 export FLEET_QUEUE_MARKS="$tmp/state/fleet-queue-marks"
+export FLEET_DISPATCH_ACK_STATE="$tmp/state/fleet-dispatch-ack"
 export COMMENTS_DIR="$tmp/comments"
 export FORGEJO_TOKEN=t HOST_NAME=box-07 CURL_LOG="$tmp/curl.log" LISTER_LOG="$tmp/listers.log"
+# Hermeticity (#368): neutralise any host-env dispatcher config so the acting-ack
+# cases exercise only the crafted ack. On the dispatcher host FLEET_DISPATCHER_URL
+# is set, which makes fleet_slot_report_emit POST (via the curl shim) and record a
+# dead ack, overwriting the crafted "true true" and reddening the stand-down check.
+export FLEET_DISPATCHER_URL="" FLEET_DISPATCHER_TOKEN=""
 mkdir -p "$tmp/state"
 
 mk_checkout() { # <dir> <slug> <lister-json>
@@ -76,6 +82,7 @@ case "$method $url" in
     printf '%s' "$hit" ;;
   *)
     case "$url" in
+      *actions/runs?status=waiting*) [ -n "${WAITING_FAIL:-}" ] && exit 22; printf '%s' "${WAITING_RUNS:-}" ;;
       */repos/Acme/alpha/issues/10/blocks*) printf '[{"number":5,"state":"open","repository":{"full_name":"Acme/beta"}}]' ;;
       */blocks*) printf '[]' ;;
       */dispatches) [ -n "${DISPATCH_FAIL:-}" ] && { printf '500'; exit 0; }; printf '204' ;;
@@ -84,7 +91,7 @@ case "$method $url" in
 esac
 SH
 
-reset() { : >"$CURL_LOG"; : >"$LISTER_LOG"; rm -f "$FLEET_QUEUE_STAMP" "$FLEET_QUEUE_CACHE" "$FLEET_QUEUE_RECENT_CLOSES" "$FLEET_QUEUE_STRIKES" "$FLEET_QUEUE_MARKS" "$HOST_CAPACITY_DRIVE_WANTED"; rm -rf "$COMMENTS_DIR"; }
+reset() { : >"$CURL_LOG"; : >"$LISTER_LOG"; rm -f "$FLEET_QUEUE_STAMP" "$FLEET_QUEUE_CACHE" "$FLEET_QUEUE_RECENT_CLOSES" "$FLEET_QUEUE_STRIKES" "$FLEET_QUEUE_MARKS" "$FLEET_DISPATCH_ACK_STATE" "$HOST_CAPACITY_DRIVE_WANTED"; rm -rf "$COMMENTS_DIR"; }
 run() { bash "$sc/fleet-queue.sh" "$@" 2>&1; }
 dispatched() { local n; n="$(grep -c "POST .*dispatches" "$CURL_LOG" 2>/dev/null)" || true; echo "${n:-0}"; }
 dispatch_body() { grep "dispatches" "$CURL_LOG" | tail -1 | cut -d' ' -f3-; }
@@ -130,7 +137,7 @@ reset
 mk_checkout "$tmp/prio" Acme/prio '[{"number":1,"title":"prio last","body":"","url":"u","created_at":"2026-10-22T00:00:00Z","priority":true,"blocker":false}]'
 out="$(FLEET_QUEUE_REPOS="$FLEET_QUEUE_REPOS $tmp/prio:Acme/prio" run tick)"
 check "a priority ticket filed last is dispatched first" \
-  'grep -q "repos/Acme/prio/actions" "$CURL_LOG" && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 1 ]'
+  'grep -q "repos/Acme/prio/actions/workflows" "$CURL_LOG" && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 1 ]'
 
 # ── after-close: dependants first, no slot gate, the close is recorded ──────
 reset
@@ -141,7 +148,7 @@ out="$(run after-close Acme/alpha 10)"
 check "after-close reads what the closed ticket blocks" \
   'grep -q "GET https://forge.test/api/v1/repos/Acme/alpha/issues/10/blocks" "$CURL_LOG"'
 check "after-close dispatches the DEPENDANT (beta#5) ahead of the older alpha#10, slots held or not" \
-  '[ "$(dispatched)" -eq 1 ] && grep -q "repos/Acme/beta/actions" "$CURL_LOG" && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 5 ]'
+  '[ "$(dispatched)" -eq 1 ] && grep -q "repos/Acme/beta/actions/workflows" "$CURL_LOG" && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 5 ]'
 check "after-close names the dependant relation" \
   'grep -q "dispatched Acme/beta#5 to box-07 (dependant of Acme/alpha#10" <<<"$out"'
 check "after-close records the close for later ticks on this host" \
@@ -162,7 +169,7 @@ kill "$h1" "$h2" 2>/dev/null; wait "$h1" "$h2" 2>/dev/null
 reset; printf '%s Acme/alpha 10\n' "$(date +%s)" >"$FLEET_QUEUE_RECENT_CLOSES"
 out="$(run tick)"
 check "tick promotes the dependants of a recent recorded close" \
-  'grep -q "repos/Acme/beta/actions" "$CURL_LOG" && grep -q "dependant of Acme/alpha#10" <<<"$out"'
+  'grep -q "repos/Acme/beta/actions/workflows" "$CURL_LOG" && grep -q "dependant of Acme/alpha#10" <<<"$out"'
 
 # ── disk-headroom gate (#315): a host under its floor reports no free slot ──
 reset
@@ -210,6 +217,54 @@ out="$(run rearm)"
 check "a rearm (a run that just finished on this host) clears the strikes" \
   '[ ! -f "$FLEET_QUEUE_STRIKES" ] && [ "$(dispatched)" -eq 1 ]'
 
+# ── dispatcher stand-down (ADR 0009 / #356): an acknowledged host defers ────
+# The ack state is "<at> <ok> <acting>"; a fresh ok=true acting=true line is a
+# LIVE dispatcher saying it allocates this host's slot (fleet-slot-report-lib.sh
+# writes it on a 2xx; here we craft it, since the push is a no-op with no
+# FLEET_DISPATCHER_URL). Fresh acting-ack → stand the tick down.
+reset
+printf '%s true true\n' "$(date +%s)" >"$FLEET_DISPATCH_ACK_STATE"
+out="$(run tick)"
+check "a tick with a fresh LIVE ack stands down: no lister, no dispatch, names the dispatcher" \
+  '[ ! -s "$LISTER_LOG" ] && [ "$(dispatched)" -eq 0 ] && grep -q "live dispatcher acknowledged" <<<"$out"'
+
+# a not-acting ack (the dispatcher is only shadowing) never stands the tick down
+reset
+printf '%s true false\n' "$(date +%s)" >"$FLEET_DISPATCH_ACK_STATE"
+out="$(run tick)"
+check "a not-acting ack (shadow) does NOT stand down — the head is dispatched as today" \
+  '[ "$(dispatched)" -eq 1 ] && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 10 ]'
+
+# a STALE acting-ack → the dispatcher went quiet → today's tick resumes at once
+reset
+printf '%s true true\n' "$(( $(date +%s) - 99999 ))" >"$FLEET_DISPATCH_ACK_STATE"
+out="$(run tick)"
+check "a stale acting-ack resumes the host's own tick within one heartbeat (dispatches the head)" \
+  '[ "$(dispatched)" -eq 1 ] && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 10 ]'
+
+# the stand-down is tick-only: a finishing run's rearm still self-rearms (the
+# retirement of that seam is a later slice, not #356).
+reset
+printf '%s true true\n' "$(date +%s)" >"$FLEET_DISPATCH_ACK_STATE"
+( exec 7>"$tmp/state/slot-1.lock"; flock 7; sleep 30 ) & h1=$!
+( exec 7>"$tmp/state/slot-2.lock"; flock 7; sleep 30 ) & h2=$!
+sleep 0.3
+out="$(run rearm)"
+check "a fresh ack does NOT stand a rearm down (tick-only; the self-rearm seam is retired later)" \
+  '[ "$(dispatched)" -eq 1 ] && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 10 ]'
+kill "$h1" "$h2" 2>/dev/null; wait "$h1" "$h2" 2>/dev/null
+
+# a BUSY host exits at the slot gate even with a fresh ack — "busy", not a stand-down
+reset
+printf '%s true true\n' "$(date +%s)" >"$FLEET_DISPATCH_ACK_STATE"
+( exec 7>"$tmp/state/slot-1.lock"; flock 7; sleep 30 ) & h1=$!
+( exec 7>"$tmp/state/slot-2.lock"; flock 7; sleep 30 ) & h2=$!
+sleep 0.3
+out="$(run tick)"
+check "a BUSY host exits at the slot gate even with a fresh ack (no stand-down line, no dispatch)" \
+  '[ "$(dispatched)" -eq 0 ] && ! grep -q "live dispatcher acknowledged" <<<"$out"'
+kill "$h1" "$h2" 2>/dev/null; wait "$h1" "$h2" 2>/dev/null
+
 # ── dispatch arbitration (#351): one ticket goes to ONE host ────────────────
 marker() { # <repo> <n> <id> <host> <age-seconds> — a peer's fleet-dispatch marker on a ticket
   local f="$COMMENTS_DIR/Acme_$1_issues_$2.json"; mkdir -p "$COMMENTS_DIR"; [ -f "$f" ] || echo '[]' >"$f"
@@ -226,7 +281,7 @@ check "the marker is posted BEFORE the dispatch" \
 reset; marker alpha 10 50 box-02 20
 out="$(run tick)"
 check "a head another host is already dispatching is SKIPPED: this host takes the next in line (beta#5)" \
-  '[ "$(dispatched)" -eq 1 ] && grep -q "repos/Acme/beta/actions" "$CURL_LOG" && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 5 ]'
+  '[ "$(dispatched)" -eq 1 ] && grep -q "repos/Acme/beta/actions/workflows" "$CURL_LOG" && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 5 ]'
 check "the skip is named, with the holder, and the dispatch says it was next in line" \
   'grep -q "Acme/alpha#10 is being dispatched to box-02 — taking the next ticket in line" <<<"$out" && grep -q "dispatched Acme/beta#5 to box-07 (next in line; 1 ahead held by another host" <<<"$out"'
 check "the skipped head gets no marker from this host; the stamp names what was dispatched" \
@@ -247,7 +302,7 @@ check "an EXPIRED peer marker holds nothing — the head is dispatched here" \
 reset
 out="$(RACE_FIRST=box-02 RACE_ONLY=10 run tick)"
 check "two hosts ticking in the same second: the loser dispatches the NEXT ticket, never the same one" \
-  '[ "$(dispatched)" -eq 1 ] && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 5 ] && ! grep -q "repos/Acme/alpha/actions" "$CURL_LOG"'
+  '[ "$(dispatched)" -eq 1 ] && [ "$(jq -r .inputs.ticket <<<"$(dispatch_body)")" = 5 ] && ! grep -q "repos/Acme/alpha/actions/workflows" "$CURL_LOG"'
 
 reset
 out="$(COMMENTS_GET_FAIL=1 run tick)"
@@ -301,5 +356,74 @@ check "a failed dispatch releases its marker at once (another host may take the 
 # ── usage ──────────────────────────────────────────────────────────────────
 check "an unknown mode is a usage error (2)" '! run bogus >/dev/null; [ "$(run bogus >/dev/null 2>&1; echo $?)" -eq 2 ]'
 check "after-close without its args is a usage error (2)" '[ "$(run after-close >/dev/null 2>&1; echo $?)" -eq 2 ]'
+
+# ── runner-queue backpressure, host side (#376 — follow-ups to #373) ────────
+# item 2: a host whose OWN runner queue is backed up past the #373 ceiling declines
+# to self-dispatch into its own free slot (parity with the central dispatcher gate).
+reset
+WR_OLD="$(jq -cn --argjson now "$(date +%s)" '{workflow_runs:[{display_title:"swarm box-07 #10",name:"swarm",created:(($now-300)|todateiso8601)}]}')"
+out="$(FLEET_DISPATCH_QUEUE_LAG_MAX=240 WAITING_RUNS="$WR_OLD" run tick)"
+check "a host whose own runner queue is backed up self-dispatches nothing and says so (#376 item 2)" \
+  '[ "$(dispatched)" -eq 0 ] && grep -q "runner queue is backed up" <<<"$out" && grep -q "offered nothing this pass" <<<"$out"'
+
+reset
+WR_FRESH="$(jq -cn --argjson now "$(date +%s)" '{workflow_runs:[{display_title:"swarm box-07 #10",name:"swarm",created:(($now-30)|todateiso8601)}]}')"
+out="$(FLEET_DISPATCH_QUEUE_LAG_MAX=240 WAITING_RUNS="$WR_FRESH" run tick)"
+check "a host under the ceiling still self-dispatches (its waiting leg is fresh)" \
+  '[ "$(dispatched)" -eq 1 ]'
+
+reset
+out="$(FLEET_DISPATCH_QUEUE_LAG_MAX=0 WAITING_RUNS="$WR_OLD" run tick)"
+check "the backpressure check disabled (MAX=0) self-dispatches regardless (pre-#373)" \
+  '[ "$(dispatched)" -eq 1 ]'
+
+reset
+out="$(FLEET_DISPATCH_QUEUE_LAG_MAX=240 WAITING_FAIL=1 run tick)"
+check "an unreadable runner queue backs the host off nothing — it still self-dispatches (fail-open, #376)" \
+  '[ "$(dispatched)" -eq 1 ]'
+
+# item 1: a dispatch marker whose leg is still `waiting` past FLEET_QUEUE_LEG_WAIT_MAX
+# is released EARLY so another host can take the ticket. The host is kept BUSY (both
+# slots held) so the tick exits at the slot gate — item 1 runs before the gates.
+hold_slots() { ( exec 7>"$tmp/state/slot-1.lock"; flock 7; sleep 30 ) & h1=$!; ( exec 7>"$tmp/state/slot-2.lock"; flock 7; sleep 30 ) & h2=$!; sleep 0.3; }
+drop_slots() { kill "$h1" "$h2" 2>/dev/null; wait "$h1" "$h2" 2>/dev/null; }
+
+reset
+marker beta 5 60 box-07 10                                    # a live marker (comment id 60) on beta#5
+printf '%s Acme/beta 5 60\n' "$(date +%s)" >"$FLEET_QUEUE_MARKS"   # this host recorded it
+WR_LEG="$(jq -cn --argjson now "$(date +%s)" '{workflow_runs:[{display_title:"swarm box-07 #5",name:"swarm",created:(($now-300)|todateiso8601)}]}')"
+hold_slots
+out="$(FLEET_QUEUE_LEG_WAIT_MAX=240 WAITING_RUNS="$WR_LEG" run tick)"
+check "a marker whose leg is still waiting past the threshold is released early (#376 item 1)" \
+  '[ "$(jq length "$COMMENTS_DIR/Acme_beta_issues_5.json")" -eq 0 ] && ! grep -q "Acme/beta 5 60" "$FLEET_QUEUE_MARKS" && grep -q "released its dispatch marker early" <<<"$out"'
+drop_slots
+
+reset
+marker beta 5 60 box-07 10
+printf '%s Acme/beta 5 60\n' "$(date +%s)" >"$FLEET_QUEUE_MARKS"
+WR_LEG_FRESH="$(jq -cn --argjson now "$(date +%s)" '{workflow_runs:[{display_title:"swarm box-07 #5",name:"swarm",created:(($now-30)|todateiso8601)}]}')"
+hold_slots
+out="$(FLEET_QUEUE_LEG_WAIT_MAX=240 WAITING_RUNS="$WR_LEG_FRESH" run tick)"
+check "a marker whose leg is still fresh (under the threshold) is kept (#376 item 1)" \
+  '[ "$(jq length "$COMMENTS_DIR/Acme_beta_issues_5.json")" -eq 1 ] && grep -q "Acme/beta 5 60" "$FLEET_QUEUE_MARKS"'
+drop_slots
+
+reset
+marker beta 5 60 box-07 10
+printf '%s Acme/beta 5 60\n' "$(date +%s)" >"$FLEET_QUEUE_MARKS"
+hold_slots
+out="$(FLEET_QUEUE_LEG_WAIT_MAX=240 WAITING_FAIL=1 run tick)"
+check "a marker whose leg cannot be read is kept — the TTL sweep stays the backstop (fail-open, #376 item 1)" \
+  '[ "$(jq length "$COMMENTS_DIR/Acme_beta_issues_5.json")" -eq 1 ] && grep -q "Acme/beta 5 60" "$FLEET_QUEUE_MARKS"'
+drop_slots
+
+reset
+marker beta 5 60 box-07 10
+printf '%s Acme/beta 5 60\n' "$(date +%s)" >"$FLEET_QUEUE_MARKS"
+hold_slots
+out="$(FLEET_QUEUE_LEG_WAIT_MAX=0 WAITING_RUNS="$WR_LEG" run tick)"
+check "early release disabled (LEG_WAIT_MAX=0) keeps the marker (pre-#376)" \
+  '[ "$(jq length "$COMMENTS_DIR/Acme_beta_issues_5.json")" -eq 1 ]'
+drop_slots
 
 summary fleet-queue-test

@@ -38,6 +38,13 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=fleet-queue-lib.sh
 . "$here/fleet-queue-lib.sh"
+# shellcheck source=fleet-slot-report-lib.sh
+. "$here/fleet-slot-report-lib.sh"
+# #376: reuse the #373 runner-queue lag map + ceiling (fleet_dispatch_lag_from_runs,
+# _fleet_dispatch_waiting_runs, _fleet_dispatch_host_backed_off, FLEET_DISPATCH_QUEUE_
+# LAG_MAX) for the host-side early marker release + self-dispatch backpressure below.
+# shellcheck source=fleet-dispatch-lib.sh
+. "$here/fleet-dispatch-lib.sh"
 
 mode="${1:-tick}"; [ $# -gt 0 ] && shift
 case "$mode" in
@@ -63,12 +70,86 @@ if [ -z "${FORGEJO_TOKEN:-}" ]; then
 fi
 export FORGEJO_TOKEN="${FORGEJO_TOKEN:-}"
 
+# ── runner-queue backpressure scan, host side (#376 — follow-ups to #373) ─────
+# This host's forgejo-runner is a resource SEPARATE from its heavy slot: a leg it
+# dispatched can sit `waiting` unpicked while a slot is free (GOTCHAS 78 / #373).
+# Read this host's still-`waiting` legs across every repo it watches ONCE per
+# invocation (memoised in _FQ_SCAN_FILE), exposing BOTH shapes the follow-ups need:
+#   .hostlag {<host>: lag}      — the #373 host lag map restricted to THIS host, for
+#                                 the self-dispatch backpressure gate (item 2);
+#   .legs    {<slug>: {<n>: lag}} — the per-ticket waiting-leg age, for the early
+#                                 marker release (item 1).
+# One bounded, curl-timed GET per repo (actions/runs?status=waiting), fail-open per
+# repo (a read that fails contributes nothing — never frees a marker, never backs
+# the host off). Reuses the #373 read + lag-map helpers (fleet-dispatch-lib.sh).
+# The memo lives in a per-process FILE, not a shell var: both call sites read it via
+# command substitution (a subshell), so a var assignment would not survive to be
+# reused — the file does, so the tracker is read at most once per invocation.
+_FQ_SCAN_FILE="${TMPDIR:-/tmp}/fleet-queue-waiting-scan.$$"
+trap 'rm -f "$_FQ_SCAN_FILE"' EXIT
+_fleet_queue_waiting_scan() {
+  [ -s "$_FQ_SCAN_FILE" ] && { printf '%s' "$(< "$_FQ_SCAN_FILE")"; return 0; }
+  local now pair checkout slug root runs sub hostlag='{}' legs='{}' out
+  now="$(date +%s)"
+  for pair in "${repos[@]}"; do
+    checkout="${pair%%:*}"; slug="${pair#*:}"
+    root="$(fleet_queue_api_root "$checkout" 2>/dev/null)" || continue
+    runs="$(_fleet_dispatch_waiting_runs "$root" "$slug")" || continue
+    [ -n "$runs" ] || continue
+    sub="$(fleet_dispatch_lag_from_runs "$runs" "$now" "$host")"; [ -n "$sub" ] || sub='{}'
+    hostlag="$(jq -cn --argjson a "$hostlag" --argjson b "$sub" \
+      'reduce (($a|keys_unsorted)+($b|keys_unsorted))[] as $k ({};
+         .[$k] = ([$a[$k], $b[$k]] | map(select(. != null)) | max))' 2>/dev/null || printf '%s' "$hostlag")"
+    legs="$(jq -cn --argjson l "$legs" --arg s "$slug" \
+      --argjson v "$(fleet_queue_waiting_legs "$runs" "$now" "$host")" \
+      '$l + {($s): $v}' 2>/dev/null || printf '%s' "$legs")"
+  done
+  out="$(jq -cn --argjson h "$hostlag" --argjson g "$legs" '{hostlag: $h, legs: $g}')"
+  printf '%s' "$out" >"$_FQ_SCAN_FILE" 2>/dev/null || true
+  printf '%s' "$out"
+}
+
 # Sweep this host's expired dispatch markers (#351) on EVERY call, before any
 # gate: a busy host's tick exits at the slot gate, and its markers must not
 # outlive their TTL on the tickets. No tracker call when none is recorded.
 if [ -s "$(fleet_queue_marks_path)" ] && sweep_root="$(fleet_queue_api_root "$first_checkout")"; then
   fleet_queue_marks_sweep "$sweep_root"
 fi
+
+# ── early dispatch-marker release (#376 item 1 / follow-up to #373) ───────────
+# A dispatch marker (#351) holds its ticket for the full FLEET_QUEUE_MARK_TTL even
+# when the dispatched leg is never picked — and under a live dispatcher the
+# stood-down host idles its slot the whole TTL (#370). If a marker THIS host
+# recorded names a leg the forge still shows `waiting` past FLEET_QUEUE_LEG_WAIT_MAX,
+# release it NOW so another host can take the ticket; the TTL sweep above stays the
+# backstop for a leg that cannot be read (fail-open). Reads the tracker only when a
+# marker is held AND the early release is enabled.
+if [ -s "$(fleet_queue_marks_path)" ] && [ "${FLEET_QUEUE_LEG_WAIT_MAX:-0}" -gt 0 ] 2>/dev/null \
+   && release_root="$(fleet_queue_api_root "$first_checkout")"; then
+  scan="$(_fleet_queue_waiting_scan)"
+  # Snapshot the marker records before the loop: fleet_queue_mark_release rewrites
+  # the marks file, so iterate a copy rather than the live file.
+  while read -r _ mslug mn mcid; do
+    [ -n "${mcid:-}" ] || continue
+    lag="$(jq -r --arg s "$mslug" --arg n "$mn" '.legs[$s][$n] // empty' <<<"$scan" 2>/dev/null)" || lag=""
+    case "$lag" in ''|*[!0-9]*) continue ;; esac
+    [ "$lag" -ge "$FLEET_QUEUE_LEG_WAIT_MAX" ] || continue
+    fleet_queue_mark_release "$release_root" "$mcid"
+    echo "fleet-queue: $mslug#$mn's dispatched leg is still waiting ${lag}s (>= ${FLEET_QUEUE_LEG_WAIT_MAX}s) — released its dispatch marker early so another host can take it (#376)"
+  done <<<"$(< "$(fleet_queue_marks_path)")"
+fi
+
+# ── slot report (ADR 0009 / #354): the host's full slot state, pushed to the
+# dispatcher event-first. Sent BEFORE the gates, so a BUSY host — which exits at
+# the slot gate below — still reports its held slots every tick; that periodic
+# report is what keeps the dispatcher correct when a host dies without an end
+# event. `end` carries the ticket this run is finishing (after-close). A no-op
+# until a host declares FLEET_DISPATCHER_URL: this slice dispatches nothing.
+case "$mode" in
+  tick)        fleet_slot_report_emit tick "$host" ;;
+  after-close) fleet_slot_report_emit end "$host" "$closed_slug" "$closed_n" ;;
+  rearm)       fleet_slot_report_emit end "$host" ;;
+esac
 
 # ── the cheap gates (tick only): nothing is listed unless a run could start ──
 if [ "$mode" = tick ]; then
@@ -77,6 +158,20 @@ if [ "$mode" = tick ]; then
     exit 0
   fi
   fleet_queue_slot_free || exit 0     # both pooled slots busy (or no disk headroom): silent, the slot's own run re-arms
+  # ── dispatcher stand-down (ADR 0009 decision 4 / #356) ─────────────────────
+  # This host has a free slot it could dispatch into. If its last slot report
+  # (emitted above) drew a FRESH acting-ack, a LIVE dispatcher holds the fleet
+  # view and will allocate that slot itself — so stand this tick's dispatch down
+  # and leave allocation to it. The moment the acks stop (the dispatcher died,
+  # was stopped, or only ever shadowed), the ack goes stale and this gate falls
+  # through, resuming today's tick (stamp, strikes, #351 arbitration below)
+  # within one heartbeat window: the dispatcher is never a single point of
+  # failure. Only `tick` stands down — a finishing run's after-close/rearm still
+  # self-rearms (the dispatcher-era retirement of that seam is a later slice).
+  if fleet_slot_report_acked_fresh; then
+    echo "fleet-queue: a live dispatcher acknowledged $host's last slot report — standing this tick's dispatch down; it allocates this host's free slot (ADR 0009)"
+    exit 0
+  fi
   if stamp="$(fleet_queue_stamp_fresh)"; then
     set -- $stamp
     echo "fleet-queue: dispatched $1#$2 ${3}s ago — waiting for that leg to claim before picking again"
@@ -88,6 +183,24 @@ if [ "$mode" = tick ]; then
     set -- $standdown
     echo "fleet-queue: $host has $1 consecutive unclaimed dispatch(es) — backing off ${2}s before probing the fleet again"
     exit 0
+  fi
+  # ── runner-queue backpressure (#376 item 2 / #373 parity) ──────────────────
+  # No live dispatcher is handling this host (its acting-ack fell through above),
+  # so this tick would SELF-dispatch into its own free slot. Apply the #373 gate —
+  # the one the central dispatcher applies to a candidate host — to THIS host: if
+  # its OWN runner queue is backed up past the ceiling, a self-dispatched leg would
+  # only sit `waiting` (#370), so decline this pass and leave the slot free until
+  # the runner drains. Reuses the #373 lag map + ceiling (FLEET_DISPATCH_QUEUE_LAG_
+  # MAX; 0 disables); fail-open — an unreadable queue backs the host off nothing.
+  # The cheap local gates above (stamp, strikes) run first, so the tracker read
+  # happens only on a tick that would actually self-dispatch.
+  if [ "${FLEET_DISPATCH_QUEUE_LAG_MAX:-0}" -gt 0 ] 2>/dev/null; then
+    scan="$(_fleet_queue_waiting_scan)"
+    if _fleet_dispatch_host_backed_off "$host" "$(jq -c '.hostlag' <<<"$scan" 2>/dev/null)"; then
+      lag="$(jq -r --arg h "$host" '.hostlag[$h] // 0' <<<"$scan" 2>/dev/null)"
+      echo "fleet-queue: $host's runner queue is backed up — oldest waiting leg ${lag}s old (>= ${FLEET_DISPATCH_QUEUE_LAG_MAX}s), offered nothing this pass (#373)"
+      exit 0
+    fi
   fi
 fi
 

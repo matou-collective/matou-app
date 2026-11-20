@@ -34,6 +34,22 @@ vendored=0
 
 STATUS_MAX=16384   # 16 KB
 LINE_MAX=2048      #  2 KB — the ~300 KB host-capacity row was the worst offender
+# STATUS_HEADROOM_MIN — the budget FLOOR (#374). STATUS.md is deliberately NOT
+# `merge=union` (unlike docs/GOTCHAS.md): the whole #287 concurrency contract is
+# that a state-changing commit touches only ITS OWN row, so two concurrent
+# writers edit different rows and the 3-way merge resolves cleanly. At the byte
+# ceiling that invariant is UNREACHABLE — a writer cannot extend its own row
+# without trimming someone else's, so every state commit is forced onto a shared
+# anchor and divergent one-line edits park on a rescue branch + page (run 28910,
+# #374; all four of that day's rescues touched STATUS.md). Fix for STATUS.md is
+# the OPPOSITE of #331's GOTCHAS raise: do NOT lift the ceiling (that just lets
+# journal-prose re-accrete into rows, the #196 anti-pattern on an update-in-place
+# surface) — keep the ceiling, compact rows back to surface level, and enforce a
+# floor so the surface can never silently re-reach the no-headroom state. The
+# floor is LINE_MAX: headroom >= the largest a single row may be guarantees any
+# ONE writer can rewrite its own row to the full per-line budget without touching
+# another's — the #287 invariant, stated as the acceptance test.
+STATUS_HEADROOM_MIN=$LINE_MAX   # >= 2 KB spare under the ceiling (#374)
 # GOTCHAS_MAX — the index only; the full Symptom→Cause→Rule bodies live under
 # docs/gotchas/<id>-slug.md and are NOT budgeted here. Raised 24576 → 32768 by
 # #331 (ruled by agent under ADR 0174 — two-way door, revertible by a later
@@ -54,7 +70,12 @@ LINE_MAX=2048      #  2 KB — the ~300 KB host-capacity row was the worst offen
 #     hazards (#320/#321/#325/#328/#329) to defer their index rows into the
 #     journal. 32768 lands those five rows (~27.1 KB) and leaves ~5.5 KB — room
 #     for ~10 more tightened rows before this ticket's successor is needed.
-GOTCHAS_MAX=32768  # 32 KB — see rationale above (#331, was 24576 under #196)
+#   * #359 is that successor: the 32768 ceiling reached ~21 B of headroom (every
+#     one of #331's forecast rows had landed), so this ticket's one compact
+#     hazard row would not fit. Same ADR 0174 two-way-door ruling, same
+#     append-only invariant — raise 32768 → 40960 (32 KB → 40 KB), add the row,
+#     never rewrite a line. Leaves ~7.2 KB — room for ~14 more tightened rows.
+GOTCHAS_MAX=40960  # 40 KB — see rationale above (#359, was 32768 under #331, 24576 under #196)
 
 status="$root/STATUS.md"
 gotchas="$root/docs/GOTCHAS.md"
@@ -62,6 +83,15 @@ gotchas="$root/docs/GOTCHAS.md"
 if [ -f "$status" ]; then
   bytes="$(wc -c <"$status")"
   check "STATUS.md is under ${STATUS_MAX} bytes (is $bytes)" "[ $bytes -lt $STATUS_MAX ]"
+
+  # #374 — the budget FLOOR: STATUS.md must leave >= STATUS_HEADROOM_MIN bytes
+  # under the ceiling, so a single writer can extend its own row to the full
+  # per-line budget without trimming another's (the #287 invariant). Fail here
+  # LOUD, with "compact the blocker rows into docs/journal/", long BEFORE the
+  # surface silently reaches the state where concurrent state commits park.
+  headroom=$((STATUS_MAX - bytes))
+  check "STATUS.md leaves >= ${STATUS_HEADROOM_MIN} bytes of headroom (has $headroom) — compact blocker rows into docs/journal/ so a writer can update its own row without trimming another's (#287/#374)" \
+    "[ $headroom -ge $STATUS_HEADROOM_MIN ]"
 
   # longest line, in bytes — awk measures each line, LC_ALL=C so length is bytes
   longest="$(LC_ALL=C awk '{ if (length > m) m = length } END { print m+0 }' "$status")"

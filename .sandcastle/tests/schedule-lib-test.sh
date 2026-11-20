@@ -351,6 +351,22 @@ rm -rf "$tmp/sig"
 SCHEDULE_FLEET_PICK=9 schedule_fleet_pick_signal "$tmp/sig" 'not json'
 [ "$(cat "$tmp/sig/fleet-pick")" = 9 ] || fail "a garbled ready JSON must still mirror the number (#327)"
 [ ! -e "$tmp/sig/fleet-pick-task" ] || fail "a garbled ready JSON must leave no task file (#327)"
+# #381: the NO-PICK path (no fleet view) must STILL mirror the host's FULL
+# verified ready-set as fleet-pick-task — so the in-sandbox lister emits it with
+# zero forge reads instead of re-fetching the full page and REDing the claim leg
+# with rc 124 on a slow forge. The number file stays ABSENT (no single pick to
+# name), so the sandbox reads the whole set, not a one-issue fast path.
+rm -rf "$tmp/sig"
+SCHEDULE_FLEET_PICK="" schedule_fleet_pick_signal "$tmp/sig" \
+  '[{"number":7,"title":"seven","body":"b","url":"u/7","landing":"push","blocker":false},{"number":9,"title":"nine","body":"b","url":"u/9","landing":"push","blocker":false}]'
+[ ! -e "$tmp/sig/fleet-pick" ] || fail "a no-pick leg must leave NO fleet-pick number file (#381)"
+[ "$(jq -c 'map(.number)' "$tmp/sig/fleet-pick-task")" = "[7,9]" ] || fail "a no-pick leg must mirror the FULL verified ready-set as fleet-pick-task (#381)"
+# #381: a garbled no-pick ready JSON leaves no task file (the sandbox then falls
+# through to the full page, never a silent empty queue), and still no number.
+rm -rf "$tmp/sig"
+SCHEDULE_FLEET_PICK="" schedule_fleet_pick_signal "$tmp/sig" 'not json'
+[ ! -e "$tmp/sig/fleet-pick" ] || fail "a garbled no-pick ready JSON must leave no number file (#381)"
+[ ! -e "$tmp/sig/fleet-pick-task" ] || fail "a garbled no-pick ready JSON must leave no task file (#381)"
 pass=$((pass+1))
 
 echo "schedule-lib: $pass groups passed"

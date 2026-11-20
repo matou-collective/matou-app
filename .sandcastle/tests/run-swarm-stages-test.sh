@@ -273,9 +273,14 @@ pass=$((pass+1))
 # …and stays THIN. The 2026-08-15 survey measured 598 lines / 22 responsibilities
 # as the patch-magnet threshold; the decomposition's whole point is that this
 # file cannot drift back there unnoticed. Generous ceiling — this is a ratchet
-# against regrowth, not a golf score.
+# against regrowth, not a golf score. Moved 200 -> 202 for the ADR 0009 slot
+# report seam (#354): one sourced lib + one delegated `fleet_slot_report_emit
+# take` call at the holder write — logic in fleet-slot-report-lib.sh, not inline.
+# Moved 202 -> 203 for #359: one delegated `landing_promote_landed` call on the
+# land-success path — the clear + re-arm logic lives in landing-lib.sh, the thin
+# wiring here mirrors the existing landing_reopen_stranded_closes calls.
 lines="$(grep -cvE '^[[:space:]]*(#|$)' "$rs")"
-[ "$lines" -lt 200 ] || fail "run-swarm.sh has regrown to $lines code lines — a stage has moved back inline"
+[ "$lines" -lt 203 ] || fail "run-swarm.sh has regrown to $lines code lines — a stage has moved back inline"
 pass=$((pass+1))
 
 # the EXIT trap still finalises every trace (verdict, runlog, swarm.db, the #435

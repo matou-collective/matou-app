@@ -62,6 +62,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/env-allowlist-lib.sh"
 # shellcheck source=host-capacity-lib.sh
 . "$here/host-capacity-lib.sh"
+# shellcheck source=fleet-slot-report-lib.sh
+. "$here/fleet-slot-report-lib.sh"
 # shellcheck source=policy-lib.sh
 . "$here/policy-lib.sh"
 # shellcheck source=claim-lib.sh
@@ -363,6 +365,10 @@ swarmdb_event "$run_db_id" "" ready-set "$n ready task(s)" "[$ready_nums]"
 SWARM_HOST_ATTEMPTS_DIR="${SWARM_HOST_ATTEMPTS_DIR:-${TMPDIR:-/tmp}/matou-host-attempts-$run_db_id}"
 export SWARM_HOST_ATTEMPTS_DIR
 host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket "${SCHEDULE_FLEET_PICK:-run}" "$repo_slug" swarm-worker "$run_db_id" "" "" "" "$SWARM_HOST_ATTEMPTS_DIR"
+# This run just took a heavy slot — tell the dispatcher at once (ADR 0009 / #354
+# ruling A, the `take` send point). Best-effort and a no-op until a host
+# declares FLEET_DISPATCHER_URL; `|| true` so it can never end the run.
+fleet_slot_report_emit take || true
 
 stamp="$(schedule_stamp_path "$repo_tag")"
 # #213: fold origin/main's head SHA into the debounce digest so a landed fix on
@@ -387,18 +393,30 @@ SWARM_HOST_SIGNALS_DIR="${SWARM_HOST_SIGNALS_DIR:-${TMPDIR:-/tmp}/matou-host-sig
 export SWARM_HOST_SIGNALS_DIR
 # #2106: SWARM_HOST_ATTEMPTS_DIR (the WRITABLE /run/host-attempts sink) is named
 # above, at the slot-holder write (#350), so the holder can point at it.
+preflight_model_gate "$repo_slug" "$ready" || exit 1
+preflight_landing_gate "$repo_slug" "$ready" || exit 1
+
 # #301: mirror the fleet pick into the sandbox (/run/host-signals/fleet-pick)
 # so the in-sandbox lister answers exactly that ticket, or [] once it is gone —
 # claim-next-task.sh then claims it or nothing. No pick (a host with no fleet
-# view) → no file → the lister's own order, as before.
-# #327: also mirror the pick's FULL task OBJECT ($ready is the single-element
-# pick array here) as fleet-pick-task, so the in-sandbox lister emits it with
-# ZERO forge reads — the two-read #2145 fast path overran CLAIM_LISTER_MAX_TIME
-# on a slow forge and RED'd the claim leg with rc 124.
-schedule_fleet_pick_signal "$SWARM_HOST_SIGNALS_DIR" "$ready"
-
-preflight_model_gate "$repo_slug" "$ready" || exit 1
-preflight_landing_gate "$repo_slug" "$ready" || exit 1
+# view) → no number file → no single-issue fast path.
+# #327/#381: ALSO mirror the host's verified task OBJECT(s) as fleet-pick-task on
+# EVERY path — with a pick $ready is the single-element pick array; with NO fleet
+# view it is the host's full verified ready-set — so the in-sandbox lister emits
+# the host's verdict with ZERO forge reads either way. #327 proved even the
+# two-read #2145 fast path overran CLAIM_LISTER_MAX_TIME on a slow forge; #381
+# proved the no-pick FULL-PAGE path RED's the claim leg with rc 124 the same way,
+# because the mirror was still gated on a pick.
+# #381 safety: the fleet-pick-task fast path emits the mirror with zero forge
+# reads and so SKIPS the in-sandbox run-landing parity filter (idss ADR 0267).
+# The host-side lister never applied that filter (its signal dir is sandbox-only),
+# so the raw no-pick $ready still carries PR-landing tickets — mirroring it raw
+# would hand a push run a PR ticket (#327 left this path unmirrored for exactly
+# this reason). Narrow it HOST-side to what the in-sandbox filter would keep,
+# using the run-landing preflight_landing_gate just resolved. For a WITH-pick run
+# $ready is already the single pick, so this is a no-op there (byte-identical to
+# #327). preflight_landing_gate runs FIRST so SWARM_RUN_LANDING is set.
+schedule_fleet_pick_signal "$SWARM_HOST_SIGNALS_DIR" "$(schedule_apply_run_landing "$ready" "${SWARM_RUN_LANDING:-push}")"
 
 # Web URL of the repo (FORGEJO_API is <server>/api/v1/repos/<slug>).
 repo_web="${FORGEJO_API%%/api/*}/$repo_slug"
@@ -515,6 +533,12 @@ landing_stage "$repo_slug" "$ready" "$start_sha" || {
   landing_reopen_stranded_closes "$sandcastle_attempts" "$repo_slug" origin/main || true
   exit 1
 }
+# #359: the land advanced main. For each close whose commits ARE now on main,
+# clear its landing-pending mark (so dependents it held become claimable, gap A)
+# and re-arm any agent-blocked dependant it was blocking (gap B). The SUCCESS-path
+# counterpart of the #283 reopen above: same attempts file, inverted ancestry
+# guard, so a stranded close is reopened and a landed one promotes its dependants.
+landing_promote_landed "$sandcastle_attempts" "$repo_slug" origin/main || true
 
 # ── report ──────────────────────────────────────────────────────────────────
 report_post_summary "$repo_slug" "$repo_web" "$n" "$start_sha" "$ready" \

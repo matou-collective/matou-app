@@ -387,4 +387,30 @@ check "dispatch body carries ref main, inputs.ticket and inputs.host" \
 check "dispatch rc is non-zero on a non-2xx" \
   '! DISPATCH_FAIL=1 fleet_queue_dispatch https://forge.test/api/v1 Acme/beta 5 box-07 >/dev/null'
 
+# ── waiting-leg ages: the per-ticket queued-leg view item 1 frees markers on (#376) ─
+# The per-host leg's display title is `swarm <host> #<n>` (GOTCHAS 62); a run still
+# `waiting` in actions/runs?status=waiting (GOTCHAS 78) names the host AND the ticket.
+wnow=1000000
+wruns="$(jq -cn --argjson now "$wnow" '{workflow_runs:[
+  {display_title:"swarm box-07 #10", name:"swarm", created:(($now-300)|todateiso8601)},
+  {display_title:"swarm box-07 #12", name:"swarm", created:(($now-120)|todateiso8601)},
+  {display_title:"ci on box-07",     name:"ci",    created:(($now-500)|todateiso8601)},
+  {display_title:"swarm box-02 #99", name:"swarm", created:(($now-999)|todateiso8601)}
+]}')"
+wl="$(fleet_queue_waiting_legs "$wruns" "$wnow" box-07)"
+check "waiting_legs keys this host's waiting legs by ticket number with their age" \
+  '[ "$(jq -r ".\"10\"" <<<"$wl")" = 300 ] && [ "$(jq -r ".\"12\"" <<<"$wl")" = 120 ]'
+check "waiting_legs ignores a leg naming another host (box-02#99)" \
+  '[ "$(jq "has(\"99\")" <<<"$wl")" = false ]'
+check "waiting_legs ignores a run carrying no #<n> (a CI run on the host)" \
+  '[ "$(jq "length" <<<"$wl")" = 2 ]'
+check "waiting_legs is {} over an empty queue" \
+  '[ "$(fleet_queue_waiting_legs "{\"workflow_runs\":[]}" "$wnow" box-07)" = "{}" ]'
+check "waiting_legs tolerates an unparseable created time (nothing kept)" \
+  '[ "$(fleet_queue_waiting_legs "{\"workflow_runs\":[{\"display_title\":\"swarm box-07 #10\",\"created\":\"nope\"}]}" "$wnow" box-07)" = "{}" ]'
+check "waiting_legs keeps the OLDEST leg age for a repeated ticket number" \
+  '[ "$(fleet_queue_waiting_legs "{\"workflow_runs\":[{\"display_title\":\"swarm box-07 #10\",\"created\":\"$(jq -rn "($wnow-50)|todateiso8601")\"},{\"display_title\":\"swarm box-07 #10\",\"created\":\"$(jq -rn "($wnow-400)|todateiso8601")\"}]}" "$wnow" box-07 | jq -r ".\"10\"")" = 400 ]'
+check "waiting_legs does not match a host as a substring (box-07 vs box-077)" \
+  '[ "$(fleet_queue_waiting_legs "{\"workflow_runs\":[{\"display_title\":\"swarm box-077 #9\",\"created\":\"$(jq -rn "($wnow-300)|todateiso8601")\"}]}" "$wnow" box-07)" = "{}" ]'
+
 summary fleet-queue-lib-test
