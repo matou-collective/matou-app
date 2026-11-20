@@ -270,5 +270,30 @@ check "concurrent alive-runs still claims the head" '[ "$(jq -r ".[0].number" <<
 check "alive-runs fetched before the slow lister finished (concurrent, not serial)" \
   '[ "$(cat "$FAKE_DIR/tasks-hit.stamp")" -lt "$(cat "$FAKE_DIR/lister-done.stamp")" ]'
 
+# T-#381: the NO-PICK fleet-pick-task path end-to-end through the REAL lister.
+# A host with no fleet view mirrors its FULL verified ready-set as
+# fleet-pick-task (MANY tickets, no fleet-pick NUMBER file). The in-sandbox
+# lister must emit the whole set with ZERO forge reads — the 12s
+# CLAIM_LISTER_MAX_TIME bound is only safe because the host mirrors its verdict;
+# a no-pick full-page re-fetch RED'd this leg with rc 124 on a slow forge (#327
+# finished only the WITH-pick half). Pin every host-signal seam so an in-sandbox
+# run cannot read the live /run/host-signals mount instead of the fixture.
+setup; unset CLAIM_LISTER
+printf '[{"number":811,"title":"a","body":"b","url":"u/811","landing":"push"},{"number":822,"title":"c","body":"d","url":"u/822","landing":"push"}]\n' \
+  >"$FAKE_DIR/fleet-pick-task"
+: >"$FAKE_DIR/calls.log"
+out="$(SWARM_FLEET_PICK_TASK_SIGNAL="$FAKE_DIR/fleet-pick-task" \
+  SWARM_FLEET_PICK_SIGNAL="$FAKE_DIR/no-such-pick" \
+  SWARM_DRIVE_YIELD_SIGNAL="$FAKE_DIR/no-such-drive" \
+  SWARM_REPO_WANTED_DIR="$FAKE_DIR/no-such-wanted" \
+  bash "$script")"; ltrc=$?
+check "#381: a no-pick task signal claims the head of the mirrored ready-set" \
+  '[ "$(jq -r ".[0].number" <<<"$out")" = "811" ]'
+check "#381: the no-pick real-lister leg exits 0 (never rc 124)" '[ "$ltrc" -eq 0 ]'
+check "#381: the lister re-fetched NO ready-for-agent page (zero forge reads)" \
+  '! grep -q "ready-for-agent" "$FAKE_DIR/calls.log"'
+check "#381: the lister ran NO dependency fan-out" \
+  '! grep -q "/dependencies" "$FAKE_DIR/calls.log"'
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

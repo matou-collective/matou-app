@@ -4,9 +4,11 @@
 #
 # Surfaces ONLY issues that are all of:
 #   1. open and labelled `ready-for-agent`,
-#   2. unblocked — every Forgejo issue-dependency ("blocked by") is closed —
-#      so the swarm honours the slice-map DAG (docs/slices/*.yaml) across
-#      features, and
+#   2. unblocked — every Forgejo issue-dependency ("blocked by") is closed AND
+#      (#359) not still `landing-pending` (a push-mode close lands on `main` only
+#      after the host verifies it, so a closed-but-not-landed dependency does not
+#      yet count as met) — so the swarm honours the slice-map DAG
+#      (docs/slices/*.yaml) across features, and
 #   3. NOT labelled `agent-working` — claimed by a live run on another host
 #      under the multi-host pool (claim-next-task.sh, spec D4); a claimed
 #      ticket must vanish from every other host's queue immediately, not
@@ -157,6 +159,12 @@ export LIST_READY_MAX_TIME LIST_READY_RETRIES LIST_READY_BACKOFF
 # shellcheck source=policy-lib.sh
 . "$here/policy-lib.sh"
 policy_load "${SWARM_POLICY_FILE:-}"
+# #375: claim_alive_runs — the live-claim liveness primitive (the janitor's own
+# actions-API read). Sourcing it defines functions + CLAIM_* defaults only, no
+# side effects, so the queue is byte-identical until the full-page claim filter
+# below actually runs.
+# shellcheck source=claim-lib.sh
+. "$here/claim-lib.sh"
 
 # #142: a bare `curl -sf` threw the HTTP status away and returned 22 for ANY
 # failure, so schedule-lib's verdict guessed "transient Forgejo 5xx" for every
@@ -251,6 +259,7 @@ fi
 
 ready='[]'
 page=1
+claim_liveness_primed=""   # #375: the alive-runs snapshot is read once, lazily (below)
 while :; do
   if [ -n "$fleet_pick_early" ]; then
     # #2145: single-issue fast path — fetch ONLY the pick, as a 1-element batch.
@@ -272,6 +281,34 @@ while :; do
   fi
   count="$(jq 'length' <<<"$batch")"
   [ "$count" -eq 0 ] && break
+
+  # #375: a ticket a LIVE run holds must leave the ready list even when its
+  # agent-working LABEL is missing. The label (claim_mark_working) is a SEPARATE,
+  # non-atomic tracker write from the authoritative `swarm-claim` COMMENT (claim-lib.sh
+  # header: "the LOWEST claim whose run is still in progress wins"): a label write that
+  # 403s/times out is swallowed (claim-next-task.sh `claim_mark_working || true`), a
+  # refused close leaves the ticket's labels untouched, and a reopened stranded close
+  # can drop it (#366) — any of which re-exposes a ticket a run is still working, and
+  # every scheduler then re-dispatches it once per marker TTL (the #375 storm: four live
+  # dispatches + wasted backstop sandbox starts while run 760 held it). So the full-page
+  # path — the HOST-side fleet collect (fleet-queue-lib.sh), where re-dispatch originates
+  # — ALSO hides a candidate carrying a LIVE claim: a session claim younger than its
+  # embedded session-ttl (#348), or a swarm claim whose run is in the alive-runs snapshot
+  # (the janitor's own liveness read). Read that snapshot ONCE, lazily, only when a
+  # non-empty batch actually needs filtering — an idle repo's collect pays nothing. The
+  # per-candidate comments read + liveness test run inside the dependency xargs worker
+  # below. Fail-OPEN: a faulted alive poll leaves the set EMPTY (no swarm claim dropped)
+  # and a faulted comments read SURFACES the ticket, so a tracker blip can only surface
+  # work, never starve the queue — the claim walk (claim-next-task.sh) stays the real
+  # race-resolver. The single-issue fast path skips this entirely (that run's one
+  # host-picked ticket is settled by the walk; the extra reads would only spend budget).
+  if [ -z "$fleet_pick_early" ] && [ -z "$claim_liveness_primed" ]; then
+    alive_runs="$(claim_alive_runs 2>/dev/null)" || alive_runs=""
+    jq -e 'type == "array"' >/dev/null 2>&1 <<<"$alive_runs" || alive_runs="[]"
+    CLAIM_NOW="$(date -u +%s)"
+    export CLAIM_LIVENESS_CHECK=1 CLAIM_ALIVE_RUNS="$alive_runs" CLAIM_NOW
+    claim_liveness_primed=1
+  fi
 
   # Dependency checks run 10-wide: with the whole DAG labelled ready-for-agent
   # (70+ issues), serial curls take ~90s — past Sandcastle's 30s shell-expression
@@ -330,11 +367,46 @@ while :; do
       fi
       sleep "$delay"; delay=$((delay * 2)); attempt=$((attempt + 1))
     done
-    open="$(jq "[.[] | select(.state == \"open\")] | length" <<<"$raw")"
+    # #359 gap A: a blocker counts as STILL blocking when it is open OR closed but
+    # still carrying `landing-pending` — a push-mode close lands on `main` only
+    # after the host verifies it (#193), so a closed-but-not-landed dependency is
+    # briefly untrue of `main`. Treating it as met handed a dependent out in that
+    # window; it then found the dependency not on `main`, refused to rebuild it,
+    # and stranded `agent-blocked`. close-report.sh sets the mark on the pre-land
+    # close; the host clears it on the verified land (landing_promote_landed). A
+    # repo that never mints the label is byte-identical to before (the label is on
+    # nothing, so this reduces to the old state-only check).
+    open="$(jq "[.[] | select(.state == \"open\" or (((.labels // []) | map(.name) | index(\"landing-pending\")) != null))] | length" <<<"$raw")"
     case "$open" in
-      0) echo "$0" ;;
+      0) ;;                        # unblocked — fall through to the #375 live-claim check
       "" | *[!0-9]*) exit 1 ;;
+      *) exit 0 ;;                  # a blocker is still open — drop silently (as before)
     esac
+    # #375: a candidate a LIVE run still holds leaves the ready list even if its
+    # agent-working LABEL is missing — the label is not atomic with the authoritative
+    # swarm-claim comment (see list-ready-tasks.sh). Read the issue comments and drop
+    # it when any claim is live: a session claim within its embedded session-ttl (#348),
+    # or a swarm claim whose run is in the alive-runs snapshot (CLAIM_ALIVE_RUNS, empty
+    # on a faulted poll so swarm claims then surface). Fail-OPEN: an empty/failed
+    # comments read SURFACES the ticket (echo) — the claim walk still guards the claim.
+    if [ -n "${CLAIM_LIVENESS_CHECK:-}" ]; then
+      craw="$(curl -s --max-time "${LIST_READY_MAX_TIME:-30}" \
+          -H "Authorization: token $FORGEJO_TOKEN" \
+          "$FORGEJO_API/issues/$0/comments?limit=50" 2>/dev/null || true)"
+      if [ -n "$craw" ] && jq -e --argjson alive "${CLAIM_ALIVE_RUNS:-[]}" --argjson now "${CLAIM_NOW:-0}" '"'"'
+            any(.[]?;
+              (.body // "" | test("^swarm-claim host=\\S+ run=[0-9]+"))
+              and ((.body | split("\n")[0]) as $first
+                   | (.body | capture("run=(?<r>[0-9]+)").r | tonumber) as $run
+                   | if ($first | test(" session-ttl=[0-9]+( |$)"))
+                     then (($first | capture(" session-ttl=(?<t>[0-9]+)").t | tonumber) as $ttl
+                           | (try (.created_at | fromdateiso8601) catch null) as $c
+                           | ($c == null) or (($now - $c) <= $ttl))
+                     else ($alive | index($run) != null) end))'"'"' >/dev/null 2>&1 <<<"$craw"; then
+        exit 0   # a live run holds it — drop from the ready list (#375)
+      fi
+    fi
+    echo "$0"
   ')"
 
   # $batch goes in via --slurpfile, not --argjson: spec issues carry ~40KB

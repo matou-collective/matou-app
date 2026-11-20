@@ -23,12 +23,21 @@
 GATE_ZERO_SHA=0000000000000000000000000000000000000000
 
 # gate_langs_for_files — read newline-separated repo paths on stdin, echo the
-# set of language tokens the change touches ("go", "ts" and/or "docs"), one per
-# line, sorted and unique. A path that maps to no gated toolchain contributes
-# nothing. "docs" is the diagram-source tier: the trees whose mermaid/slice-map
-# contracts the seam enforces (#343, #834) but which carry NO go/ts token, so a
-# docs-only change was invisible to the pre-push gate and its break was CI-only
-# (GOTCHAS #143, the bare-`%%` that red CI a second time).
+# set of language tokens the change touches ("go", "ts", "docs" and/or "sh"),
+# one per line, sorted and unique. A path that maps to no gated toolchain
+# contributes nothing. "docs" is the diagram-source tier: the trees whose
+# mermaid/slice-map contracts the seam enforces (#343, #834) but which carry NO
+# go/ts token, so a docs-only change was invisible to the pre-push gate and its
+# break was CI-only (GOTCHAS #143, the bare-`%%` that red CI a second time).
+# "sh" is the shellcheck tier (#379): a shell-script change the `ci / static`
+# job's `shellcheck -S warning -x` would scan but which the push gate never did,
+# so an SC regression was CI-only and landed on main first (#360, #371, #378).
+# The sh mapping is deliberately by EXTENSION / universal harness filename, never
+# by ci.yml's factory-ROOT dir globs (onboarding/, tests/, .forgejo/): those are
+# this repo's own layout, and a vendored file must name no product-specific path
+# (CLAUDE.md blast radius; ci.yml is NOT vendored). So any *.sh, the extension-
+# less harness hooks (git-hooks/*) and git-fence map to sh in EVERY consumer — a
+# superset of the factory's own scan set, which only tightens the gate.
 #
 # WHICH trees are diagram sources is per-repo (a vendored script must never name a
 # consumer's doc paths — #47): GATE_DOCS_GLOBS, space-separated shell globs. Unset
@@ -48,6 +57,9 @@ gate_langs_for_files() {
         *.ts|*.tsx|*.vue|*.mts|*.cts|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig*.json)
           echo ts ;;
       esac
+      case "$f" in
+        *.sh|git-fence|git-hooks/*) echo sh ;;
+      esac
       if [ -n "${GATE_DOCS_GLOBS:-}" ]; then
         for g in $GATE_DOCS_GLOBS; do
           # shellcheck disable=SC2254  # $g is a glob, matched on purpose
@@ -56,6 +68,22 @@ gate_langs_for_files() {
       fi
     done
   } | sort -u
+}
+
+# gate_sh_files — read newline-separated repo paths on stdin, echo the subset
+# that is a shell script the shellcheck tier covers (the sh token's members, same
+# extension/universal-filename mapping as gate_langs_for_files), one per line.
+# The shellcheck tier is CHANGED-FILE-SCOPED — a whole-tree `shellcheck -S
+# warning -x` is ~3 min, too slow for a push; a handful of files is sub-second —
+# so gate_run passes exactly these paths to gate_shellcheck_stage.
+gate_sh_files() {
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+      *.sh|git-fence|git-hooks/*) printf '%s\n' "$f" ;;
+    esac
+  done
 }
 
 # gate_docs_globs <root> — echo the docs-tier globs: GATE_DOCS_GLOBS if set, else
@@ -145,6 +173,19 @@ gate_scrub_git_env() {
 gate_nix_available() {
   [ "${GATE_NO_NIX:-}" = 1 ] && return 1
   command -v nix >/dev/null 2>&1
+}
+
+# gate_shellcheck_available — true when a usable `shellcheck` is on PATH. Factored
+# out of gate_shellcheck_stage (the #379 tier) exactly like gate_nix_available, so
+# the offline test can force the no-shellcheck path deterministically with
+# GATE_NO_SHELLCHECK=1 — proving BOTH the fail-open default AND the
+# GATE_SHELLCHECK_REQUIRE fail-closed arm on EVERY host, not only ones that happen
+# to carry shellcheck (the #314 lesson: a `command -v` skip hides an arm on the
+# author/pool hosts and reds CI). Default behaviour is unchanged: with
+# GATE_NO_SHELLCHECK unset it is exactly `command -v shellcheck`.
+gate_shellcheck_available() {
+  [ "${GATE_NO_SHELLCHECK:-}" = 1 ] && return 1
+  command -v shellcheck >/dev/null 2>&1
 }
 
 # gate_go_stage <root> — run the Go gate for a Go-touching change. Resolves the
@@ -374,22 +415,95 @@ gate_docs_stage() {
   ( cd "$root" && gate_scrub_git_env && gate_docs_default_cmd "$root" )
 }
 
+# gate_shellcheck_default_cmd <root> <file...> — the real shellcheck tier: run
+# `shellcheck -S warning -x` (byte-for-byte the severity + `-x` follow-sources
+# flags the `ci / static` job runs) over ONLY the changed shell files passed as
+# args. Changed-file-scoped by design: a whole-tree run is ~3 min, too slow for a
+# push, while a handful of files is sub-second — cheap enough to run on the HOST
+# push path too, which is where #360/#371/#378 all slipped past CI-only. `-x`
+# follows `# shellcheck source=` directives (the repo's .shellcheckrc sets
+# source-path=SCRIPTDIR); the full checkout means every sourced lib resolves.
+# Assumes cwd is <root> (its caller cd's there in the git-env-scrub subshell), so
+# the repo-root .shellcheckrc applies. A call with no files is a no-op pass — the
+# caller only reaches here when the sh token fired, i.e. at least one file.
+gate_shellcheck_default_cmd() {
+  local root="$1"; shift
+  [ "$#" -gt 0 ] || return 0
+  shellcheck -S warning -x "$@"
+}
+
+# gate_shellcheck_stage <root> <file...> — run the shellcheck tier for a
+# shell-touching change on EVERY push path (#379). Resolves shellcheck by a
+# first-match-wins precedence, like the sibling tiers:
+#   1. GATE_SHELLCHECK_CMD — a supported per-repo override (env; also the offline
+#      test seam). It receives the changed shell files as positional parameters
+#      ("$@"), so an override can stay changed-file-scoped;
+#   2. a `shellcheck` on PATH — run `shellcheck -S warning -x` over the changed
+#      files (gate_shellcheck_default_cmd).
+#
+# When NEITHER resolves the posture is DELIBERATELY fail-OPEN — a LOUD warning,
+# then pass — UNLESS GATE_SHELLCHECK_REQUIRE=1, which flips it fail-CLOSED like
+# the Go/TS/docs tiers. This is the #379 ruling (ADR 0174 — veto anytime), and it
+# is why this tier ALONE among the gate's tiers defaults fail-open:
+#   * shellcheck is NOT provisioned-by-contract across the fleet. gofmt ships in
+#     every pinned dev shell, node in every docs consumer, nix is the toolchain
+#     contract — but shellcheck is absent from at least one pool host's PATH, and
+#     the factory carries no nix flake providing it (ci/static tarball-FETCHES a
+#     pinned build, and #332/#333 proved that fetch fraught).
+#   * A fail-CLOSED tier that resolved no shellcheck would block the live
+#     reconcile/session rail for EVERY shell-touching push — nearly every harness
+#     push — across all consumers: a fleet-wide outage, far worse than the CI-only
+#     SC reds this tier is meant to pre-empt.
+# So the tier CATCHES SC regressions wherever a shellcheck is present (the sandbox
+# image, a provisioned host, or via GATE_SHELLCHECK_CMD) and WARNS LOUDLY — never
+# silently, the gofmt-bypass lesson — where it is not, until a consumer that has
+# provisioned shellcheck sets GATE_SHELLCHECK_REQUIRE=1 to enforce it here. The
+# fleet-wide provisioning + the flip to required are the follow-up a host/flake
+# standing settles, not this code change. Returns the stage's exit code.
+gate_shellcheck_stage() {
+  local root="$1"; shift
+  if [ -n "${GATE_SHELLCHECK_CMD:-}" ]; then
+    ( cd "$root" && gate_scrub_git_env && eval "$GATE_SHELLCHECK_CMD" )
+    return $?
+  fi
+  if gate_shellcheck_available; then
+    ( cd "$root" && gate_scrub_git_env && gate_shellcheck_default_cmd "$root" "$@" )
+    return $?
+  fi
+  if [ "${GATE_SHELLCHECK_REQUIRE:-}" = 1 ]; then
+    echo "gate: shell change detected but no shellcheck resolved, and GATE_SHELLCHECK_REQUIRE=1." >&2
+    echo "gate: refusing to push un-shellchecked shell (#379 fail-closed). Put \`shellcheck\` on" >&2
+    echo "gate: PATH (ci/static pins v0.11.0) or set GATE_SHELLCHECK_CMD to this repo's tier." >&2
+    return 3
+  fi
+  echo "gate: WARNING — shell change detected but no shellcheck resolved; SKIPPING the" >&2
+  echo "gate: shellcheck tier (fail-OPEN by default, #379). An SC -S warning regression will" >&2
+  echo "gate: be caught only by ci/static AFTER this lands (as #360/#371/#378 were). Provision" >&2
+  echo "gate: \`shellcheck\` on PATH (or GATE_SHELLCHECK_CMD) + GATE_SHELLCHECK_REQUIRE=1 to enforce here." >&2
+  return 0
+}
+
 # gate_run <root> [only] [go_tier] — read the changed-file list on stdin, decide
 # which language gates to run, run them. A Go change runs the Go gate; a
 # TypeScript change runs the eslint lint gate (#1252 — TS lint breaks reached
 # main un-gated); a docs-diagram change runs the cheap mermaid/slice-map checkers
-# (GOTCHAS #143 — a docs break was CI-only until the gate grew a docs tier). The
-# optional <only> ("go"|"ts"|"docs") restricts execution to a single language.
-# The optional <go_tier> selects HOW DEEP the Go gate runs when a Go change is
-# present: "full" (default) runs the pinned Go seam stages (sandbox); "gofmt"
-# runs only the cheap gofmt-only host gate (Gate 3b, #1458). The pre-push hook
-# uses go_tier=gofmt on the HOST push path so a formatting break is caught there
-# (where f291b547/#1429 slipped past) while the heavy Go seam stays sandbox-only
-# (#198). The docs tier is cheap on every path, so it runs regardless of go_tier.
+# (GOTCHAS #143 — a docs break was CI-only until the gate grew a docs tier); a
+# shell change runs the scoped shellcheck tier (#379 — an SC regression was
+# CI-only until the gate grew an sh tier). The optional <only>
+# ("go"|"ts"|"docs"|"sh") restricts execution to a single language. The optional
+# <go_tier> selects HOW DEEP the Go gate runs when a Go change is present: "full"
+# (default) runs the pinned Go seam stages (sandbox); "gofmt" runs only the cheap
+# gofmt-only host gate (Gate 3b, #1458). The pre-push hook uses go_tier=gofmt on
+# the HOST push path so a formatting break is caught there (where f291b547/#1429
+# slipped past) while the heavy Go seam stays sandbox-only (#198). The docs and sh
+# tiers are cheap on every path, so they run regardless of go_tier.
 # Returns non-zero if any stage that ran failed.
 gate_run() {
-  local root="$1" only="${2:-}" go_tier="${3:-full}" langs rc=0
-  langs="$(GATE_DOCS_GLOBS="$(gate_docs_globs "$root")" gate_langs_for_files)"
+  local root="$1" only="${2:-}" go_tier="${3:-full}" files langs rc=0
+  # Capture stdin once: the lang set AND the sh tier's changed-file list both read
+  # it, and stdin can be consumed only once (the sh tier is changed-file-scoped).
+  files="$(cat)"
+  langs="$(printf '%s\n' "$files" | GATE_DOCS_GLOBS="$(gate_docs_globs "$root")" gate_langs_for_files)"
   if [ -z "$langs" ]; then
     echo "gate: no gated language touched — nothing to check" >&2
     return 0
@@ -415,6 +529,18 @@ gate_run() {
     if grep -qx docs <<<"$langs"; then
       echo "gate: docs-diagram change detected — running the cheap mermaid/slice-map checkers (GOTCHAS #143)" >&2
       gate_docs_stage "$root" || rc=$?
+    fi
+  fi
+  if [ -z "$only" ] || [ "$only" = sh ]; then
+    if grep -qx sh <<<"$langs"; then
+      # The sh token fired, so there is at least one changed shell file; collect
+      # them (newline-separated repo paths, no spaces) and pass them scoped to the
+      # stage — a changed-file run, never a whole-tree ~3 min scan (#379).
+      local _l; local -a _shf=()
+      while IFS= read -r _l; do [ -n "$_l" ] && _shf+=("$_l"); done \
+        < <(printf '%s\n' "$files" | gate_sh_files)
+      echo "gate: shell change detected — running the scoped shellcheck tier (#379)" >&2
+      gate_shellcheck_stage "$root" "${_shf[@]}" || rc=$?
     fi
   fi
   return $rc

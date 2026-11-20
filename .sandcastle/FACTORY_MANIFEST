@@ -19,8 +19,13 @@ env-allowlist-lib.sh
 evidence-lib.sh
 execute-lib.sh
 fence-lib.sh
+fleet-dispatch-lib.sh
+fleet-dispatch-receiver.py
+fleet-dispatch.sh
+fleet-landing-detect-lib.sh
 fleet-queue-lib.sh
 fleet-queue.sh
+fleet-slot-report-lib.sh
 forgejo-lib.sh
 gate-lib.sh
 gate.sh
@@ -84,6 +89,7 @@ tests/box-vocabulary-test.sh
 tests/branch-strategy-test.sh
 tests/cancel-lib-test.sh
 tests/check-harness-drift-test.sh
+tests/ci-superseded-test.sh
 tests/claim-lib-test.sh
 tests/claim-next-task-test.sh
 tests/claude-call-guards-test.sh
@@ -109,8 +115,15 @@ tests/fixtures/secret-empty.txt
 tests/fixtures/secret-nonempty.txt
 tests/fixtures/stub-agent.sh
 tests/fixtures/swarm-verdict-fail.txt
+tests/fleet-dispatch-ack-contract-test.sh
+tests/fleet-dispatch-lib-test.sh
+tests/fleet-dispatch-receiver-test.sh
+tests/fleet-dispatch-test.sh
+tests/fleet-landing-detect-lib-test.sh
 tests/fleet-queue-lib-test.sh
 tests/fleet-queue-test.sh
+tests/fleet-slot-report-contract-test.sh
+tests/fleet-slot-report-lib-test.sh
 tests/fleet-tui-test.sh
 tests/floor-server-test.sh
 tests/forgejo-lib-test.sh

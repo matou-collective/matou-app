@@ -102,4 +102,20 @@ grep -q "is contract 0, this harness needs 1" <<<"$out" || fail "the mismatch mu
 grep -q "re-run: onboard.sh identity Acme/widget" <<<"$out" || fail "the mismatch must name the fix: $out"
 echo "ok 7 contract stamp satisfies the harness; a stamp-less layer is refused loud"
 
-echo "swarm-identity: 7 groups passed"
+# 8: LANDING_TEST_CMD — the pinned HOST re-test command for a rebase-conflict
+#    resolution (#207/#364). landing_run_pinned_tests fails CLOSED when unset, so an
+#    UNSET command parked every resolved conflict and the #207 resolver's re-test→PR
+#    route was dead on this repo (#364). This repo's identity layer must declare it,
+#    pointed at dev-factory's own offline suite; an operator/env value still wins.
+out="$(env -u LANDING_TEST_CMD bash -c '. "'"$sc"'/swarm-identity.sh"; printf "%s" "$LANDING_TEST_CMD"')"
+[ -n "$out" ] || fail "swarm-identity.sh must declare LANDING_TEST_CMD (unset => every resolved conflict parks, #364)"
+grep -q 'tests/\*\.sh' <<<"$out" || fail "LANDING_TEST_CMD must run this repo's offline suite: $out"
+grep -q 'exit 1' <<<"$out" || fail "LANDING_TEST_CMD must fail the eval on the first red (exit 1): $out"
+# the eval'd body is syntactically valid (landing_run_pinned_tests runs `eval` in a subshell).
+bash -n <(printf '%s' "$out") || fail "LANDING_TEST_CMD body is not valid shell: $out"
+# an env/operator override wins (the guard is if-unset, so a consumer sets its own).
+out="$(LANDING_TEST_CMD='my-own-suite' bash -c '. "'"$sc"'/swarm-identity.sh"; printf "%s" "$LANDING_TEST_CMD"')"
+[ "$out" = "my-own-suite" ] || fail "an operator LANDING_TEST_CMD override must win: $out"
+echo "ok 8 LANDING_TEST_CMD declared (offline suite, fail-on-red) and overridable"
+
+echo "swarm-identity: 8 groups passed"

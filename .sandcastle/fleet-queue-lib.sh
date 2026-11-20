@@ -55,6 +55,14 @@ FLEET_QUEUE_MAX_TIME="${FLEET_QUEUE_MAX_TIME:-30}"
 # call, so a long queue held elsewhere costs a bounded number of tracker reads.
 FLEET_QUEUE_MARK_TTL="${FLEET_QUEUE_MARK_TTL:-600}"
 FLEET_QUEUE_ARBITRATE_MAX="${FLEET_QUEUE_ARBITRATE_MAX:-5}"
+# The ceiling (seconds) past which a dispatched-but-unpicked leg's marker is
+# released EARLY (#376 item 1), freeing its ticket for another host rather than
+# parking it for the full MARK_TTL. A leg the forge still shows `waiting` this long
+# has not been picked within one report-staleness window (the #373 horizon:
+# FLEET_DISPATCH_QUEUE_LAG_MAX / two host ticks); the MARK_TTL sweep stays the
+# backstop for a leg that cannot be read. 0 disables the early release (pre-#376:
+# only the TTL sweep frees an unpicked leg's marker).
+FLEET_QUEUE_LEG_WAIT_MAX="${FLEET_QUEUE_LEG_WAIT_MAX:-240}"
 # The lister / identity basenames looked up in each checkout (tests swap them).
 FLEET_QUEUE_LISTER="${FLEET_QUEUE_LISTER:-list-ready-tasks.sh}"
 FLEET_QUEUE_IDENTITY="${FLEET_QUEUE_IDENTITY:-swarm-identity.sh}"
@@ -367,6 +375,34 @@ fleet_queue_marks_sweep() {
   done <"$f"
   printf '%s' "$kept" >"$f.tmp" && mv -f "$f.tmp" "$f"
   return 0
+}
+
+# fleet_queue_waiting_legs <runs-json> <now-epoch> <host> -> a JSON object
+# {"<n>": <max-lag-seconds>} over the ticket numbers whose per-host leg the forge
+# still shows `waiting` for THIS host. The queued view is `actions/runs?status=
+# waiting` (GOTCHAS 78, the one view a run with no task row yet appears in); the
+# per-host leg's display title is `swarm <host> #<n>` (`runs-on: <host>`, GOTCHAS
+# 62), so a run still `waiting` names BOTH the host whose runner has not picked its
+# leg AND the ticket number it carries. The lag is now - the run's created time
+# (created / created_at / started, RFC3339). A run naming no `#<n>`, not naming this
+# host as a WHOLE token, or whose time will not parse contributes to NOTHING —
+# fail-open, so junk never frees a marker (#376 item 1) nor backs the host off
+# (#376 item 2). Pure (no disk, no clock, no network): trivially tested. It is the
+# host-side, per-ticket sibling of fleet-dispatch-lib.sh's fleet_dispatch_lag_from_runs
+# (which keeps only a host's max lag for the central dispatcher's #373 gate).
+fleet_queue_waiting_legs() {
+  jq -c --argjson now "$2" --arg host "$3" '
+    reduce (.workflow_runs // [])[] as $r ({};
+      ((($r.created // $r.created_at // $r.started // "") | (try fromdateiso8601 catch null))) as $t
+      | if $t == null then .
+        else (((($r.display_title // "") + " " + ($r.name // "")) | [scan("[A-Za-z0-9_.#-]+")])) as $toks
+          | if ($toks | index($host) | not) then .
+            else ($toks | map(select(startswith("#")) | ltrimstr("#")) | map(select(test("^[0-9]+$")))) as $ns
+              | reduce $ns[] as $n (.;
+                  (($now - $t) as $lag | if $lag > (.[$n] // -1) then .[$n] = $lag else . end))
+            end
+        end)
+  ' <<<"$1" 2>/dev/null || echo '{}'
 }
 
 # fleet_queue_arbitrate <api-root> <slug> <n> <host>

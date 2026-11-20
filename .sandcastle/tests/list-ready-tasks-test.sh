@@ -22,6 +22,10 @@ mkdir -p "$tmp/bin"
 # can leak a value into this suite's ambient env, so the "unset" cases run under
 # `env -u REHEARSAL_DRIVE_ISSUE` and the "set" cases pin it inline.
 export PATH="$tmp/bin:$PATH" FORGEJO_TOKEN=t
+# #375: the lister now sources claim-lib.sh for its live-claim filter. Keep its
+# retry sleeps at 0 (the ACTIONS_HTTP=000 fail-open case would otherwise back off
+# with real sleeps) and silence its latency log so the suite never writes to $HOME.
+export CLAIM_ALIVE_RETRIES=0 CLAIM_ALIVE_RETRY_SLEEP=0 CLAIM_LATENCY_LOG=
 unset REHEARSAL_DRIVE_ISSUE 2>/dev/null || true
 # #330: pin the in-sandbox fleet-pick SIGNAL to an ABSENT path. The lister reads
 # this run's claimed ticket from ${SWARM_FLEET_PICK_SIGNAL:-/run/host-signals/fleet-pick}
@@ -81,6 +85,19 @@ case "$url" in
     n="${url#*/issues/}"; n="${n%%/*}"
     body='[]'; [ -n "${DEPS_DIR:-}" ] && [ -f "$DEPS_DIR/$n.json" ] && body="$(cat "$DEPS_DIR/$n.json")"
     emit "$body" "${DEPS_HTTP:-200}"; exit ;;
+  */actions/tasks*)
+    # #375: the alive-runs snapshot the lister's live-claim filter reads once per
+    # tick. Default an EMPTY run list (no swarm claim is live) so the pre-#375
+    # fixtures surface unchanged; ACTIONS_FIXTURE overrides it, ACTIONS_HTTP=000
+    # faults the poll (the fail-OPEN case).
+    emit "$(cat "${ACTIONS_FIXTURE:-/dev/null}" 2>/dev/null || true; [ -z "${ACTIONS_FIXTURE:-}" ] && printf '{"workflow_runs":[]}')" "${ACTIONS_HTTP:-200}"; exit ;;
+  */comments*)
+    # #375: a candidate's claim comments. Default none; COMMENTS_DIR/<n>.json holds
+    # the swarm-claim comment(s) a live run posted. Matched BEFORE the single-issue
+    # GET below, which the comments URL would otherwise match.
+    n="${url#*/issues/}"; n="${n%%/*}"
+    body='[]'; [ -n "${COMMENTS_DIR:-}" ] && [ -f "$COMMENTS_DIR/$n.json" ] && body="$(cat "$COMMENTS_DIR/$n.json")"
+    emit "$body" "${COMMENTS_HTTP:-200}"; exit ;;
   *pulls?state=open*) sleep "${LEG_SLEEP:-0}"; emit "$(cat "${PULLS_FIXTURE:-/dev/null}" 2>/dev/null || echo '[]')" "${PULLS_HTTP:-200}"; exit ;;
   *labels=standing-drive*) sleep "${LEG_SLEEP:-0}"; b='[]'; [ -n "${DRIVES_FIXTURE:-}" ] && b="$(cat "$DRIVES_FIXTURE")"; emit "$b" "${DRIVES_HTTP:-200}"; exit ;;
   *labels=ready-for-agent*) sleep "${LEG_SLEEP:-0}"; emit "$(cat "${ISSUE_FIXTURE:?}")" "${READY_HTTP:-200}"; exit ;;
@@ -311,6 +328,25 @@ out4f="$(env CURL_LOG="$tmp/4f.curl" SWARM_FLEET_PICK_TASK_SIGNAL="$tmp/fleet-pi
   || fail "a garbled task signal must fall through to a forge read (#327)"
 grep -q "fleet-pick-task signal is present but unreadable" "$tmp/4f.err" \
   || fail "a garbled task signal must be named on stderr (#327)"
+rm -f "$tmp/fleet-pick-task"
+pass=$((pass+1))
+
+# 6g (#381): the NO-PICK task signal — a host with no fleet view mirrors its FULL
+#     verified ready-set (MANY tickets, no fleet-pick NUMBER file) as
+#     fleet-pick-task. The lister must emit the whole set with ZERO forge reads,
+#     exactly as it does for the one-element pick: the 12s CLAIM_LISTER_MAX_TIME
+#     bound is only safe because the host mirrors its verdict, and the no-pick
+#     full-page re-fetch RED'd the claim leg with rc 124 on a slow forge.
+printf '[{"number":811,"title":"first","body":"b","url":"u/811","created_at":"2026-10-05T10:00:00Z","priority":false,"model":null,"landing_label":null,"landing":"push","blocker":false},{"number":822,"title":"second","body":"b","url":"u/822","created_at":"2026-10-05T11:00:00Z","priority":false,"model":null,"landing_label":null,"landing":"push","blocker":false}]\n' \
+  > "$tmp/fleet-pick-task"
+# the fleet-pick NUMBER signal stays ABSENT — no single pick to name (the #330/#327
+# default already points it at a non-existent path).
+out4g="$(env CURL_LOG="$tmp/4g.curl" SWARM_FLEET_PICK_TASK_SIGNAL="$tmp/fleet-pick-task" bash "$here/../list-ready-tasks.sh")" \
+  || fail "no-pick fleet-pick-task run exited non-zero (#381)"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out4g")" = "811,822" ] \
+  || fail "a no-pick task signal must emit the WHOLE verified ready-set (got $(jq -c '[.[].number]' <<<"$out4g")) (#381)"
+[ ! -s "$tmp/4g.curl" ] \
+  || fail "the no-pick task signal must make ZERO forge reads (#381); saw: $(cat "$tmp/4g.curl")"
 rm -f "$tmp/fleet-pick-task"
 pass=$((pass+1))
 
@@ -667,5 +703,100 @@ if jq -e '[.[].number] | index(9102) != null' <<<"$outF1" >/dev/null; then
   fail "F1: a rehearsal-target marker OUTSIDE a fence must still exclude the ticket (#1468)"
 fi
 pass=$((pass+1))
+
+# ── #359 gap A: a closed-but-not-landed dependency must NOT make its dependent
+# claimable. A push-mode close lands on `main` only after the host verifies it
+# (#193), so close-report marks the pre-land close `landing-pending`; the lister
+# reads a CLOSED dependency still wearing that label as a STILL-unmet blocker. The
+# dependent surfaces only once the dependency is closed AND clear of the mark (the
+# host cleared it on the verified land, landing_promote_landed).
+d359="$tmp/359-deps"; mkdir -p "$d359"
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 52, "title": "overview: the dependent", "body": "b", "html_url": "u/52", "labels": [{"name":"ready-for-agent"}]}
+]
+JSON
+# dependency #51 closed but STILL landing-pending -> #52 must be hidden
+printf '%s\n' '[{"number":51,"state":"closed","labels":[{"name":"landing-pending"}]}]' > "$d359/52.json"
+out359a="$(env -u REHEARSAL_DRIVE_ISSUE DEPS_DIR="$d359" SWARM_RUN_LANDING_SIGNAL="$nosig" \
+  bash "$here/../list-ready-tasks.sh")" || fail "359a: listing exited non-zero"
+if jq -e '[.[].number] | index(52) != null' <<<"$out359a" >/dev/null; then
+  fail "#359 gap A: a dependent of a closed-but-landing-pending dependency must NOT be claimable"
+fi
+pass=$((pass+1))
+# dependency #51 closed AND clear of landing-pending (the land verified) -> #52 surfaces
+printf '%s\n' '[{"number":51,"state":"closed","labels":[]}]' > "$d359/52.json"
+out359b="$(env -u REHEARSAL_DRIVE_ISSUE DEPS_DIR="$d359" SWARM_RUN_LANDING_SIGNAL="$nosig" \
+  bash "$here/../list-ready-tasks.sh")" || fail "359b: listing exited non-zero"
+jq -e '[.[].number] | index(52) != null' <<<"$out359b" >/dev/null \
+  || fail "#359 gap A: once a dependency is closed AND clear of landing-pending, its dependent must surface"
+pass=$((pass+1))
+unset DEPS_DIR
+
+# ── #375: a ticket a LIVE run holds must leave the ready list even when its
+# agent-working LABEL is missing — the label (claim_mark_working) is not atomic with
+# the authoritative swarm-claim COMMENT, so a dropped/never-written label used to
+# re-expose a ticket a run still worked, and every scheduler re-dispatched it each
+# marker TTL. The full-page path now reads each candidate's comments + the alive-runs
+# snapshot and drops one carrying a LIVE claim (a session claim within its ttl, or a
+# swarm claim whose run is alive). Fail-OPEN keeps a tracker blip from starving it.
+d375="$tmp/375-comments"; mkdir -p "$d375"
+now375="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 800, "title": "held by a live session claim", "body": "b", "html_url": "u/800", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 801, "title": "held by a live swarm claim (run alive)", "body": "b", "html_url": "u/801", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 802, "title": "stale swarm-claim tombstone, run dead", "body": "b", "html_url": "u/802", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 803, "title": "expired session claim", "body": "b", "html_url": "u/803", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 804, "title": "no claim at all", "body": "b", "html_url": "u/804", "labels": [{"name":"ready-for-agent"}]}
+]
+JSON
+# #800: a session claim YOUNGER than its ttl -> live -> hidden
+printf '[{"id":1,"created_at":"%s","body":"swarm-claim host=h run=4242 session-ttl=7500\\n(x)"}]\n' "$now375" > "$d375/800.json"
+# #801: a swarm claim whose run IS in the alive snapshot (this is ALSO the refused-close
+# case — the run still holds the ticket after a gate refusal) -> hidden
+printf '[{"id":1,"created_at":"%s","body":"swarm-claim host=h run=760\\n(x)"}]\n' "$now375" > "$d375/801.json"
+# #802: a swarm claim whose run is NOT alive and carries no ttl -> a tombstone, must NOT
+# wedge the ticket (the #1412/#366 hazard) -> surfaces
+printf '[{"id":1,"created_at":"%s","body":"swarm-claim host=h run=99999\\n(x)"}]\n' "$now375" > "$d375/802.json"
+# #803: a session claim OLDER than its ttl -> expired -> surfaces
+printf '[{"id":1,"created_at":"2000-01-01T00:00:00Z","body":"swarm-claim host=h run=4242 session-ttl=10\\n(x)"}]\n' > "$d375/803.json"
+# #804: no comments file -> no claim -> surfaces (the shim default [])
+cat > "$tmp/actions375.json" <<'JSON'
+{"workflow_runs":[{"name":"swarm (h)","status":"running","run_number":760}]}
+JSON
+out375="$(env -u REHEARSAL_DRIVE_ISSUE COMMENTS_DIR="$d375" ACTIONS_FIXTURE="$tmp/actions375.json" \
+  SWARM_RUN_LANDING_SIGNAL="$nosig" bash "$here/../list-ready-tasks.sh")" || fail "375: listing exited non-zero"
+if jq -e '[.[].number] | index(800) != null' <<<"$out375" >/dev/null; then
+  fail "#375: a ticket held by a LIVE session claim must leave the ready list"
+fi
+pass=$((pass+1))
+if jq -e '[.[].number] | index(801) != null' <<<"$out375" >/dev/null; then
+  fail "#375: a ticket held by a LIVE swarm claim (run in the alive snapshot) must leave the ready list"
+fi
+pass=$((pass+1))
+jq -e '[.[].number] | index(802) != null' <<<"$out375" >/dev/null \
+  || fail "#375: a stale swarm-claim tombstone (dead run, no ttl) must NOT wedge a ready ticket"
+pass=$((pass+1))
+jq -e '[.[].number] | index(803) != null' <<<"$out375" >/dev/null \
+  || fail "#375: an EXPIRED session claim must not hide a ready ticket"
+pass=$((pass+1))
+jq -e '[.[].number] | index(804) != null' <<<"$out375" >/dev/null \
+  || fail "#375: a ticket with no claim must surface"
+pass=$((pass+1))
+
+# #375 fail-OPEN: when the alive-runs poll FAULTS (ACTIONS_HTTP=000), the alive set is
+# empty so a swarm claim is not dropped (the ticket SURFACES) — a tracker blip can only
+# surface work, never starve the queue; the age-based session arm still hides #800.
+out375b="$(env -u REHEARSAL_DRIVE_ISSUE COMMENTS_DIR="$d375" ACTIONS_HTTP=000 \
+  SWARM_RUN_LANDING_SIGNAL="$nosig" bash "$here/../list-ready-tasks.sh")" || fail "375b: listing exited non-zero"
+jq -e '[.[].number] | index(801) != null' <<<"$out375b" >/dev/null \
+  || fail "#375 fail-open: a faulted alive-runs poll must SURFACE a swarm-claimed ticket, never starve the queue"
+pass=$((pass+1))
+if jq -e '[.[].number] | index(800) != null' <<<"$out375b" >/dev/null; then
+  fail "#375 fail-open: the age-based session-ttl arm must still hide a live session claim when the alive poll faults"
+fi
+pass=$((pass+1))
+unset COMMENTS_DIR
 
 echo "PASS ($pass cases)"

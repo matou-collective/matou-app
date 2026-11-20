@@ -45,6 +45,19 @@ SWARM_POLICY_LANDING="pr"
 check "a LANDING=pr repo needs no parity" '[ "$(schedule_run_landing "$mixed")" = "repo-pr" ]'
 SWARM_POLICY_LANDING=push
 
+# --- schedule_apply_run_landing (#381) -----------------------------------------
+# The host-side parity narrowing that makes the no-pick fleet-pick-task mirror
+# safe: it must match list-ready-tasks.sh's in-sandbox run-parity filter exactly,
+# because the zero-forge-read fast path never re-runs that filter.
+check "a push run hides every PR-landing ticket from the mirror" \
+  '[ "$(schedule_apply_run_landing "$mixed" push | jq -c "[.[].number]")" = "[801]" ]'
+check "a pr <N> run narrows the mirror to exactly that ticket" \
+  '[ "$(schedule_apply_run_landing "$mixed" "pr 802" | jq -c "[.[].number]")" = "[802]" ]'
+check "a repo-pr run mirrors the whole set unchanged (every ticket on its own branch)" \
+  '[ "$(schedule_apply_run_landing "$mixed" repo-pr | jq -c "[.[].number]")" = "[802,801]" ]'
+check "a garbled/empty run-landing fails SAFE to push (hide PR tickets), never leaks one" \
+  '[ "$(schedule_apply_run_landing "$mixed" "" | jq -c "[.[].number]")" = "[801]" ]'
+
 # --- preflight_landing_gate ----------------------------------------------------
 export SWARM_HOST_SIGNALS_DIR="$tmp/signals"
 : > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
@@ -74,6 +87,13 @@ check "run-swarm exports the signals dir BEFORE the gates run" \
   'awk "/export SWARM_HOST_SIGNALS_DIR/{a=NR} /preflight_landing_gate /{b=NR} END{exit !(a && b && a<b)}" "$sc/run-swarm.sh"'
 check "run-swarm runs the landing gate right after the model gate" \
   'awk "/^preflight_model_gate /{a=NR} /^preflight_landing_gate /{b=NR} END{exit !(a && b && b==a+1)}" "$sc/run-swarm.sh"'
+# #381: the fleet-pick-task mirror must be narrowed by schedule_apply_run_landing
+# and written AFTER the landing gate resolves SWARM_RUN_LANDING — a raw no-pick
+# mirror would hand a push run a PR ticket through the zero-forge-read fast path.
+check "run-swarm narrows the mirror by run-landing before mirroring it (#381)" \
+  'grep -q "schedule_fleet_pick_signal .*schedule_apply_run_landing " "$sc/run-swarm.sh"'
+check "run-swarm mirrors the fleet-pick-task AFTER the landing gate (#381)" \
+  'awk "/^preflight_landing_gate /{a=NR} /schedule_fleet_pick_signal /{b=NR} END{exit !(a && b && a<b)}" "$sc/run-swarm.sh"'
 
 # ═════ Task 8: landing-lib.sh resolves the mode per ticket ═════════════════════
 mkdir -p "$tmp/bin"

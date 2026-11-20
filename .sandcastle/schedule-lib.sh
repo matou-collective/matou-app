@@ -269,27 +269,41 @@ schedule_fleet_pick() {
   return 0
 }
 
-# schedule_fleet_pick_signal <host-signals-dir> [pick-ready-json] — drop the
-# pick where every sandbox sees it read-only (the start-sha pattern). No pick →
-# no file → the in-sandbox lister's own order. Best-effort. Two files:
-#   fleet-pick       — the pick NUMBER (the #2145 single-issue fast-path trigger).
-#   fleet-pick-task  — the pick's FULL task OBJECT, when the ready JSON is passed
-#                      (#327): the host has already LISTED and verified this pick
-#                      outside the 30s budget, so the in-sandbox lister emits it
-#                      with ZERO forge reads — even the #2145 two-read fast path
-#                      overran CLAIM_LISTER_MAX_TIME on a slow forge. A
-#                      garbled/empty input leaves no task file, and the sandbox
-#                      falls back to the single-issue fast path.
+# schedule_fleet_pick_signal <host-signals-dir> [verified-ready-json] — drop the
+# host's verdict where every sandbox sees it read-only (the start-sha pattern).
+# Best-effort. Two files:
+#   fleet-pick       — the pick NUMBER (the #2145 single-issue fast-path trigger),
+#                      ONLY when a single fleet pick was chosen. With no fleet
+#                      view there is no one number to name, so this file is absent
+#                      and the sandbox never arms the single-issue fast path.
+#   fleet-pick-task  — the host's FULL verified task OBJECT(s), on EVERY path when
+#                      the ready JSON is passed (#381, finishing #327 direction 1):
+#                      with a pick, the single-element pick array; with NO fleet
+#                      view, the host's full verified ready-set. The host has
+#                      already LISTED and verified this set OUTSIDE the 30s budget,
+#                      so the in-sandbox lister emits it with ZERO forge reads —
+#                      the 12s CLAIM_LISTER_MAX_TIME bound is only safe because the
+#                      host mirrors its verdict (#327 proved even the 2-read fast
+#                      path overran it on a slow forge; #381 proved the no-pick
+#                      full-page path RED's the claim leg with rc 124 the same
+#                      way). A garbled/empty input leaves no task file, and the
+#                      sandbox falls back to the single-issue fast path (with a
+#                      pick) or the full page (no pick).
 schedule_fleet_pick_signal() {
-  [ -n "${SCHEDULE_FLEET_PICK:-}" ] || return 0
   mkdir -p "$1" 2>/dev/null || return 0
-  printf '%s\n' "$SCHEDULE_FLEET_PICK" >"$1/fleet-pick" 2>/dev/null || true
-  if [ -n "${2:-}" ]; then
-    local task=""
+  if [ -n "${SCHEDULE_FLEET_PICK:-}" ]; then
+    printf '%s\n' "$SCHEDULE_FLEET_PICK" >"$1/fleet-pick" 2>/dev/null || true
+  fi
+  [ -n "${2:-}" ] || return 0
+  local task=""
+  if [ -n "${SCHEDULE_FLEET_PICK:-}" ]; then
     task="$(jq -ec --arg n "$SCHEDULE_FLEET_PICK" \
       '[.[] | select((.number | tostring) == $n)] | select(length > 0)' <<<"$2" 2>/dev/null)" || task=""
-    [ -n "$task" ] && printf '%s\n' "$task" >"$1/fleet-pick-task" 2>/dev/null || true
+  else
+    task="$(jq -ec 'select(type == "array" and length > 0)' <<<"$2" 2>/dev/null)" || task=""
   fi
+  [ -n "$task" ] && printf '%s\n' "$task" >"$1/fleet-pick-task" 2>/dev/null
+  return 0
 }
 
 # ── the per-run model (#448) ───────────────────────────────────────────────
@@ -349,6 +363,27 @@ schedule_run_landing() {
   else
     echo push
   fi
+}
+
+# schedule_apply_run_landing <ready-json> <run-landing> -> the ready-set narrowed
+# to what a sandbox under this run-landing may claim (idss ADR 0267), matching
+# list-ready-tasks.sh's IN-SANDBOX run-parity filter byte-for-byte:
+#   repo-pr   -> unchanged (a pr-default repo lands every ticket on its own branch)
+#   pr <N>    -> exactly ticket N (this run works the PR head and nothing else)
+#   push      -> only tickets whose landing is "push" (hide every PR ticket)
+# Used HOST-side (#381) so the mirrored fleet-pick-task carries a parity-correct
+# set: that fast path emits the mirror with ZERO forge reads and never re-runs the
+# in-sandbox filter, and the host-side lister itself never applied it (its signal
+# dir is sandbox-only), so a raw mirror of a no-pick ready-set would hand a push
+# run a PR-landing ticket (#327 left the no-pick path unmirrored for this reason).
+# A malformed/empty run-landing falls to `push` — fail SAFE, the same posture the
+# in-sandbox filter takes on a garbled run-landing signal.
+schedule_apply_run_landing() {
+  case "$2" in
+    "pr "[0-9]*) jq --arg n "${2#pr }" 'map(select((.number | tostring) == $n))' <<<"$1" 2>/dev/null || printf '%s' "$1" ;;
+    repo-pr)     printf '%s' "$1" ;;
+    *)           jq 'map(select(.landing == "push"))' <<<"$1" 2>/dev/null || printf '%s' "$1" ;;
+  esac
 }
 
 fi
