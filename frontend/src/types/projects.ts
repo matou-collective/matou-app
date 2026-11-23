@@ -74,6 +74,7 @@ export type PlanChangeKind =
   | 'contribution_added'
   | 'contribution_edited'
   | 'contribution_removed'
+  | 'contribution_restored'
   | 'contribution_moved';
 
 export interface PlanChangeEntry {

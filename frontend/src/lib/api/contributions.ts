@@ -399,6 +399,18 @@ export async function archiveContribution(id: string): Promise<void> {
   }
 }
 
+export async function restoreContribution(id: string): Promise<void> {
+  log.info('Restoring contribution %s', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/restore`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to restore contribution');
+  }
+}
+
 export async function unassignContribution(id: string): Promise<Contribution> {
   log.info('Unassigning contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/unassign`, {

@@ -61,6 +61,7 @@ Added 2026-08-26. The matrices below were generated before PR #28 and still desc
 | `POST /api/v1/profiles/init-member` | `init_member_profile` | steward scope | — |
 | `POST /api/v1/profiles` | `write_profile` | any authenticated member | `profileWritePolicy` (below) |
 | `POST /api/v1/contributions/{id}/transition` | `transition_contribution` + upgraded action for the target status | any member; `signed_off` → `sign_off_contribution`, `rewarded` → `reward_contribution`, `archived` → `archive_contribution` | `archived` is delegated to the `/archive` path (child cascade + `contribution:archived` SSE) |
+| `POST /api/v1/contributions/{id}/restore` | `archive_contribution` (project-scoped, same as archive) | lead/steward/admin | undoes archive: returns the contribution and its cascade-archived descendants to their pre-archive status; invalidates plan sign-off; `transition` cannot leave `archived` |
 | `POST /api/v1/projects/{id}/approve-completion`, `/reject-completion` | `approve_/reject_project_completion` | steward scope | non-exempt caller must be this project's steward and not the submitter |
 | `POST /api/v1/implementation-plans/{id}/sign-off` | `sign_off_plan` | steward scope | caller AID comes from the RBAC context only (body `user_id` fallback removed) |
 | `POST /api/v1/credentials`, `POST /api/v1/sync/credentials` | `store_credential` | any authenticated member | `credentialSubjectPolicy`: non-stewards may only store credentials whose `recipient` (and `userAid`) is their own AID; stewards may store credentials they issued to others |
