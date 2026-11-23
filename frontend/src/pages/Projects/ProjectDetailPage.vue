@@ -355,6 +355,42 @@
               </button>
             </div>
           </div>
+
+          <!-- Archived contributions (#846): archiving can be undone by whoever
+               may archive. Restoring a parent also brings back the
+               sub-contributions archived with it. -->
+          <div
+            v-if="archivedContributions.length > 0 && perms.canArchiveContribution.value"
+            class="archived-section"
+            data-testid="archived-contributions"
+          >
+            <div class="unassigned-header">
+              <span class="unassigned-title">Archived contributions</span>
+              <span class="unassigned-count">{{ archivedContributions.length }}</span>
+            </div>
+            <ul class="archived-list">
+              <li
+                v-for="c in archivedContributions"
+                :key="c.id"
+                class="archived-row"
+                data-testid="archived-contribution-row"
+              >
+                <span class="archived-row-title">{{ c.title }}</span>
+                <q-btn
+                  flat
+                  no-caps
+                  dense
+                  color="primary"
+                  icon="restore"
+                  label="Restore"
+                  data-testid="restore-contribution"
+                  :loading="restoringContributionId === c.id"
+                  :disable="restoringContributionId !== null"
+                  @click="doRestoreContribution(c)"
+                />
+              </li>
+            </ul>
+          </div>
         </template>
       </div>
 
@@ -948,7 +984,7 @@ const contribArchiveMessage = computed(() => {
   if (subs > 0) {
     return `"${c.title}" has ${subs} sub-contribution${subs === 1 ? '' : 's'}. Choose what happens to ${subs === 1 ? 'it' : 'them'}. Rewarded sub-contributions are never archived.`;
   }
-  return `Archiving "${c.title}" cannot be undone from the UI.`;
+  return `Archiving "${c.title}" can be undone from the Archived contributions list.`;
 });
 
 function openEditContribution(c: Contribution) {
@@ -1013,6 +1049,34 @@ function refreshViewingContribution() {
     planContributions.value.find((c) => c.id === current.id) ??
     allProjectContributions.value.find((c) => c.id === current.id);
   if (fresh) viewingContribution.value = { ...fresh };
+}
+
+// Archived contributions that can be restored right now: a sub-contribution
+// whose parent is still archived is hidden, since the parent is restored first.
+const archivedContributions = computed(() => {
+  const all = allProjectContributions.value;
+  const archivedIds = new Set(all.filter((c) => c.status === 'archived').map((c) => c.id));
+  return all.filter(
+    (c) =>
+      c.status === 'archived' &&
+      !(c.parent_contribution && archivedIds.has(c.parent_contribution)),
+  );
+});
+
+const restoringContributionId = ref<string | null>(null);
+
+async function doRestoreContribution(c: Contribution) {
+  if (!project.value || restoringContributionId.value) return;
+  restoringContributionId.value = c.id;
+  try {
+    await contributionsStore.restore(c.id);
+    await refreshPlanAndContributions();
+    $q.notify({ type: 'positive', message: `"${c.title}" restored. The plan needs to be signed off again.` });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to restore contribution' });
+  } finally {
+    restoringContributionId.value = null;
+  }
 }
 
 async function doArchiveContribution() {
@@ -2224,6 +2288,31 @@ async function submitAssign() {
     border-color: var(--matou-primary);
     color: var(--matou-primary);
   }
+}
+
+.archived-section {
+  margin-top: 16px;
+}
+
+.archived-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.archived-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--matou-border);
+  border-radius: var(--matou-radius-sm);
+  font-size: 0.85rem;
+  color: var(--matou-muted-foreground);
 }
 
 .unassigned-section .add-icon {

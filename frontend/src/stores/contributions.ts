@@ -21,6 +21,7 @@ import {
   approveSub as apiApproveSub,
   promoteSubContribution as apiPromoteSub,
   archiveContribution as apiArchiveContrib,
+  restoreContribution as apiRestoreContrib,
   unassignContribution as apiUnassign,
   reorderContributions as apiReorder,
   moveContribution as apiMove,
@@ -349,6 +350,19 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  // Restoring returns the contribution (and its cascade-archived descendants)
+  // to the status it had before archiving; the server decides which status, so
+  // callers refetch rather than patch the local copy.
+  async function restore(id: string) {
+    error.value = null;
+    try {
+      await apiRestoreContrib(id);
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Restore failed';
+      throw e;
+    }
+  }
+
   async function archive(id: string, subContributions?: SubContributionChoice) {
     error.value = null;
     try {
@@ -492,6 +506,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     approveSub,
     promoteSub,
     archive,
+    restore,
     unassign,
     reorder,
     move,

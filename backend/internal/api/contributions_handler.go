@@ -200,6 +200,14 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "restore":
+				// Same capability as archive: whoever may archive may undo it.
+				if r.Method == http.MethodPost {
+					h.withProjectRBAC(contributions.ActionArchiveContribution, id, h.HandleRestore)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			case "unassign":
 				if r.Method == http.MethodPost {
 					h.withProjectRBAC(contributions.ActionUnassignContribution, id, h.HandleUnassign)(w, r)
@@ -1212,6 +1220,34 @@ func (h *ContributionsHandler) HandleArchive(w http.ResponseWriter, r *http.Requ
 	if h.broker != nil {
 		h.broker.Broadcast(SSEEvent{
 			Type: "contribution:archived",
+			Data: map[string]string{"contribution_id": id},
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"success": "true"})
+}
+
+// HandleRestore handles POST /api/v1/contributions/{id}/restore
+// RBAC: ActionArchiveContribution (lead/steward/admin), same as archive.
+func (h *ContributionsHandler) HandleRestore(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/restore")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	actorID := GetUserAID(r)
+	if actorID == "" {
+		actorID = r.Header.Get("X-User-AID")
+	}
+	if err := h.service.RestoreContribution(r.Context(), spaceID, id, actorID); err != nil {
+		log.Printf("[Contributions] restore failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] contribution %s restored", id)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:restored",
 			Data: map[string]string{"contribution_id": id},
 		})
 	}

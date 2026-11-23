@@ -443,7 +443,7 @@ type ImplementationPlan struct {
 // (or one of its milestones/contributions) since the plan was last signed off.
 type PlanChangeEntry struct {
 	ID                string `json:"id"`
-	Kind              string `json:"kind"` // milestone_edited|milestone_added|milestone_archived|contribution_added|contribution_edited|contribution_removed|contribution_moved
+	Kind              string `json:"kind"` // milestone_edited|milestone_added|milestone_archived|contribution_added|contribution_edited|contribution_removed|contribution_restored|contribution_moved|contribution_auto_submitted
 	MilestoneID       string `json:"milestone_id,omitempty"`
 	MilestoneTitle    string `json:"milestone_title,omitempty"`
 	ContributionID    string `json:"contribution_id,omitempty"`
@@ -628,6 +628,17 @@ type Contribution struct {
 	AttachmentFiles []FileRef `json:"attachment_files,omitempty"`
 
 	CommentCount int `json:"comment_count,omitempty"`
+
+	// ArchivedFrom records the status the contribution had when it was
+	// archived, so RestoreContribution can return it to the same state (#846).
+	// Empty on records archived before this field existed (restore then falls
+	// back to a default) and on contributions that are not archived.
+	ArchivedFrom ContributionStatus `json:"archived_from,omitempty"`
+	// ArchivedVia is set on descendants archived by a parent's cascade and holds
+	// the id of the contribution whose archive caused it. Restoring that
+	// contribution restores exactly these descendants; independently archived
+	// children carry no tag and stay archived.
+	ArchivedVia string `json:"archived_via,omitempty"`
 }
 
 // ContributionDiff records a single field change for change tracking.

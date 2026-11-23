@@ -1178,6 +1178,9 @@ func TestArchiveContributionWithSubs_ChoiceAndPromote(t *testing.T) {
 		if got.Status == ContribArchived {
 			t.Errorf("%s archived, want kept", got.Title)
 		}
+		if got.ArchivedVia != "" || got.ArchivedFrom != "" {
+			t.Errorf("%s tagged archived_via=%q archived_from=%q, want untouched", got.Title, got.ArchivedVia, got.ArchivedFrom)
+		}
 	}
 	if g, _ := svc.GetContribution(ctx, spaceID, paid.ID); g.Status != ContribRewarded {
 		t.Errorf("paid status = %s, want rewarded", g.Status)

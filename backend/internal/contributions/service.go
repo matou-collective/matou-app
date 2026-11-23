@@ -1705,6 +1705,9 @@ func (s *Service) TransitionContribution(ctx context.Context, spaceID, contribID
 	if err != nil {
 		return nil, err
 	}
+	if c.Status == ContribArchived {
+		return nil, fmt.Errorf("contribution is archived: use restore")
+	}
 	if err := ValidateContributionTransition(c.Status, newStatus); err != nil {
 		return nil, err
 	}
@@ -1728,6 +1731,9 @@ func (s *Service) TransitionContribution(ctx context.Context, spaceID, contribID
 	c.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, err
+	}
+	if newStatus == ContribSignedOff || newStatus == ContribRewarded {
+		s.autoSubmitParentIfComplete(ctx, spaceID, c)
 	}
 	return c, nil
 }
@@ -2340,6 +2346,7 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
+	s.autoSubmitParentIfComplete(ctx, spaceID, c)
 	return c, nil
 }
 
@@ -2371,7 +2378,98 @@ func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionI
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
+	s.autoSubmitParentIfComplete(ctx, spaceID, c)
 	return c, nil
+}
+
+// autoSubmitParentSystemNote is the completion note written on a parent that
+// moved to needs_review on its own (issue #843).
+const autoSubmitParentSystemNote = "All sub-contributions signed off"
+
+// autoSubmitParentIfComplete moves child's parent from assigned to
+// needs_review when every non-archived sub-contribution of that parent is
+// signed_off or rewarded (issue #843). It is called after a child reaches one
+// of those states and is best-effort: a failure is logged and never fails the
+// child's own transition.
+//
+// The parent is untouched unless it is `assigned` and has at least one
+// non-archived child; archived children neither block nor trigger. No
+// evidence is invented: only a system completion note is set, and the parent's
+// actual cost is the sum of the children's actuals (left as-is when that sum
+// is zero, e.g. children rewarded separately). The transition is recorded on
+// the plan change log as contribution_auto_submitted without unsigning the
+// plan, since it is a status change and not a structural edit.
+func (s *Service) autoSubmitParentIfComplete(ctx context.Context, spaceID string, child *Contribution) {
+	if child == nil || child.ParentContributionID == "" {
+		return
+	}
+	parent, err := s.GetContribution(ctx, spaceID, child.ParentContributionID)
+	if err != nil || parent.Status != ContribAssigned {
+		return
+	}
+	var live int
+	var total float64
+	for _, id := range parent.ChildContributionIDs {
+		ch, err := s.GetContribution(ctx, spaceID, id)
+		if err != nil {
+			log.Printf("[Contributions] auto-submit parent %s: load child %s: %v", parent.ID, id, err)
+			return
+		}
+		if ch.Status == ContribArchived {
+			continue
+		}
+		if ch.Status != ContribSignedOff && ch.Status != ContribRewarded {
+			return
+		}
+		live++
+		total += ch.ActualCost
+	}
+	if live == 0 {
+		return
+	}
+	if err := ValidateContributionTransition(parent.Status, ContribNeedsReview); err != nil {
+		return
+	}
+	if parent.CompletionNotes == "" {
+		parent.CompletionNotes = autoSubmitParentSystemNote
+	}
+	if total > 0 {
+		parent.ActualCost = total
+	}
+	parent.Status = ContribNeedsReview
+	parent.EvidenceDraftSavedAt = nil
+	parent.UpdatedAt = time.Now()
+	if err := s.store.Save(spaceID, parent.ID, "contribution", parent); err != nil {
+		log.Printf("[Contributions] auto-submit parent %s: save: %v", parent.ID, err)
+		return
+	}
+	if parent.MilestoneID != "" {
+		if err := s.recomputeMilestoneActualCost(ctx, spaceID, parent.MilestoneID); err != nil {
+			log.Printf("[Contributions] recomputeMilestoneActualCost %s: %v", parent.MilestoneID, err)
+		}
+	}
+	msID, msTitle, parentID, parentTitle := s.ResolvePlanChangeRefs(ctx, spaceID, parent)
+	if msID == "" {
+		return
+	}
+	plan, _, perr := s.findMilestone(ctx, spaceID, msID)
+	if perr != nil {
+		return
+	}
+	appendPlanChange(plan, PlanChangeEntry{
+		Kind:                    "contribution_auto_submitted",
+		MilestoneID:             msID,
+		MilestoneTitle:          msTitle,
+		ContributionID:          parent.ID,
+		ContributionTitle:       parent.Title,
+		ParentContributionID:    parentID,
+		ParentContributionTitle: parentTitle,
+		ChangedBy:               "system",
+	})
+	plan.UpdatedAt = time.Now()
+	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
+		log.Printf("[Contributions] auto-submit parent %s: change log: %v", parent.ID, err)
+	}
 }
 
 // ApproveSubContribution transitions a sub-contribution from created/changed to
@@ -3068,9 +3166,17 @@ func (s *Service) ArchiveContributionWithSubs(ctx context.Context, spaceID, cont
 			keptRewarded++
 			return
 		}
-		c.Status = ContribArchived
-		if err := s.SaveContribution(ctx, spaceID, c); err != nil {
-			capture(err)
+		// Leave already-archived items untouched so an independently archived
+		// child keeps its own archived_from and is not tagged with this cascade.
+		if c.Status != ContribArchived {
+			c.ArchivedFrom = c.Status
+			if id != contribID {
+				c.ArchivedVia = contribID
+			}
+			c.Status = ContribArchived
+			if err := s.SaveContribution(ctx, spaceID, c); err != nil {
+				capture(err)
+			}
 		}
 		for _, child := range byParent[id] {
 			archive(child.ID, false)
@@ -3106,6 +3212,99 @@ func (s *Service) ArchiveContributionWithSubs(ctx context.Context, spaceID, cont
 		capture(fmt.Errorf("unsign plan: %w", err))
 	}
 
+	return firstErr
+}
+
+// restoreStatus returns the status an archived contribution goes back to: the
+// one recorded at archive time, or, for records archived before archived_from
+// existed, assigned when it has an assignee and confirmed otherwise.
+func restoreStatus(c *Contribution) ContributionStatus {
+	if c.ArchivedFrom != "" && c.ArchivedFrom != ContribArchived {
+		return c.ArchivedFrom
+	}
+	if c.AssignedContributorID != "" {
+		return ContribAssigned
+	}
+	return ContribConfirmed
+}
+
+// RestoreContribution undoes ArchiveContribution. The contribution returns to
+// the status it had before it was archived (see restoreStatus for records that
+// predate archived_from) and so do the descendants that were archived by the
+// same cascade (tagged archived_via = contribID); children archived on their
+// own stay archived. Like archive, it invalidates the plan sign-off and writes
+// a contribution_restored change-log entry. actorID may be empty.
+func (s *Service) RestoreContribution(ctx context.Context, spaceID, contribID, actorID string) error {
+	contrib, err := s.GetContribution(ctx, spaceID, contribID)
+	if err != nil {
+		return err
+	}
+	if contrib.Status != ContribArchived {
+		return fmt.Errorf("contribution is not archived")
+	}
+	if contrib.ParentContributionID != "" {
+		parent, err := s.GetContribution(ctx, spaceID, contrib.ParentContributionID)
+		if err == nil && parent.Status == ContribArchived {
+			return fmt.Errorf("parent contribution is archived: restore it first")
+		}
+	}
+	if contrib.MilestoneID != "" {
+		if ms, err := s.GetMilestone(ctx, spaceID, contrib.MilestoneID); err == nil && ms.Status == MilestoneArchived {
+			return fmt.Errorf("milestone is archived: cannot restore a contribution into it")
+		}
+	}
+	if proj, err := s.GetProject(ctx, spaceID, contrib.ProjectID); err == nil && proj.Status == ProjectArchived {
+		return fmt.Errorf("project is archived: cannot restore a contribution into it")
+	}
+
+	to := restoreStatus(contrib)
+	if err := ValidateContributionTransition(ContribArchived, to); err != nil {
+		return err
+	}
+
+	all, err := s.ListContributionsByProject(ctx, spaceID, contrib.ProjectID)
+	if err != nil {
+		return err
+	}
+
+	var firstErr error
+	capture := func(e error) {
+		if firstErr == nil && e != nil {
+			firstErr = e
+		}
+	}
+	restore := func(c *Contribution) {
+		next := restoreStatus(c)
+		if ValidateContributionTransition(ContribArchived, next) != nil {
+			next = ContribConfirmed
+		}
+		c.Status = next
+		c.ArchivedFrom = ""
+		c.ArchivedVia = ""
+		capture(s.SaveContribution(ctx, spaceID, c))
+	}
+	for _, c := range all {
+		if c.ID != contribID && c.Status == ContribArchived && c.ArchivedVia == contribID {
+			restore(c)
+		}
+	}
+	restore(contrib)
+
+	// Restoring changes the plan, so re-signoff is required (as for archive).
+	msID, msTitle, parentID, parentTitle := s.ResolvePlanChangeRefs(ctx, spaceID, contrib)
+	entry := &PlanChangeEntry{
+		Kind:                    "contribution_restored",
+		MilestoneID:             msID,
+		MilestoneTitle:          msTitle,
+		ContributionID:          contrib.ID,
+		ContributionTitle:       contrib.Title,
+		ParentContributionID:    parentID,
+		ParentContributionTitle: parentTitle,
+		ChangedBy:               actorID,
+	}
+	if err := s.UnsignPlanForProject(ctx, spaceID, contrib.ProjectID, entry); err != nil {
+		capture(fmt.Errorf("unsign plan: %w", err))
+	}
 	return firstErr
 }
 
