@@ -12,6 +12,27 @@ source "$here/pr-e2e-lib.sh"
 : "${FORGEJO_TOKEN:?}" "${FORGEJO_API:?}" "${PR_NUMBER:?}"
 INFRA="${MATOU_INFRA_DIR:-$HOME/matou/matou-infrastructure}"
 
+# Per-run log paths (#854). Two pr-e2e drives for this repo used to share the
+# FIXED paths /tmp/pr-e2e-*.log, so a later drive overwrote the FAILING run's
+# log before its healer could read it (the 56763 incident: by the time the
+# healer ran, /tmp/pr-e2e-playwright.log was already the next drive's). The
+# per-host drive mutex in pr-e2e.yml stops two drives co-running, but the healer
+# step runs AFTER the drive releases that mutex, so a queued drive can still
+# clobber the fixed path in that window. Namespacing every raw log by the
+# workflow run id closes it. PR_E2E_RUN_ID is github.run_number (pr-e2e.yml);
+# bare runs fall back to the legacy fixed names. The verdict file stays at its
+# canonical repo-tagged path on purpose: the hourly watchdog healer (healer.yml)
+# reads it WITHOUT a run id, and it already carries the failing stage's error
+# lines baked in at write time, so it is not the artifact that was being lost.
+run_id="${PR_E2E_RUN_ID:-}"
+log_prefix="/tmp/pr-e2e${run_id:+-$run_id}"
+backend_log="$log_prefix-backend.log"
+playwright_log="$log_prefix-playwright.log"
+# A copy of the Playwright log with benign browser-console noise stripped (#854),
+# handed to the verdict so the healer keys on the real fault; the raw log is kept
+# whole for the human excerpt + screenshots.
+playwright_verdict_log="$log_prefix-playwright-verdict.log"
+
 # Drop a stage/exit verdict on failure (#235 seam). heal.sh's verdict_path()
 # already reads the `pr-e2e` case, but nothing wrote the file: every red pr-e2e
 # reached the healer with `seam-degraded`, no run-verdict.txt and an "unknown"
@@ -20,6 +41,8 @@ INFRA="${MATOU_INFRA_DIR:-$HOME/matou/matou-infrastructure}"
 # run-triage.sh / heal.sh — one runner serves several repos (#238, #574).
 repo_slug="${REPO_SLUG:-${FORGEJO_API##*/repos/}}"
 repo_tag="${repo_slug//\//-}"
+# Verdict stays canonical (NOT run-tagged): the watchdog healer reads this exact
+# path with no run id — see the log_prefix note above.
 verdict_begin "${PR_E2E_VERDICT_PATH:-/tmp/matou-$repo_tag-pr-e2e-verdict.txt}"
 # One EXIT trap, verdict FIRST: teardown's `make down-test` chatter must not
 # displace the real failing stage. teardown is only defined once the bootstrap
@@ -86,7 +109,7 @@ bash scripts/clean-test.sh
 # learn WHY it died — exactly what happened in #527 (a delisted registry image;
 # docker compose printed the reason, nothing kept it). Same shape as
 # backend_build_log below. `set -o pipefail` is on, so the tee does not mask make.
-infra_log=/tmp/pr-e2e-infra.log
+infra_log="$log_prefix-infra.log"
 rm -f "$infra_log"
 verdict_stage "keri infra (make clean-test start-and-wait-test)" "$infra_log"
 make -C "$INFRA/keri" clean-test start-and-wait-test 2>&1 | tee "$infra_log"
@@ -123,13 +146,13 @@ export CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-}" MATOU_CONFIG_SERVER_TOKEN="$
 # stops depending on a host package the healer is not allowed to install.
 # tee'd to a log so the next failure reaches the healer with the compiler's own
 # words instead of a bare stage name.
-backend_build_log=/tmp/pr-e2e-backend-build.log
+backend_build_log="$log_prefix-backend-build.log"
 rm -f "$backend_build_log"
 verdict_stage "backend build (cd backend && make build)" "$backend_build_log"
 ( cd backend && CGO_ENABLED=0 make build ) 2>&1 | tee "$backend_build_log"
-( cd backend && MATOU_ENV=test exec ./bin/server ) >/tmp/pr-e2e-backend.log 2>&1 &
+( cd backend && MATOU_ENV=test exec ./bin/server ) >"$backend_log" 2>&1 &
 backend_pid=$!
-verdict_stage "backend health (localhost:9080)" /tmp/pr-e2e-backend.log
+verdict_stage "backend health (localhost:9080)" "$backend_log"
 for _ in $(seq 1 60); do
   curl -sf http://localhost:9080/health >/dev/null && break
   sleep 2
@@ -173,16 +196,27 @@ if [ -d "$qcache_keep" ] && [ ! -d "$qcache" ]; then
   echo "run-pr-e2e: restored warm Vite dep cache ($(ls "$qcache" >/dev/null 2>&1 && echo ok || echo missing))"
 fi
 
-verdict_stage "feature spec ($spec)" /tmp/pr-e2e-playwright.log
+# The raw log for this early stage: it exists the moment Playwright starts, and
+# this stage is never the failing one (the run below is captured non-fatally).
+# The noise-stripped copy (built after the run) feeds the stages that actually
+# fire the verdict — report+notify and the did-not-run bootstrap stage (#854).
+verdict_stage "feature spec ($spec)" "$playwright_log"
 set +e
 # The e2e utils locate infra as a sibling of the repo root, which doesn't hold
 # for this checkout (~/swarm-e2e/<slug>) — point them at $INFRA explicitly.
 ( cd frontend && MATOU_KERI_INFRA_DIR="$INFRA/keri" \
     npx playwright test --project=features "tests/e2e/features/issue-$n.spec.ts" ) \
-  >/tmp/pr-e2e-playwright.log 2>&1
+  >"$playwright_log" 2>&1
 rc=$?
 set -e
-tail -40 /tmp/pr-e2e-playwright.log
+tail -40 "$playwright_log"
+
+# Noise-stripped copy for the verdict (#854): the raw log is kept whole above for
+# the human excerpt + screenshots, but the verdict must not key on benign
+# browser-console lines (see strip_e2e_console_noise). Fall back to the raw log
+# if the filter leaves nothing.
+strip_e2e_console_noise <"$playwright_log" >"$playwright_verdict_log" 2>/dev/null || true
+[ -s "$playwright_verdict_log" ] || cp "$playwright_log" "$playwright_verdict_log" 2>/dev/null || true
 
 shopt -s nullglob
 shots=(frontend/tests/e2e/results/snaps/issue-"$n"/*.png)
@@ -191,12 +225,12 @@ shopt -u nullglob
 # Best-effort test count from Playwright's summary line (e.g. "3 passed (12s)").
 # Falls back to omitting the tests clause if the log format doesn't match.
 tests_clause=""
-if passed="$(grep -oE '[0-9]+ passed' /tmp/pr-e2e-playwright.log | head -1)"; then
+if passed="$(grep -oE '[0-9]+ passed' "$playwright_log" | head -1)"; then
   tests_clause="${passed%% passed} tests, "
 fi
 
-outcome="$(classify_e2e_outcome "$rc" /tmp/pr-e2e-playwright.log)"
-verdict_stage "report + notify ($outcome)" /tmp/pr-e2e-playwright.log
+outcome="$(classify_e2e_outcome "$rc" "$playwright_log")"
+verdict_stage "report + notify ($outcome)" "$playwright_verdict_log"
 case "$outcome" in
   passed)
     msg=":camera: **e2e PR #$PR_NUMBER** — ✅ passed (${tests_clause}${#shots[@]} screenshots) $pr_url"
@@ -223,7 +257,7 @@ fi
 
 root="$(bash "$here/notify-mattermost-files.sh" "$msg" "${shots[@]}")"
 if [ "$outcome" != passed ] && [ -n "$root" ]; then
-  excerpt="$(tail -30 /tmp/pr-e2e-playwright.log | head -c 3000)"
+  excerpt="$(tail -30 "$playwright_log" | head -c 3000)"
   bash "$here/notify-mattermost.sh" "\`\`\`
 $excerpt
 \`\`\`" "$root" || true
@@ -235,7 +269,7 @@ bash "$here/post-pr-screenshots.sh" "$PR_NUMBER" "$status" "${shots[@]}" >/dev/n
 # Spec verdict is evidence, not a gate; a spec that never ran is pipeline
 # breakage and fails the job so the healer step runs.
 if [ "$outcome" = did-not-run ]; then
-  verdict_stage "bootstrap projects (feature spec did not run)" /tmp/pr-e2e-playwright.log
+  verdict_stage "bootstrap projects (feature spec did not run)" "$playwright_verdict_log"
   exit 1
 fi
 exit 0

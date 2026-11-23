@@ -82,4 +82,20 @@ pr_e2e_has_verdict_for "$legacy_json" abc123 || fail "legacy untagged verdict IS
 unrelated_json='[{"body":"just a review comment"}]'
 pr_e2e_has_verdict_for "$unrelated_json" abc123 && fail "a non-marker comment is NOT evidence"
 
-echo "pr-e2e-lib: 36 checks passed"
+# strip_e2e_console_noise (#854): benign "[Admin FAILED]/[Member FAILED] ..."
+# browser-console lines are dropped so the verdict's error-line grep (and the
+# healer's head -1 on it) keys on the REAL fault, not the console noise.
+noisy=$'[Admin FAILED] POST http://localhost:4902/\n[Member FAILED] POST http://localhost:4903/x\nError: worker process exited unexpectedly (code=null, signal=SIGKILL)\nRequired test services are not reachable'
+cleaned="$(printf '%s\n' "$noisy" | strip_e2e_console_noise)"
+grep -q 'Admin FAILED' <<<"$cleaned" && fail "strip must drop [Admin FAILED] console noise"
+grep -q 'Member FAILED' <<<"$cleaned" && fail "strip must drop [Member FAILED] console noise"
+grep -q 'worker process exited unexpectedly' <<<"$cleaned" || fail "strip must keep the real SIGKILL fault"
+grep -q 'Required test services are not reachable' <<<"$cleaned" || fail "strip must keep the services-unreachable fault"
+# The real fault must now be the FIRST error-ish line (what the healer keys on).
+first_err="$(printf '%s\n' "$cleaned" | grep -iE 'error|fail' | head -1)"
+[[ "$first_err" == *'worker process exited unexpectedly'* ]] || fail "real fault must rank first after stripping, got: $first_err"
+# A log that is ALL noise strips to empty (caller falls back to the raw log).
+allnoise="$(printf '[Admin FAILED] POST http://localhost:4902/\n' | strip_e2e_console_noise)"
+[ -z "$allnoise" ] || fail "an all-noise log must strip to empty"
+
+echo "pr-e2e-lib: 42 checks passed"

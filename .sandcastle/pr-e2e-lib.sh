@@ -34,6 +34,23 @@ issue_from_spec() {
   echo "${BASH_REMATCH[1]}"
 }
 
+# Strip benign browser-console request noise from a Playwright log before it
+# feeds the on-failure verdict (#854). The e2e helpers mirror the app's own
+# console network logging into Playwright's stdout, so a HEALTHY drive logs ~50
+# "[Admin FAILED] POST http://localhost:4902/..." / "[Member FAILED] ..." lines
+# (benign — they sit alongside successful KEL pushes). verdict-lib.sh greps
+# error-ish lines (these match "fail") and the healer keys the incident
+# signature on the FIRST match, so the noise buried the real fault
+# ("worker process exited unexpectedly ... SIGKILL", "Required test services are
+# not reachable") at the bottom of the excerpt. verdict-lib.sh is vendored from
+# the factory (FACTORY_MANIFEST), so the drop happens here at the pr-e2e consumer
+# — the right layer anyway, since this console noise is pr-e2e-specific. Reads
+# stdin, writes the cleaned log to stdout; never fails (a log that is ALL noise
+# would grep-empty, so the caller falls back to the raw log).
+strip_e2e_console_noise() {
+  grep -vE '\[(Admin|Member)[^]]*\] ' || true
+}
+
 # Playwright exit code + log → passed | failed | did-not-run.
 #
 # The features project depends on org-setup + registration-member; when one
