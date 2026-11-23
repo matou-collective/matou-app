@@ -14,6 +14,7 @@
 
       <q-card-section>
         <p>{{ message }}</p>
+        <slot />
       </q-card-section>
 
       <div class="dialog-footer">
@@ -24,6 +25,7 @@
           :label="confirmLabel"
           class="dialog-footer-btn"
           :loading="loading"
+          :disable="confirmDisabled"
           @click="$emit('confirm')"
         />
         <q-btn
@@ -48,6 +50,7 @@ interface Props {
   icon?: string;
   iconColor?: string;
   loading?: boolean;
+  confirmDisabled?: boolean;
 }
 
 withDefaults(defineProps<Props>(), {
@@ -55,6 +58,7 @@ withDefaults(defineProps<Props>(), {
   icon: 'archive',
   iconColor: 'warning',
   loading: false,
+  confirmDisabled: false,
 });
 
 defineEmits<{

@@ -78,6 +78,15 @@ var contributionTransitions = map[ContributionStatus][]ContributionStatus{
 	ContribSignedOff: {ContribRewarded},
 	ContribRewarded:  {ContribArchived},
 	ContribDeclined:  {ContribArchived},
+	// archived → <previous status> is only reachable through
+	// Service.RestoreContribution, which restores the status recorded at
+	// archive time (TransitionContribution rejects archived sources so the
+	// generic POST /transition cannot bypass the cascade and re-sign rules).
+	ContribArchived: {
+		ContribCreated, ContribConfirmed, ContribShared, ContribOffered, ContribAssigned,
+		ContribChanged, ContribNeedsReview, ContribApproved, ContribIncomplete,
+		ContribDeclined, ContribSignedOff, ContribRewarded,
+	},
 }
 
 // ValidateContributionTransition reports an error if moving a contribution

@@ -355,6 +355,42 @@
               </button>
             </div>
           </div>
+
+          <!-- Archived contributions (#846): archiving can be undone by whoever
+               may archive. Restoring a parent also brings back the
+               sub-contributions archived with it. -->
+          <div
+            v-if="archivedContributions.length > 0 && perms.canArchiveContribution.value"
+            class="archived-section"
+            data-testid="archived-contributions"
+          >
+            <div class="unassigned-header">
+              <span class="unassigned-title">Archived contributions</span>
+              <span class="unassigned-count">{{ archivedContributions.length }}</span>
+            </div>
+            <ul class="archived-list">
+              <li
+                v-for="c in archivedContributions"
+                :key="c.id"
+                class="archived-row"
+                data-testid="archived-contribution-row"
+              >
+                <span class="archived-row-title">{{ c.title }}</span>
+                <q-btn
+                  flat
+                  no-caps
+                  dense
+                  color="primary"
+                  icon="restore"
+                  label="Restore"
+                  data-testid="restore-contribution"
+                  :loading="restoringContributionId === c.id"
+                  :disable="restoringContributionId !== null"
+                  @click="doRestoreContribution(c)"
+                />
+              </li>
+            </ul>
+          </div>
         </template>
       </div>
 
@@ -644,8 +680,20 @@
       title="Archive Contribution"
       :message="contribArchiveMessage"
       :loading="archivingContribLoading"
+      :confirm-disabled="archivingSubCount > 0 && !subContribChoice"
       @confirm="doArchiveContribution"
-    />
+    >
+      <q-option-group
+        v-if="archivingSubCount > 0"
+        v-model="subContribChoice"
+        data-testid="archive-sub-choice"
+        type="radio"
+        :options="[
+          { label: 'Archive all sub-contributions', value: 'archive' },
+          { label: 'Keep them and promote them to top-level contributions in the same milestone', value: 'promote' },
+        ]"
+      />
+    </ConfirmArchiveDialog>
 
     <!-- Sign-off plan confirm (only shown when unconfirmed contributions exist) -->
     <q-dialog v-model="showSignOffConfirm">
@@ -917,13 +965,26 @@ const showContribForm = ref(false);
 const showArchiveContrib = ref(false);
 const archivingContribution = ref<Contribution | null>(null);
 const archivingContribLoading = ref(false);
+// What to do with the archived contribution's sub-contributions; the archiver
+// must pick one when there are any (#845).
+const subContribChoice = ref<'archive' | 'promote' | null>(null);
+
+const archivingSubCount = computed(() => {
+  const c = archivingContribution.value;
+  if (!c) return 0;
+  return allProjectContributions.value.filter(
+    (x) => x.parent_contribution === c.id && x.status !== 'archived',
+  ).length;
+});
 
 const contribArchiveMessage = computed(() => {
   const c = archivingContribution.value;
   if (!c || !project.value) return '';
-  const subs = planContributions.value.filter(x => x.parent_contribution === c.id).length;
-  const subText = subs > 0 ? ` and its ${subs} sub-contribution${subs === 1 ? '' : 's'}` : '';
-  return `Archiving "${c.title}"${subText} cannot be undone from the UI.`;
+  const subs = archivingSubCount.value;
+  if (subs > 0) {
+    return `"${c.title}" has ${subs} sub-contribution${subs === 1 ? '' : 's'}. Choose what happens to ${subs === 1 ? 'it' : 'them'}. Rewarded sub-contributions are never archived.`;
+  }
+  return `Archiving "${c.title}" can be undone from the Archived contributions list.`;
 });
 
 function openEditContribution(c: Contribution) {
@@ -945,6 +1006,7 @@ function onArchiveContributionFromDialog(c: Contribution) {
 }
 
 function confirmArchiveContribution(c: Contribution) {
+  subContribChoice.value = null;
   archivingContribution.value = c;
   showArchiveContrib.value = true;
 }
@@ -953,6 +1015,7 @@ function confirmArchiveContribution(c: Contribution) {
 // Closes the edit dialog and opens the archive confirmation.
 function onDeleteContributionFromForm() {
   if (editingContribution.value) {
+    subContribChoice.value = null;
     archivingContribution.value = editingContribution.value as Contribution;
     showContribForm.value = false;
     editingContribution.value = null;
@@ -988,11 +1051,42 @@ function refreshViewingContribution() {
   if (fresh) viewingContribution.value = { ...fresh };
 }
 
+// Archived contributions that can be restored right now: a sub-contribution
+// whose parent is still archived is hidden, since the parent is restored first.
+const archivedContributions = computed(() => {
+  const all = allProjectContributions.value;
+  const archivedIds = new Set(all.filter((c) => c.status === 'archived').map((c) => c.id));
+  return all.filter(
+    (c) =>
+      c.status === 'archived' &&
+      !(c.parent_contribution && archivedIds.has(c.parent_contribution)),
+  );
+});
+
+const restoringContributionId = ref<string | null>(null);
+
+async function doRestoreContribution(c: Contribution) {
+  if (!project.value || restoringContributionId.value) return;
+  restoringContributionId.value = c.id;
+  try {
+    await contributionsStore.restore(c.id);
+    await refreshPlanAndContributions();
+    $q.notify({ type: 'positive', message: `"${c.title}" restored. The plan needs to be signed off again.` });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to restore contribution' });
+  } finally {
+    restoringContributionId.value = null;
+  }
+}
+
 async function doArchiveContribution() {
   if (!archivingContribution.value || !project.value) return;
   archivingContribLoading.value = true;
   try {
-    await contributionsStore.archive(archivingContribution.value.id);
+    await contributionsStore.archive(
+      archivingContribution.value.id,
+      archivingSubCount.value > 0 ? (subContribChoice.value ?? undefined) : undefined,
+    );
     // The dialog's allContributions prop reads from the flat project
     // contributions list; without refreshing it, archived subs stay visible in
     // the sub-list.
@@ -2194,6 +2288,31 @@ async function submitAssign() {
     border-color: var(--matou-primary);
     color: var(--matou-primary);
   }
+}
+
+.archived-section {
+  margin-top: 16px;
+}
+
+.archived-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.archived-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--matou-border);
+  border-radius: var(--matou-radius-sm);
+  font-size: 0.85rem;
+  color: var(--matou-muted-foreground);
 }
 
 .unassigned-section .add-icon {

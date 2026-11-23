@@ -59,6 +59,11 @@ func TestContributionTransition_Valid(t *testing.T) {
 		{ContribIncomplete, ContribAssigned},
 		{ContribApproved, ContribSignedOff},
 		{ContribDeclined, ContribArchived},
+		{ContribArchived, ContribCreated},
+		{ContribArchived, ContribConfirmed},
+		{ContribArchived, ContribAssigned},
+		{ContribArchived, ContribRewarded},
+		{ContribRewarded, ContribArchived},
 	}
 	for _, tt := range tests {
 		if err := ValidateContributionTransition(tt.from, tt.to); err != nil {
@@ -74,7 +79,7 @@ func TestContributionTransition_Invalid(t *testing.T) {
 	}{
 		{ContribCreated, ContribShared},
 		{ContribAssigned, ContribApproved},
-		{ContribArchived, ContribCreated},
+		{ContribArchived, ContribArchived},
 	}
 	for _, tt := range tests {
 		if err := ValidateContributionTransition(tt.from, tt.to); err == nil {

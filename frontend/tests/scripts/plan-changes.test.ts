@@ -250,3 +250,25 @@ describe('buildPlanChangeGroups — subcontribution nesting', () => {
     expect(fallback!.contributionChanges).toHaveLength(1);
   });
 });
+
+describe('buildPlanChangeGroups: contribution_restored (#846)', () => {
+  it('lists a restored contribution under its milestone', () => {
+    const groups = buildPlanChangeGroups(
+      [milestone()],
+      [
+        entry({
+          id: 'e9',
+          kind: 'contribution_restored',
+          milestone_id: 'm1',
+          milestone_title: 'Site Preparation',
+          contribution_id: 'c1',
+          contribution_title: 'Pour slab',
+        }),
+      ],
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.contributionChanges).toHaveLength(1);
+    expect(groups[0]!.contributionChanges[0]!.kind).toBe('contribution_restored');
+    expect(groups[0]!.contributionChanges[0]!.title).toBe('Pour slab');
+  });
+});
