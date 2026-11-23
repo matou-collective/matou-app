@@ -177,6 +177,24 @@ export function useContributionWorkflow() {
   }
 
   /**
+   * Lead (or admin) can close a parent at $0 once every sub-contribution is
+   * rewarded (#844). `children` are the parent's sub-contributions; archived
+   * ones are ignored, and at least one must be rewarded. Not offered on a
+   * parent that is already rewarded, archived or declined. The backend
+   * re-checks all of this.
+   */
+  function canCloseParent(
+    contribution: Contribution,
+    children: Pick<Contribution, 'status'>[],
+    role: ProjectRole | string,
+  ): boolean {
+    if (!_isRole(role, LEAD_ROLES)) return false;
+    if (['rewarded', 'archived', 'declined'].includes(contribution.status as string)) return false;
+    const live = children.filter((c) => c.status !== 'archived');
+    return live.length > 0 && live.every((c) => c.status === 'rewarded');
+  }
+
+  /**
    * Project lead, steward, admin, or assigned member can add sub-contributions
    * at any stage except completed (signed_off, rewarded, archived).
    * No nested subs (flat hierarchy only).
@@ -249,6 +267,7 @@ export function useContributionWorkflow() {
     canEditEvidence,
     canReview,
     canSignOff,
+    canCloseParent,
     canChange,
     canAddSubContribution,
     canApproveSub,

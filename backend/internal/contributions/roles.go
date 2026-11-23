@@ -143,6 +143,11 @@ const (
 	// structural plan mutations it is lead/steward-scoped and project-scoped.
 	ActionPromoteSubContribution Action = "promote_sub_contribution"
 
+	// ActionCloseParentContribution gates a project lead closing a parent
+	// contribution at $0 once every sub-contribution is rewarded (#844). It is
+	// project-scoped and, like submit_project_completion, lead + admin tier.
+	ActionCloseParentContribution Action = "close_parent_contribution"
+
 	// ActionSubmitProjectCompletion and the following are project completion
 	// workflow actions.
 	ActionSubmitProjectCompletion  Action = "submit_project_completion"
@@ -276,6 +281,7 @@ var actionPermissions = map[Action][]Role{
 	ActionReorderContribution:      leadStewardScope,
 	ActionPromoteSubContribution:   leadStewardScope,
 	ActionSubmitProjectCompletion:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
+	ActionCloseParentContribution:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
 	ActionApproveProjectCompletion: stewardScope,
 	ActionRejectProjectCompletion:  stewardScope,
 

@@ -60,7 +60,9 @@ matou-proof/v1
 - The version tag is **inside the signed bytes**, so a future v2 proof can
   never be cross-replayed as v1.
 - `action` — one of the wire-stable literals `contribution_signoff`,
-  `contribution_reward`, `plan_signoff`, `project_completion`.
+  `contribution_reward`, `contribution_close` (a project lead closing a parent
+  at $0; carried in `close_proof`, value `rewarded`), `plan_signoff`,
+  `project_completion`.
 - `subject` — the id of the object the action targets.
 - `space` — the any-sync space id the object lives in. Binding it prevents
   cross-space replay: a proof for `ctr_x` in the community space can never

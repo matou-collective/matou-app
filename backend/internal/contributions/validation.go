@@ -22,6 +22,16 @@ func (e *BlockingChildrenError) Error() string {
 	return fmt.Sprintf("child contributions not signed off: %v", e.IDs)
 }
 
+// OpenChildrenError is returned when a parent cannot be closed because some of
+// its sub-contributions are not rewarded.
+type OpenChildrenError struct {
+	IDs []string
+}
+
+func (e *OpenChildrenError) Error() string {
+	return fmt.Sprintf("cannot close: sub-contributions not rewarded: %v", e.IDs)
+}
+
 // --- Proposal transitions ---
 
 var proposalTransitions = map[ProposalStatus][]ProposalStatus{

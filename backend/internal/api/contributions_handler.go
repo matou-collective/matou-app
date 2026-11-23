@@ -186,6 +186,13 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "close":
+				if r.Method == http.MethodPost {
+					h.withProjectRBAC(contributions.ActionCloseParentContribution, id, h.HandleClose)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			case "approve-sub":
 				if r.Method == http.MethodPost {
 					h.withRBAC(contributions.ActionApproveSubContrib, h.HandleApproveSub)(w, r)
@@ -1157,6 +1164,49 @@ func (h *ContributionsHandler) HandleReward(w http.ResponseWriter, r *http.Reque
 			Data: map[string]string{
 				"contribution_id": id,
 				"rewarded_by":     userID,
+			},
+		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleClose handles POST /api/v1/contributions/{id}/close
+// RBAC: ActionCloseParentContribution (project lead, project-scoped).
+func (h *ContributionsHandler) HandleClose(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/close")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	userID := GetUserAID(r)
+	if userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+		return
+	}
+	var body struct {
+		Reason string               `json:"reason"`
+		Proof  *contributions.Proof `json:"proof"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.CloseParentContribution(r.Context(), spaceID, id, userID, body.Reason, body.Proof)
+	if err != nil {
+		log.Printf("[Contributions] CloseParentContribution failed for %s: %v", id, err)
+		status := http.StatusBadRequest
+		var open *contributions.OpenChildrenError
+		if errors.As(err, &open) {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] contribution %s closed at $0 by %s", id, userID)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:closed",
+			Data: map[string]string{
+				"contribution_id": id,
+				"closed_by":       userID,
 			},
 		})
 	}

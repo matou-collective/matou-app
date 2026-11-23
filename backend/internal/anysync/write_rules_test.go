@@ -931,3 +931,30 @@ func TestCommunityProfileRuleNeverReadsPolicyProvider(t *testing.T) {
 		t.Fatalf("CommunityProfile write rules must not consult the policy provider (deadlocks under the tree lock), got %d call(s)", counter.calls)
 	}
 }
+
+// A project lead may close a PARENT contribution (close_proof set, children
+// listed) but still may not reward a leaf contribution (#844).
+func TestValidateChange_LeadCloseParentOnly(t *testing.T) {
+	resolver := fakeResolver{"acct-lead": {contributions.RoleProjectLead}}
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
+	closeOps := []ChangeOp{
+		setOp("status", string(contributions.ContribRewarded)),
+		setOp("close_proof", "x"),
+	}
+	parent := map[string]json.RawMessage{"child_contributions": json.RawMessage(`["c1"]`)}
+
+	if !v.ValidateChange("", TypeContribution, "p", "chg", "acct-lead", 0, closeOps, parent, false) {
+		t.Error("project lead must be able to close a parent")
+	}
+	if v.ValidateChange("", TypeContribution, "leaf", "chg", "acct-lead", 0, closeOps, map[string]json.RawMessage{}, false) {
+		t.Error("project lead must not reward a contribution without children")
+	}
+	if v.ValidateChange("", TypeContribution, "p", "chg", "acct-lead", 0,
+		[]ChangeOp{setOp("status", string(contributions.ContribRewarded))}, parent, false) {
+		t.Error("project lead must not reward without the close path")
+	}
+	member := NewWriteRuleValidator(fakeResolver{"acct-m": {contributions.RoleMember}}, nil, &recordingRecorder{}, false)
+	if member.ValidateChange("", TypeContribution, "p", "chg", "acct-m", 0, closeOps, parent, false) {
+		t.Error("member must not close a parent")
+	}
+}

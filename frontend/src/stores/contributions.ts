@@ -17,6 +17,7 @@ import {
   submitReview as apiSubmitReview,
   signOffContribution as apiSignOff,
   rewardContribution as apiReward,
+  closeParentContribution as apiCloseParent,
   createChildContribution as apiCreateChild,
   approveSub as apiApproveSub,
   promoteSubContribution as apiPromoteSub,
@@ -292,6 +293,19 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  async function closeParent(id: string, reason: string) {
+    error.value = null;
+    try {
+      const proof = await signActionProof({ action: 'contribution_close', subject: id, value: 'rewarded' });
+      const updated = await apiCloseParent(id, reason, proof ?? undefined);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Close failed';
+      throw e;
+    }
+  }
+
   async function createChild(parentId: string, req: CreateContributionRequest) {
     error.value = null;
     try {
@@ -487,6 +501,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     review,
     signOff,
     reward,
+    closeParent,
     createChild,
     approveSub,
     promoteSub,

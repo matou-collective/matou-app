@@ -30,6 +30,7 @@ export const PROOF_VERSION = 'matou-proof/v1';
 export type ProofAction =
   | 'contribution_signoff'
   | 'contribution_reward'
+  | 'contribution_close'
   | 'plan_signoff'
   | 'project_completion';
 

@@ -188,7 +188,7 @@ var capabilityActions = map[Capability][]Action{
 	CapReviewWork:           {ActionReviewContribution, ActionApproveSubContrib},
 	CapSignOff:              {ActionSignOffContribution, ActionSignOffPlan},
 	CapReward:               {ActionRewardContribution},
-	CapSubmitCompletion:     {ActionSubmitProjectCompletion},
+	CapSubmitCompletion:     {ActionSubmitProjectCompletion, ActionCloseParentContribution},
 	CapApproveCompletion:    {ActionApproveProjectCompletion, ActionRejectProjectCompletion},
 	// leadStewardScope: plan lifecycle (archive, unassign, milestone edits,
 	// linking a proposal to a project).
