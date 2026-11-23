@@ -1732,6 +1732,9 @@ func (s *Service) TransitionContribution(ctx context.Context, spaceID, contribID
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, err
 	}
+	if newStatus == ContribSignedOff || newStatus == ContribRewarded {
+		s.autoSubmitParentIfComplete(ctx, spaceID, c)
+	}
 	return c, nil
 }
 
@@ -2343,6 +2346,7 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
+	s.autoSubmitParentIfComplete(ctx, spaceID, c)
 	return c, nil
 }
 
@@ -2374,7 +2378,98 @@ func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionI
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
+	s.autoSubmitParentIfComplete(ctx, spaceID, c)
 	return c, nil
+}
+
+// autoSubmitParentSystemNote is the completion note written on a parent that
+// moved to needs_review on its own (issue #843).
+const autoSubmitParentSystemNote = "All sub-contributions signed off"
+
+// autoSubmitParentIfComplete moves child's parent from assigned to
+// needs_review when every non-archived sub-contribution of that parent is
+// signed_off or rewarded (issue #843). It is called after a child reaches one
+// of those states and is best-effort: a failure is logged and never fails the
+// child's own transition.
+//
+// The parent is untouched unless it is `assigned` and has at least one
+// non-archived child; archived children neither block nor trigger. No
+// evidence is invented: only a system completion note is set, and the parent's
+// actual cost is the sum of the children's actuals (left as-is when that sum
+// is zero, e.g. children rewarded separately). The transition is recorded on
+// the plan change log as contribution_auto_submitted without unsigning the
+// plan, since it is a status change and not a structural edit.
+func (s *Service) autoSubmitParentIfComplete(ctx context.Context, spaceID string, child *Contribution) {
+	if child == nil || child.ParentContributionID == "" {
+		return
+	}
+	parent, err := s.GetContribution(ctx, spaceID, child.ParentContributionID)
+	if err != nil || parent.Status != ContribAssigned {
+		return
+	}
+	var live int
+	var total float64
+	for _, id := range parent.ChildContributionIDs {
+		ch, err := s.GetContribution(ctx, spaceID, id)
+		if err != nil {
+			log.Printf("[Contributions] auto-submit parent %s: load child %s: %v", parent.ID, id, err)
+			return
+		}
+		if ch.Status == ContribArchived {
+			continue
+		}
+		if ch.Status != ContribSignedOff && ch.Status != ContribRewarded {
+			return
+		}
+		live++
+		total += ch.ActualCost
+	}
+	if live == 0 {
+		return
+	}
+	if err := ValidateContributionTransition(parent.Status, ContribNeedsReview); err != nil {
+		return
+	}
+	if parent.CompletionNotes == "" {
+		parent.CompletionNotes = autoSubmitParentSystemNote
+	}
+	if total > 0 {
+		parent.ActualCost = total
+	}
+	parent.Status = ContribNeedsReview
+	parent.EvidenceDraftSavedAt = nil
+	parent.UpdatedAt = time.Now()
+	if err := s.store.Save(spaceID, parent.ID, "contribution", parent); err != nil {
+		log.Printf("[Contributions] auto-submit parent %s: save: %v", parent.ID, err)
+		return
+	}
+	if parent.MilestoneID != "" {
+		if err := s.recomputeMilestoneActualCost(ctx, spaceID, parent.MilestoneID); err != nil {
+			log.Printf("[Contributions] recomputeMilestoneActualCost %s: %v", parent.MilestoneID, err)
+		}
+	}
+	msID, msTitle, parentID, parentTitle := s.ResolvePlanChangeRefs(ctx, spaceID, parent)
+	if msID == "" {
+		return
+	}
+	plan, _, perr := s.findMilestone(ctx, spaceID, msID)
+	if perr != nil {
+		return
+	}
+	appendPlanChange(plan, PlanChangeEntry{
+		Kind:                    "contribution_auto_submitted",
+		MilestoneID:             msID,
+		MilestoneTitle:          msTitle,
+		ContributionID:          parent.ID,
+		ContributionTitle:       parent.Title,
+		ParentContributionID:    parentID,
+		ParentContributionTitle: parentTitle,
+		ChangedBy:               "system",
+	})
+	plan.UpdatedAt = time.Now()
+	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
+		log.Printf("[Contributions] auto-submit parent %s: change log: %v", parent.ID, err)
+	}
 }
 
 // ApproveSubContribution transitions a sub-contribution from created/changed to
