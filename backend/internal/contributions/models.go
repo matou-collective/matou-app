@@ -443,7 +443,7 @@ type ImplementationPlan struct {
 // (or one of its milestones/contributions) since the plan was last signed off.
 type PlanChangeEntry struct {
 	ID                string `json:"id"`
-	Kind              string `json:"kind"` // milestone_edited|milestone_added|milestone_archived|contribution_added|contribution_edited|contribution_removed|contribution_moved
+	Kind              string `json:"kind"` // milestone_edited|milestone_added|milestone_archived|contribution_added|contribution_edited|contribution_removed|contribution_moved|contribution_auto_submitted
 	MilestoneID       string `json:"milestone_id,omitempty"`
 	MilestoneTitle    string `json:"milestone_title,omitempty"`
 	ContributionID    string `json:"contribution_id,omitempty"`
