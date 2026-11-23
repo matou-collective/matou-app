@@ -171,6 +171,10 @@ export interface Contribution {
   // Rewarded
   rewarded_by?: string;
   rewarded_at?: string;
+  // Lead close-out of a parent without a budget (#844)
+  closed_by?: string;
+  closed_at?: string;
+  close_reason?: string;
   // Comments
   comment_count?: number;
 }

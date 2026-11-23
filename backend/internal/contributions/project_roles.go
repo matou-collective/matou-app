@@ -28,6 +28,7 @@ var projectScopedActions = map[Action]bool{
 	ActionSignOffContribution:      true,
 	ActionSignOffPlan:              true,
 	ActionSubmitProjectCompletion:  true,
+	ActionCloseParentContribution:  true,
 	ActionApproveProjectCompletion: true,
 	ActionRejectProjectCompletion:  true,
 	ActionArchiveProject:           true,

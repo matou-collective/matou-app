@@ -2382,6 +2382,75 @@ func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionI
 	return c, nil
 }
 
+// CloseParentContribution lets a project lead close a parent contribution once
+// every (non-archived) sub-contribution is rewarded (#844). The parent goes
+// straight to rewarded at $0 actual cost: nothing is paid on the parent itself,
+// and the children's rewards are not touched. A reason is required and the
+// signed close proof is persisted alongside it. The role check (project lead)
+// happens at the HTTP layer via ActionCloseParentContribution; the peer write
+// rules (anysync) apply the same action to the status change.
+func (s *Service) CloseParentContribution(ctx context.Context, spaceID, contributionID, userID, reason string, proof *Proof) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil, fmt.Errorf("a reason is required to close a contribution")
+	}
+	if len(c.ChildContributionIDs) == 0 {
+		return nil, fmt.Errorf("contribution has no sub-contributions to close out")
+	}
+	switch c.Status {
+	case ContribRewarded, ContribArchived, ContribDeclined:
+		return nil, fmt.Errorf("contribution is already %s", c.Status)
+	}
+	var open []string
+	rewarded := 0
+	for _, childID := range c.ChildContributionIDs {
+		child, err := s.GetContribution(ctx, spaceID, childID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load child contribution %s: %w", childID, err)
+		}
+		switch child.Status {
+		case ContribArchived:
+			// archived children are ignored
+		case ContribRewarded:
+			rewarded++
+		default:
+			open = append(open, childID)
+		}
+	}
+	if len(open) > 0 {
+		return nil, &OpenChildrenError{IDs: open}
+	}
+	if rewarded == 0 {
+		return nil, fmt.Errorf("cannot close: no rewarded sub-contributions")
+	}
+	if err := proof.ValidateConsistency("contribution_close", contributionID, spaceID, "rewarded", userID); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	c.Status = ContribRewarded
+	c.ActualCost = 0
+	c.ClosedBy = userID
+	c.ClosedAt = &now
+	c.CloseReason = reason
+	c.UpdatedAt = now
+	if proof != nil {
+		c.CloseProof = proof
+	}
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	if c.MilestoneID != "" {
+		if err := s.recomputeMilestoneActualCost(ctx, spaceID, c.MilestoneID); err != nil {
+			log.Printf("[Contributions] recomputeMilestoneActualCost %s: %v", c.MilestoneID, err)
+		}
+	}
+	return c, nil
+}
+
 // autoSubmitParentSystemNote is the completion note written on a parent that
 // moved to needs_review on its own (issue #843).
 const autoSubmitParentSystemNote = "All sub-contributions signed off"

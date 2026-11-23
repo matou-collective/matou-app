@@ -350,6 +350,35 @@ type guardedValue struct {
 	// rejected. Community-scope grants (Operations Steward / Founding Member)
 	// pass on every project either way.
 	projectScoped bool
+
+	// closeAlt, when set, replaces this transition's authorisation for a
+	// lead's close-out of a PARENT contribution (#844): the change also sets
+	// `close_proof` and the object already lists child contributions. The
+	// backend verifies the children are rewarded before saving; peers can only
+	// check the shape, so the alternative applies to parents alone and demands
+	// its own signed proof from a holder of close_parent_contribution.
+	closeAlt *guardedValue
+}
+
+// isParentCloseChange reports whether ops describe a lead closing a parent
+// contribution: close_proof is set in the same change and the object in
+// `current` has a non-empty child_contributions list.
+func isParentCloseChange(ops []ChangeOp, current map[string]json.RawMessage) bool {
+	set := false
+	for _, op := range ops {
+		if op.Op == "set" && op.Field == "close_proof" {
+			set = true
+			break
+		}
+	}
+	if !set {
+		return false
+	}
+	var kids []string
+	if raw, ok := current["child_contributions"]; ok {
+		_ = json.Unmarshal(raw, &kids)
+	}
+	return len(kids) > 0
 }
 
 // objectRule declares the guarded field of one object type and which values of
@@ -424,6 +453,14 @@ var communityWriteRules = map[string]objectRule{
 				proofAction: "contribution_reward",
 				proofField:  "reward_proof",
 				proofValue:  string(contributions.ContribRewarded),
+				closeAlt: &guardedValue{
+					permit:        allowAction(contributions.ActionCloseParentContribution),
+					action:        contributions.ActionCloseParentContribution,
+					projectScoped: true,
+					proofAction:   "contribution_close",
+					proofField:    "close_proof",
+					proofValue:    string(contributions.ContribRewarded),
+				},
 			},
 		},
 	},
@@ -592,6 +629,9 @@ func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, chang
 		gv, highStakes := rule.permitFor(value, current)
 		if !highStakes {
 			continue
+		}
+		if gv.closeAlt != nil && isParentCloseChange(ops, current) {
+			gv = *gv.closeAlt
 		}
 		// Only a genuine transition to the high-stakes value is gated. A change
 		// (typically a snapshot) that re-asserts the value already in state is

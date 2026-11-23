@@ -3158,3 +3158,128 @@ func TestRewardContribution_KeepsSignOffProof(t *testing.T) {
 		t.Errorf("reward proof missing: %+v", got.RewardProof)
 	}
 }
+
+func TestActionCloseParentContribution_LeadAndAdminOnly(t *testing.T) {
+	cases := []struct {
+		role    Role
+		allowed bool
+	}{
+		{RoleProjectLead, true},
+		{RoleFoundingMember, true},
+		{RoleOperationsSteward, true},
+		{RoleProjectSteward, false},
+		{RoleMember, false},
+		{RoleContributor, false},
+	}
+	for _, c := range cases {
+		if got := CanPerformAction([]Role{c.role}, ActionCloseParentContribution); got != c.allowed {
+			t.Errorf("close_parent_contribution for %s: got %v, want %v", c.role, got, c.allowed)
+		}
+	}
+	// project-scoped: a credential-derived lead does not count on every project.
+	if CanPerformProjectAction([]Role{RoleProjectLead}, nil, ActionCloseParentContribution) {
+		t.Error("credential-derived project_lead must not close on a project it does not lead")
+	}
+	if !CanPerformProjectAction([]Role{RoleMember}, []Role{RoleProjectLead}, ActionCloseParentContribution) {
+		t.Error("assigned project lead must be able to close")
+	}
+}
+
+// closeFixture builds a parent with two children and returns them.
+func closeFixture(t *testing.T) (*Service, context.Context, *Contribution, []*Contribution) {
+	t.Helper()
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	mk := func(parent string) *Contribution {
+		c, err := svc.CreateContribution(ctx, "s", &CreateContributionRequest{
+			ProjectID: "p", Title: "T", Description: "d", ContributionType: ProposalTypeTechnical,
+			Priority: PriorityLow, CreatedBy: "lead", Objectives: []string{"o"},
+			Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"}, ParentContributionID: parent,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		return c
+	}
+	parent := mk("")
+	kids := []*Contribution{mk(parent.ID), mk(parent.ID)}
+	parent, _ = svc.GetContribution(ctx, "s", parent.ID)
+	return svc, ctx, parent, kids
+}
+
+func setCloseTestStatus(t *testing.T, svc *Service, ctx context.Context, c *Contribution, st ContributionStatus) {
+	t.Helper()
+	c.Status = st
+	if err := svc.SaveContribution(ctx, "s", c); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func closeProof(id string) *Proof {
+	return &Proof{V: "matou-proof/v1", Action: "contribution_close", Subject: id, Space: "s", Value: "rewarded", Dt: "2026-11-23T00:00:00Z", AID: "lead", Sig: "0Bsig"}
+}
+
+func TestCloseParentContribution_AllChildrenRewarded(t *testing.T) {
+	svc, ctx, parent, kids := closeFixture(t)
+	setCloseTestStatus(t, svc, ctx, kids[0], ContribRewarded)
+	setCloseTestStatus(t, svc, ctx, kids[1], ContribArchived) // archived children are ignored
+	parent.ActualCost = 50
+	parent.Status = ContribAssigned
+	_ = svc.SaveContribution(ctx, "s", parent)
+
+	got, err := svc.CloseParentContribution(ctx, "s", parent.ID, "lead", "  paid via sub-contributions ", closeProof(parent.ID))
+	if err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if got.Status != ContribRewarded || got.ActualCost != 0 {
+		t.Errorf("status=%s cost=%v, want rewarded at $0", got.Status, got.ActualCost)
+	}
+	if got.CloseReason != "paid via sub-contributions" || got.ClosedBy != "lead" || got.ClosedAt == nil {
+		t.Errorf("close record missing: %+v", got)
+	}
+	if got.CloseProof == nil || got.RewardedBy != "" {
+		t.Errorf("close proof must be stored and no reward recorded on the parent: %+v", got)
+	}
+	k, _ := svc.GetContribution(ctx, "s", kids[0].ID)
+	if k.Status != ContribRewarded {
+		t.Errorf("child reward touched: %s", k.Status)
+	}
+}
+
+func TestCloseParentContribution_OpenChildRefused(t *testing.T) {
+	svc, ctx, parent, kids := closeFixture(t)
+	setCloseTestStatus(t, svc, ctx, kids[0], ContribRewarded)
+	setCloseTestStatus(t, svc, ctx, kids[1], ContribSignedOff) // signed off but not yet rewarded
+	_, err := svc.CloseParentContribution(ctx, "s", parent.ID, "lead", "done", closeProof(parent.ID))
+	var open *OpenChildrenError
+	if !errors.As(err, &open) || len(open.IDs) != 1 || open.IDs[0] != kids[1].ID {
+		t.Fatalf("want OpenChildrenError for %s, got %v", kids[1].ID, err)
+	}
+	got, _ := svc.GetContribution(ctx, "s", parent.ID)
+	if got.Status == ContribRewarded {
+		t.Error("parent must not change when refused")
+	}
+}
+
+func TestCloseParentContribution_ReasonAndShape(t *testing.T) {
+	svc, ctx, parent, kids := closeFixture(t)
+	setCloseTestStatus(t, svc, ctx, kids[0], ContribRewarded)
+	setCloseTestStatus(t, svc, ctx, kids[1], ContribRewarded)
+	if _, err := svc.CloseParentContribution(ctx, "s", parent.ID, "lead", " ", closeProof(parent.ID)); err == nil {
+		t.Error("blank reason must be refused")
+	}
+	if _, err := svc.CloseParentContribution(ctx, "s", kids[0].ID, "lead", "x", closeProof(kids[0].ID)); err == nil {
+		t.Error("a contribution without children must be refused")
+	}
+	bad := closeProof(parent.ID)
+	bad.Action = "contribution_reward"
+	if _, err := svc.CloseParentContribution(ctx, "s", parent.ID, "lead", "x", bad); err == nil {
+		t.Error("mismatched proof action must be refused")
+	}
+	if _, err := svc.CloseParentContribution(ctx, "s", parent.ID, "lead", "x", closeProof(parent.ID)); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := svc.CloseParentContribution(ctx, "s", parent.ID, "lead", "x", closeProof(parent.ID)); err == nil {
+		t.Error("closing twice must be refused")
+	}
+}

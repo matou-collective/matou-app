@@ -70,6 +70,9 @@ export interface Contribution {
   signed_off_at?: string;
   rewarded_by?: string;
   rewarded_at?: string;
+  closed_by?: string;
+  closed_at?: string;
+  close_reason?: string;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -322,6 +325,24 @@ export async function rewardContribution(id: string, proof?: ActionProof): Promi
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(err.error || 'Failed to mark contribution as rewarded');
+  }
+  return response.json();
+}
+
+export async function closeParentContribution(
+  id: string,
+  reason: string,
+  proof?: ActionProof,
+): Promise<Contribution> {
+  log.info('Closing parent contribution %s at $0', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/close`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(proof ? { reason, proof } : { reason }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to close contribution');
   }
   return response.json();
 }

@@ -741,3 +741,50 @@ func TestContributionsHandler_Move(t *testing.T) {
 		t.Errorf("expected 400 for missing milestone_id, got %d", w.Code)
 	}
 }
+
+// HandleClose (#844): 409 while a sub-contribution is not rewarded, 200 and a
+// $0 rewarded parent once every sub-contribution is rewarded.
+func TestContributionsHandler_Close_ParentAtZero(t *testing.T) {
+	handler := setupTestContributionsHandler()
+	ctx := context.Background()
+	spaceID := "community"
+	mk := func(parent string) *contributions.Contribution {
+		c, err := handler.service.CreateContribution(ctx, spaceID, &contributions.CreateContributionRequest{
+			ProjectID: "p", Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+			Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+			ParentContributionID: parent,
+		})
+		if err != nil {
+			t.Fatalf("CreateContribution: %v", err)
+		}
+		return c
+	}
+	parent := mk("")
+	child := mk(parent.ID)
+
+	post := func() *httptest.ResponseRecorder {
+		proof := &contributions.Proof{V: "matou-proof/v1", Action: "contribution_close", Subject: parent.ID,
+			Space: spaceID, Value: "rewarded", Dt: time.Now().Format(time.RFC3339), AID: "lead-1", Sig: "0Bsig"}
+		body, _ := json.Marshal(map[string]interface{}{"reason": "all sub-contributions paid", "proof": proof})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+parent.ID+"/close", bytes.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), ctxUserAID, "lead-1"))
+		w := httptest.NewRecorder()
+		handler.HandleClose(w, req)
+		return w
+	}
+
+	if w := post(); w.Code != http.StatusConflict {
+		t.Fatalf("open child: want 409, got %d: %s", w.Code, w.Body.String())
+	}
+	child.Status = contributions.ContribRewarded
+	if err := handler.service.SaveContribution(ctx, spaceID, child); err != nil {
+		t.Fatal(err)
+	}
+	if w := post(); w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	got, _ := handler.service.GetContribution(ctx, spaceID, parent.ID)
+	if got.Status != contributions.ContribRewarded || got.ActualCost != 0 || got.CloseReason == "" {
+		t.Errorf("parent not closed without a budget: %+v", got)
+	}
+}

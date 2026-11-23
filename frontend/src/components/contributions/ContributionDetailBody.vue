@@ -758,6 +758,24 @@
           />
         </div>
 
+        <!-- Close parent without a budget (lead, all sub-contributions rewarded) #844 -->
+        <div v-if="canCloseParentNow" class="content-section sign-off-panel close-parent-panel">
+          <CheckCircle class="sign-off-icon" />
+          <div>
+            <div class="sign-off-title">All sub-contributions rewarded</div>
+            <div class="sign-off-sub">Close this contribution without a budget. Its cost is automatically $0.</div>
+          </div>
+          <q-btn
+            no-caps
+            color="primary"
+            label="Close without budget"
+            class="q-ml-auto"
+            data-testid="close-parent-btn"
+            :loading="actionLoading === 'close-parent'"
+            @click="handleCloseParent"
+          />
+        </div>
+
         <!-- Signed-off confirmation -->
         <div v-if="contribution.status === 'signed_off'" class="content-section signed-off-panel">
           <Award class="sign-off-icon" />
@@ -788,6 +806,9 @@
             <div v-if="contribution.rewarded_by" class="sign-off-sub">
               by {{ profilesStore.profilesByAid[contribution.rewarded_by]?.displayName ?? contribution.rewarded_by?.slice(0, 12) + '...' }}
               <span v-if="contribution.rewarded_at">on {{ formatDate(contribution.rewarded_at) }}</span>
+            </div>
+            <div v-if="contribution.close_reason" class="sign-off-sub">
+              Closed without a budget by a project lead: {{ contribution.close_reason }}
             </div>
           </div>
         </div>
@@ -1433,6 +1454,9 @@ const canEditEvidenceNow = computed(() =>
 );
 const canReviewNow = computed(() => workflow.canReview(props.contribution, role.value));
 const canSignOffNow = computed(() => workflow.canSignOff(props.contribution, role.value));
+const canCloseParentNow = computed(() =>
+  workflow.canCloseParent(props.contribution, childContributions.value, role.value),
+);
 // Reward = community-admin only, on a signed-off contribution.
 const canRewardNow = computed(
   () => props.contribution.status === 'signed_off' && role.value === 'community_admin',
@@ -1843,6 +1867,32 @@ async function handleSignOff() {
     emit('update', updated as unknown as Contribution);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Sign off failed' });
+  } finally {
+    actionLoading.value = null;
+  }
+}
+
+function handleCloseParent() {
+  $q.dialog({
+    title: 'Close without a budget',
+    message: 'You are about to submit this parent without a budget. Its cost will be $0 and its sub-contributions keep their own rewards. Continue? Give a reason below.',
+    prompt: { model: '', type: 'text', isValid: (v: string) => v.trim().length > 0 },
+    cancel: true,
+    persistent: true,
+    ok: { label: 'Continue', color: 'primary', noCaps: true },
+  }).onOk((reason: string) => {
+    void doCloseParent(reason);
+  });
+}
+
+async function doCloseParent(reason: string) {
+  actionLoading.value = 'close-parent';
+  try {
+    const updated = await store.closeParent(props.contribution.id, reason.trim());
+    $q.notify({ type: 'positive', message: 'Contribution closed without a budget (cost $0).' });
+    emit('update', updated as unknown as Contribution);
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to close contribution' });
   } finally {
     actionLoading.value = null;
   }

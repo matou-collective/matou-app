@@ -600,6 +600,14 @@ type Contribution struct {
 	SignOffProof *Proof `json:"sign_off_proof,omitempty"`
 	RewardProof  *Proof `json:"reward_proof,omitempty"`
 
+	// Lead close-out of a parent without a budget (cost $0) (#844). Set only by
+	// CloseParentContribution; the parent's status becomes rewarded without a
+	// separate reward, so CloseReason and CloseProof record why and who.
+	ClosedBy    string     `json:"closed_by,omitempty"`
+	ClosedAt    *time.Time `json:"closed_at,omitempty"`
+	CloseReason string     `json:"close_reason,omitempty"`
+	CloseProof  *Proof     `json:"close_proof,omitempty"`
+
 	// Sharing & offering
 	IsShared        bool       `json:"is_shared,omitempty"`
 	SharedWithRoles []string   `json:"shared_with_roles,omitempty"`
