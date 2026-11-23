@@ -136,12 +136,13 @@ function changedByLabel(aid: string): string {
 function contributionTagLabel(kind: ContributionChangeItem['kind']): string {
   if (kind === 'contribution_added') return 'Added';
   if (kind === 'contribution_removed') return 'Removed';
+  if (kind === 'contribution_restored') return 'Restored';
   if (kind === 'contribution_moved') return 'Moved';
   return 'Edited';
 }
 
 function contributionTagClass(kind: ContributionChangeItem['kind']): string {
-  if (kind === 'contribution_added') return 'tag-added';
+  if (kind === 'contribution_added' || kind === 'contribution_restored') return 'tag-added';
   if (kind === 'contribution_removed') return 'tag-removed';
   return 'tag-edited';
 }

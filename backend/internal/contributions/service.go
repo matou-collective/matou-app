@@ -1705,6 +1705,9 @@ func (s *Service) TransitionContribution(ctx context.Context, spaceID, contribID
 	if err != nil {
 		return nil, err
 	}
+	if c.Status == ContribArchived {
+		return nil, fmt.Errorf("contribution is archived: use restore")
+	}
 	if err := ValidateContributionTransition(c.Status, newStatus); err != nil {
 		return nil, err
 	}
@@ -3097,9 +3100,17 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, a
 			capture(err)
 			return
 		}
-		c.Status = ContribArchived
-		if err := s.SaveContribution(ctx, spaceID, c); err != nil {
-			capture(err)
+		// Leave already-archived items untouched so an independently archived
+		// child keeps its own archived_from and is not tagged with this cascade.
+		if c.Status != ContribArchived {
+			c.ArchivedFrom = c.Status
+			if id != contribID {
+				c.ArchivedVia = contribID
+			}
+			c.Status = ContribArchived
+			if err := s.SaveContribution(ctx, spaceID, c); err != nil {
+				capture(err)
+			}
 		}
 		for _, child := range byParent[id] {
 			archive(child.ID)
@@ -3123,6 +3134,99 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, a
 		capture(fmt.Errorf("unsign plan: %w", err))
 	}
 
+	return firstErr
+}
+
+// restoreStatus returns the status an archived contribution goes back to: the
+// one recorded at archive time, or, for records archived before archived_from
+// existed, assigned when it has an assignee and confirmed otherwise.
+func restoreStatus(c *Contribution) ContributionStatus {
+	if c.ArchivedFrom != "" && c.ArchivedFrom != ContribArchived {
+		return c.ArchivedFrom
+	}
+	if c.AssignedContributorID != "" {
+		return ContribAssigned
+	}
+	return ContribConfirmed
+}
+
+// RestoreContribution undoes ArchiveContribution. The contribution returns to
+// the status it had before it was archived (see restoreStatus for records that
+// predate archived_from) and so do the descendants that were archived by the
+// same cascade (tagged archived_via = contribID); children archived on their
+// own stay archived. Like archive, it invalidates the plan sign-off and writes
+// a contribution_restored change-log entry. actorID may be empty.
+func (s *Service) RestoreContribution(ctx context.Context, spaceID, contribID, actorID string) error {
+	contrib, err := s.GetContribution(ctx, spaceID, contribID)
+	if err != nil {
+		return err
+	}
+	if contrib.Status != ContribArchived {
+		return fmt.Errorf("contribution is not archived")
+	}
+	if contrib.ParentContributionID != "" {
+		parent, err := s.GetContribution(ctx, spaceID, contrib.ParentContributionID)
+		if err == nil && parent.Status == ContribArchived {
+			return fmt.Errorf("parent contribution is archived: restore it first")
+		}
+	}
+	if contrib.MilestoneID != "" {
+		if ms, err := s.GetMilestone(ctx, spaceID, contrib.MilestoneID); err == nil && ms.Status == MilestoneArchived {
+			return fmt.Errorf("milestone is archived: cannot restore a contribution into it")
+		}
+	}
+	if proj, err := s.GetProject(ctx, spaceID, contrib.ProjectID); err == nil && proj.Status == ProjectArchived {
+		return fmt.Errorf("project is archived: cannot restore a contribution into it")
+	}
+
+	to := restoreStatus(contrib)
+	if err := ValidateContributionTransition(ContribArchived, to); err != nil {
+		return err
+	}
+
+	all, err := s.ListContributionsByProject(ctx, spaceID, contrib.ProjectID)
+	if err != nil {
+		return err
+	}
+
+	var firstErr error
+	capture := func(e error) {
+		if firstErr == nil && e != nil {
+			firstErr = e
+		}
+	}
+	restore := func(c *Contribution) {
+		next := restoreStatus(c)
+		if ValidateContributionTransition(ContribArchived, next) != nil {
+			next = ContribConfirmed
+		}
+		c.Status = next
+		c.ArchivedFrom = ""
+		c.ArchivedVia = ""
+		capture(s.SaveContribution(ctx, spaceID, c))
+	}
+	for _, c := range all {
+		if c.ID != contribID && c.Status == ContribArchived && c.ArchivedVia == contribID {
+			restore(c)
+		}
+	}
+	restore(contrib)
+
+	// Restoring changes the plan, so re-signoff is required (as for archive).
+	msID, msTitle, parentID, parentTitle := s.ResolvePlanChangeRefs(ctx, spaceID, contrib)
+	entry := &PlanChangeEntry{
+		Kind:                    "contribution_restored",
+		MilestoneID:             msID,
+		MilestoneTitle:          msTitle,
+		ContributionID:          contrib.ID,
+		ContributionTitle:       contrib.Title,
+		ParentContributionID:    parentID,
+		ParentContributionTitle: parentTitle,
+		ChangedBy:               actorID,
+	}
+	if err := s.UnsignPlanForProject(ctx, spaceID, contrib.ProjectID, entry); err != nil {
+		capture(fmt.Errorf("unsign plan: %w", err))
+	}
 	return firstErr
 }
 
