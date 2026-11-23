@@ -2742,6 +2742,9 @@ func (s *Service) ArchiveProject(ctx context.Context, spaceID, projectID string)
 		captureErr(fmt.Errorf("list contributions: %w", err))
 	}
 	for _, c := range contribs {
+		if c.Status == ContribRewarded {
+			continue // paid, finished record: stays rewarded
+		}
 		c.Status = ContribArchived
 		c.UpdatedAt = time.Now()
 		if err := s.SaveContribution(ctx, spaceID, c); err != nil {
@@ -3009,16 +3012,21 @@ func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID, ac
 		byParent[c.ParentContributionID] = append(byParent[c.ParentContributionID], c)
 	}
 	toArchive := map[string]bool{}
-	var walk func(id string)
-	walk = func(id string) {
-		toArchive[id] = true
-		for _, child := range byParent[id] {
-			walk(child.ID)
+	// Rewarded contributions are paid, finished records: they are kept as-is
+	// and the walk does not descend through them.
+	var walk func(c *Contribution)
+	walk = func(c *Contribution) {
+		if c.Status == ContribRewarded {
+			return
+		}
+		toArchive[c.ID] = true
+		for _, child := range byParent[c.ID] {
+			walk(child)
 		}
 	}
 	for _, c := range contribs {
 		if c.MilestoneID == milestoneID {
-			walk(c.ID)
+			walk(c)
 		}
 	}
 
@@ -3071,6 +3079,31 @@ func (s *Service) ResolvePlanChangeRefs(ctx context.Context, spaceID string, c *
 // sub-contributions (recursive). actorID identifies who made the change and
 // may be empty when the caller has no authenticated actor available.
 func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, actorID string) error {
+	return s.ArchiveContributionWithSubs(ctx, spaceID, contribID, actorID, SubArchive)
+}
+
+// SubContributionChoice says what happens to a contribution's sub-contributions
+// when the contribution is archived.
+type SubContributionChoice string
+
+// SubArchive archives open sub-contributions with the parent; SubPromote keeps
+// them and promotes them to top-level contributions in the same milestone.
+// Rewarded sub-contributions are never archived by the cascade.
+const (
+	SubArchive SubContributionChoice = "archive"
+	SubPromote SubContributionChoice = "promote"
+)
+
+// ErrSubContributionChoiceRequired is returned when the contribution has
+// sub-contributions that are not archived and no (valid) choice was given.
+var ErrSubContributionChoiceRequired = errors.New("sub_contributions must be \"archive\" or \"promote\" when the contribution has sub-contributions")
+
+// ArchiveContributionWithSubs archives a contribution, handling its direct
+// sub-contributions as chosen: SubArchive cascades (skipping rewarded ones),
+// SubPromote promotes every non-archived direct child to a top-level
+// contribution in the same milestone before the parent is archived. A choice
+// is required only when the contribution has non-archived children.
+func (s *Service) ArchiveContributionWithSubs(ctx context.Context, spaceID, contribID, actorID string, choice SubContributionChoice) error {
 	contrib, err := s.GetContribution(ctx, spaceID, contribID)
 	if err != nil {
 		return err
@@ -3093,11 +3126,44 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, a
 		}
 	}
 
-	var archive func(id string)
-	archive = func(id string) {
+	var directChildren []*Contribution
+	for _, c := range byParent[contribID] {
+		if c.Status != ContribArchived {
+			directChildren = append(directChildren, c)
+		}
+	}
+	if len(directChildren) > 0 && choice != SubArchive && choice != SubPromote {
+		return ErrSubContributionChoiceRequired
+	}
+	if choice == SubPromote {
+		// Resolve every child's milestone first so a failure leaves nothing half-done.
+		for _, c := range directChildren {
+			if msID, _, _, _ := s.ResolvePlanChangeRefs(ctx, spaceID, c); msID == "" {
+				return fmt.Errorf("cannot promote %s: no milestone found in its parent chain", c.ID)
+			}
+		}
+		for _, c := range directChildren {
+			if _, err := s.PromoteSubContribution(ctx, spaceID, c.ID, actorID); err != nil {
+				return fmt.Errorf("promote %s: %w", c.ID, err)
+			}
+		}
+		delete(byParent, contribID) // promoted children are no longer cascaded
+	}
+
+	// Rewarded descendants are paid, finished records: they stay rewarded, keep
+	// their parent link, and the cascade does not descend through them. The
+	// contribution being archived itself is archived whatever its status
+	// (rewarded -> archived is a valid transition).
+	keptRewarded := 0
+	var archive func(id string, isRoot bool)
+	archive = func(id string, isRoot bool) {
 		c, err := s.GetContribution(ctx, spaceID, id)
 		if err != nil {
 			capture(err)
+			return
+		}
+		if !isRoot && c.Status == ContribRewarded {
+			keptRewarded++
 			return
 		}
 		// Leave already-archived items untouched so an independently archived
@@ -3113,10 +3179,10 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, a
 			}
 		}
 		for _, child := range byParent[id] {
-			archive(child.ID)
+			archive(child.ID, false)
 		}
 	}
-	archive(contribID)
+	archive(contribID, true)
 
 	// Archiving a contribution invalidates the plan signoff — re-signoff is required.
 	msID, msTitle, parentID, parentTitle := s.ResolvePlanChangeRefs(ctx, spaceID, contrib)
@@ -3129,6 +3195,18 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, a
 		ParentContributionID:    parentID,
 		ParentContributionTitle: parentTitle,
 		ChangedBy:               actorID,
+	}
+	if keptRewarded > 0 {
+		entry.Changes = []FieldChange{{
+			Field:    "rewarded_sub_contributions_kept",
+			NewValue: strconv.Itoa(keptRewarded),
+		}}
+	}
+	if choice == SubPromote && len(directChildren) > 0 {
+		entry.Changes = append(entry.Changes, FieldChange{
+			Field:    "sub_contributions_promoted",
+			NewValue: strconv.Itoa(len(directChildren)),
+		})
 	}
 	if err := s.UnsignPlanForProject(ctx, spaceID, contrib.ProjectID, entry); err != nil {
 		capture(fmt.Errorf("unsign plan: %w", err))

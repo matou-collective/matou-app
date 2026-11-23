@@ -114,9 +114,11 @@ func TestRestoreContribution_CascadedParentRestoresTaggedChildrenOnly(t *testing
 	if err := svc.ArchiveContribution(ctx, sp, parent.ID, "u"); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{parent.ID, cascaded.ID, paid.ID, independent.ID, grand.ID} {
+	for _, id := range []string{parent.ID, cascaded.ID, independent.ID, grand.ID} {
 		mustStatus(t, svc, sp, id, ContribArchived)
 	}
+	// Rewarded children are never archived by the cascade (#845).
+	mustStatus(t, svc, sp, paid.ID, ContribRewarded)
 	if c, _ := svc.GetContribution(ctx, sp, cascaded.ID); c.ArchivedVia != parent.ID {
 		t.Errorf("cascaded child archived_via = %q, want parent id", c.ArchivedVia)
 	}
