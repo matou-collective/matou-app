@@ -7,7 +7,7 @@ const { canCloseParent } = useContributionWorkflow();
 const parent = (status = 'assigned') => ({ status }) as Contribution;
 const kids = (...statuses: string[]) => statuses.map((status) => ({ status })) as Contribution[];
 
-describe('canCloseParent (#844 — lead closes a parent at $0)', () => {
+describe('canCloseParent (#844 — lead closes a parent without a budget)', () => {
   it('allows a lead when every sub-contribution is rewarded', () => {
     expect(canCloseParent(parent(), kids('rewarded', 'rewarded'), 'project_lead')).toBe(true);
     expect(canCloseParent(parent(), kids('rewarded'), 'community_admin')).toBe(true);

@@ -758,17 +758,17 @@
           />
         </div>
 
-        <!-- Close parent at $0 (lead, all sub-contributions rewarded) #844 -->
+        <!-- Close parent without a budget (lead, all sub-contributions rewarded) #844 -->
         <div v-if="canCloseParentNow" class="content-section sign-off-panel close-parent-panel">
           <CheckCircle class="sign-off-icon" />
           <div>
             <div class="sign-off-title">All sub-contributions rewarded</div>
-            <div class="sign-off-sub">Close this contribution at $0. Nothing more is paid on it.</div>
+            <div class="sign-off-sub">Close this contribution without a budget. Its cost is automatically $0.</div>
           </div>
           <q-btn
             no-caps
             color="primary"
-            label="Close at $0"
+            label="Close without budget"
             class="q-ml-auto"
             data-testid="close-parent-btn"
             :loading="actionLoading === 'close-parent'"
@@ -808,7 +808,7 @@
               <span v-if="contribution.rewarded_at">on {{ formatDate(contribution.rewarded_at) }}</span>
             </div>
             <div v-if="contribution.close_reason" class="sign-off-sub">
-              Closed at $0 by a project lead: {{ contribution.close_reason }}
+              Closed without a budget by a project lead: {{ contribution.close_reason }}
             </div>
           </div>
         </div>
@@ -1874,12 +1874,12 @@ async function handleSignOff() {
 
 function handleCloseParent() {
   $q.dialog({
-    title: 'Close at $0',
-    message: 'Every sub-contribution is rewarded. Say why this contribution is being closed with no payment of its own.',
+    title: 'Close without a budget',
+    message: 'You are about to submit this parent without a budget. Its cost will be $0 and its sub-contributions keep their own rewards. Continue? Give a reason below.',
     prompt: { model: '', type: 'text', isValid: (v: string) => v.trim().length > 0 },
     cancel: true,
     persistent: true,
-    ok: { label: 'Close at $0', color: 'primary', noCaps: true },
+    ok: { label: 'Continue', color: 'primary', noCaps: true },
   }).onOk((reason: string) => {
     void doCloseParent(reason);
   });
@@ -1889,7 +1889,7 @@ async function doCloseParent(reason: string) {
   actionLoading.value = 'close-parent';
   try {
     const updated = await store.closeParent(props.contribution.id, reason.trim());
-    $q.notify({ type: 'positive', message: 'Contribution closed at $0.' });
+    $q.notify({ type: 'positive', message: 'Contribution closed without a budget (cost $0).' });
     emit('update', updated as unknown as Contribution);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to close contribution' });

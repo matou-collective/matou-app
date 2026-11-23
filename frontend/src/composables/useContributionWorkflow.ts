@@ -177,7 +177,7 @@ export function useContributionWorkflow() {
   }
 
   /**
-   * Lead (or admin) can close a parent at $0 once every sub-contribution is
+   * Lead (or admin) can close a parent without a budget (cost automatically $0) once every sub-contribution is
    * rewarded (#844). `children` are the parent's sub-contributions; archived
    * ones are ignored, and at least one must be rewarded. Not offered on a
    * parent that is already rewarded, archived or declined. The backend

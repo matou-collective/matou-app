@@ -170,7 +170,7 @@ export interface Contribution {
   // Rewarded
   rewarded_by?: string;
   rewarded_at?: string;
-  // Lead close-out of a parent at $0 (#844)
+  // Lead close-out of a parent without a budget (#844)
   closed_by?: string;
   closed_at?: string;
   close_reason?: string;

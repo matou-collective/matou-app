@@ -1200,7 +1200,7 @@ func (h *ContributionsHandler) HandleClose(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-	log.Printf("[Contributions] contribution %s closed at $0 by %s", id, userID)
+	log.Printf("[Contributions] contribution %s closed without a budget by %s", id, userID)
 	if h.broker != nil {
 		h.broker.Broadcast(SSEEvent{
 			Type: "contribution:closed",

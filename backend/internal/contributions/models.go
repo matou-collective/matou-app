@@ -600,7 +600,7 @@ type Contribution struct {
 	SignOffProof *Proof `json:"sign_off_proof,omitempty"`
 	RewardProof  *Proof `json:"reward_proof,omitempty"`
 
-	// Lead close-out of a parent at $0 (#844). Set only by
+	// Lead close-out of a parent without a budget (cost $0) (#844). Set only by
 	// CloseParentContribution; the parent's status becomes rewarded without a
 	// separate reward, so CloseReason and CloseProof record why and who.
 	ClosedBy    string     `json:"closed_by,omitempty"`

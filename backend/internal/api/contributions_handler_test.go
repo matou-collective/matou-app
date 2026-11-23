@@ -785,6 +785,6 @@ func TestContributionsHandler_Close_ParentAtZero(t *testing.T) {
 	}
 	got, _ := handler.service.GetContribution(ctx, spaceID, parent.ID)
 	if got.Status != contributions.ContribRewarded || got.ActualCost != 0 || got.CloseReason == "" {
-		t.Errorf("parent not closed at $0: %+v", got)
+		t.Errorf("parent not closed without a budget: %+v", got)
 	}
 }

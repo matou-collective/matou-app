@@ -1,7 +1,8 @@
 import { test, expect, Page } from './fixtures';
 
-// Feature (#844): a project lead can close a parent contribution at $0 once all
-// of its sub-contributions are rewarded. The "Close at $0" button only appears
+// Feature (#844): a project lead can close a parent contribution without a budget (cost is
+// automatically $0) once all
+// of its sub-contributions are rewarded. The "Close without budget" button only appears
 // on such a parent; the backend refuses with a clear error otherwise.
 //
 // This needs a live community with a parent whose sub-contributions have all
@@ -16,8 +17,8 @@ async function enterCommunity(page: Page) {
     .catch(() => {});
 }
 
-test.describe('close parent contribution at $0 (#844)', () => {
-  test('lead sees Close at $0 only on a fully rewarded parent', async ({ adminPage, snap }) => {
+test.describe('close parent contribution without a budget (#844)', () => {
+  test('lead sees Close without budget only on a fully rewarded parent', async ({ adminPage, snap }) => {
     test.setTimeout(120_000);
     await enterCommunity(adminPage);
     await adminPage.goto('/#/projects');
@@ -33,15 +34,15 @@ test.describe('close parent contribution at $0 (#844)', () => {
     }
 
     await expect(closeBtn.first()).toBeVisible();
-    await snap(adminPage, 'close-at-zero-button');
+    await snap(adminPage, 'close-without-budget-button');
     await closeBtn.first().click();
     const dialog = adminPage.locator('.q-dialog');
-    await expect(dialog.getByText('Close at $0').first()).toBeVisible();
+    await expect(dialog.getByText(/submit this parent without a budget/i).first()).toBeVisible();
     await dialog.locator('input').fill('All sub-contributions paid');
-    await snap(adminPage, 'close-at-zero-dialog');
+    await snap(adminPage, 'close-without-budget-confirm');
   });
 
-  test('a member never sees Close at $0', async ({ memberPage, snap }) => {
+  test('a member never sees Close without budget', async ({ memberPage, snap }) => {
     test.setTimeout(120_000);
     await enterCommunity(memberPage);
     await memberPage.goto('/#/projects');

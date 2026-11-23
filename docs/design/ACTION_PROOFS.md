@@ -61,7 +61,7 @@ matou-proof/v1
   never be cross-replayed as v1.
 - `action` — one of the wire-stable literals `contribution_signoff`,
   `contribution_reward`, `contribution_close` (a project lead closing a parent
-  at $0; carried in `close_proof`, value `rewarded`), `plan_signoff`,
+  without a budget, cost $0; carried in `close_proof`, value `rewarded`), `plan_signoff`,
   `project_completion`.
 - `subject` — the id of the object the action targets.
 - `space` — the any-sync space id the object lives in. Binding it prevents
