@@ -2644,6 +2644,9 @@ func (s *Service) ArchiveProject(ctx context.Context, spaceID, projectID string)
 		captureErr(fmt.Errorf("list contributions: %w", err))
 	}
 	for _, c := range contribs {
+		if c.Status == ContribRewarded {
+			continue // paid, finished record: stays rewarded
+		}
 		c.Status = ContribArchived
 		c.UpdatedAt = time.Now()
 		if err := s.SaveContribution(ctx, spaceID, c); err != nil {
@@ -2911,16 +2914,21 @@ func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID, ac
 		byParent[c.ParentContributionID] = append(byParent[c.ParentContributionID], c)
 	}
 	toArchive := map[string]bool{}
-	var walk func(id string)
-	walk = func(id string) {
-		toArchive[id] = true
-		for _, child := range byParent[id] {
-			walk(child.ID)
+	// Rewarded contributions are paid, finished records: they are kept as-is
+	// and the walk does not descend through them.
+	var walk func(c *Contribution)
+	walk = func(c *Contribution) {
+		if c.Status == ContribRewarded {
+			return
+		}
+		toArchive[c.ID] = true
+		for _, child := range byParent[c.ID] {
+			walk(child)
 		}
 	}
 	for _, c := range contribs {
 		if c.MilestoneID == milestoneID {
-			walk(c.ID)
+			walk(c)
 		}
 	}
 
@@ -2995,11 +3003,20 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, a
 		}
 	}
 
-	var archive func(id string)
-	archive = func(id string) {
+	// Rewarded descendants are paid, finished records: they stay rewarded, keep
+	// their parent link, and the cascade does not descend through them. The
+	// contribution being archived itself is archived whatever its status
+	// (rewarded -> archived is a valid transition).
+	keptRewarded := 0
+	var archive func(id string, isRoot bool)
+	archive = func(id string, isRoot bool) {
 		c, err := s.GetContribution(ctx, spaceID, id)
 		if err != nil {
 			capture(err)
+			return
+		}
+		if !isRoot && c.Status == ContribRewarded {
+			keptRewarded++
 			return
 		}
 		c.Status = ContribArchived
@@ -3007,10 +3024,10 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, a
 			capture(err)
 		}
 		for _, child := range byParent[id] {
-			archive(child.ID)
+			archive(child.ID, false)
 		}
 	}
-	archive(contribID)
+	archive(contribID, true)
 
 	// Archiving a contribution invalidates the plan signoff — re-signoff is required.
 	msID, msTitle, parentID, parentTitle := s.ResolvePlanChangeRefs(ctx, spaceID, contrib)
@@ -3023,6 +3040,12 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, a
 		ParentContributionID:    parentID,
 		ParentContributionTitle: parentTitle,
 		ChangedBy:               actorID,
+	}
+	if keptRewarded > 0 {
+		entry.Changes = []FieldChange{{
+			Field:    "rewarded_sub_contributions_kept",
+			NewValue: strconv.Itoa(keptRewarded),
+		}}
 	}
 	if err := s.UnsignPlanForProject(ctx, spaceID, contrib.ProjectID, entry); err != nil {
 		capture(fmt.Errorf("unsign plan: %w", err))
