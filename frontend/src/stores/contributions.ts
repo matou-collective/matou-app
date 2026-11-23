@@ -27,6 +27,7 @@ import {
   addContributionComment as apiAddComment,
   listContributionComments as apiListComments,
   type Contribution,
+  type SubContributionChoice,
   type ContributionComment,
   type CreateContributionRequest,
   type UpdateContributionRequest,
@@ -348,10 +349,10 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
-  async function archive(id: string) {
+  async function archive(id: string, subContributions?: SubContributionChoice) {
     error.value = null;
     try {
-      await apiArchiveContrib(id);
+      await apiArchiveContrib(id, subContributions);
       const idx = contributions.value.findIndex(c => c.id === id);
       if (idx >= 0) contributions.value[idx] = { ...contributions.value[idx], status: 'archived' };
       if (currentContribution.value?.id === id) {

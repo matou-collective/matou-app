@@ -387,11 +387,17 @@ export async function promoteSubContribution(id: string): Promise<Contribution> 
   return response.json();
 }
 
-export async function archiveContribution(id: string): Promise<void> {
+export type SubContributionChoice = 'archive' | 'promote';
+
+// subContributions is required by the backend when the contribution has
+// non-archived sub-contributions: 'archive' cascades (rewarded ones are kept),
+// 'promote' makes them top-level contributions in the same milestone.
+export async function archiveContribution(id: string, subContributions?: SubContributionChoice): Promise<void> {
   log.info('Archiving contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/archive`, {
     method: 'POST',
     headers: authHeaders(),
+    body: JSON.stringify(subContributions ? { sub_contributions: subContributions } : {}),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));

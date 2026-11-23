@@ -644,8 +644,20 @@
       title="Archive Contribution"
       :message="contribArchiveMessage"
       :loading="archivingContribLoading"
+      :confirm-disabled="archivingSubCount > 0 && !subContribChoice"
       @confirm="doArchiveContribution"
-    />
+    >
+      <q-option-group
+        v-if="archivingSubCount > 0"
+        v-model="subContribChoice"
+        data-testid="archive-sub-choice"
+        type="radio"
+        :options="[
+          { label: 'Archive all sub-contributions', value: 'archive' },
+          { label: 'Keep them and promote them to top-level contributions in the same milestone', value: 'promote' },
+        ]"
+      />
+    </ConfirmArchiveDialog>
 
     <!-- Sign-off plan confirm (only shown when unconfirmed contributions exist) -->
     <q-dialog v-model="showSignOffConfirm">
@@ -917,13 +929,26 @@ const showContribForm = ref(false);
 const showArchiveContrib = ref(false);
 const archivingContribution = ref<Contribution | null>(null);
 const archivingContribLoading = ref(false);
+// What to do with the archived contribution's sub-contributions; the archiver
+// must pick one when there are any (#845).
+const subContribChoice = ref<'archive' | 'promote' | null>(null);
+
+const archivingSubCount = computed(() => {
+  const c = archivingContribution.value;
+  if (!c) return 0;
+  return allProjectContributions.value.filter(
+    (x) => x.parent_contribution === c.id && x.status !== 'archived',
+  ).length;
+});
 
 const contribArchiveMessage = computed(() => {
   const c = archivingContribution.value;
   if (!c || !project.value) return '';
-  const subs = planContributions.value.filter(x => x.parent_contribution === c.id).length;
-  const subText = subs > 0 ? ` and its ${subs} sub-contribution${subs === 1 ? '' : 's'}` : '';
-  return `Archiving "${c.title}"${subText} cannot be undone from the UI.`;
+  const subs = archivingSubCount.value;
+  if (subs > 0) {
+    return `"${c.title}" has ${subs} sub-contribution${subs === 1 ? '' : 's'}. Choose what happens to ${subs === 1 ? 'it' : 'them'}. Rewarded sub-contributions are never archived.`;
+  }
+  return `Archiving "${c.title}" cannot be undone from the UI.`;
 });
 
 function openEditContribution(c: Contribution) {
@@ -945,6 +970,7 @@ function onArchiveContributionFromDialog(c: Contribution) {
 }
 
 function confirmArchiveContribution(c: Contribution) {
+  subContribChoice.value = null;
   archivingContribution.value = c;
   showArchiveContrib.value = true;
 }
@@ -953,6 +979,7 @@ function confirmArchiveContribution(c: Contribution) {
 // Closes the edit dialog and opens the archive confirmation.
 function onDeleteContributionFromForm() {
   if (editingContribution.value) {
+    subContribChoice.value = null;
     archivingContribution.value = editingContribution.value as Contribution;
     showContribForm.value = false;
     editingContribution.value = null;
@@ -992,7 +1019,10 @@ async function doArchiveContribution() {
   if (!archivingContribution.value || !project.value) return;
   archivingContribLoading.value = true;
   try {
-    await contributionsStore.archive(archivingContribution.value.id);
+    await contributionsStore.archive(
+      archivingContribution.value.id,
+      archivingSubCount.value > 0 ? (subContribChoice.value ?? undefined) : undefined,
+    );
     // The dialog's allContributions prop reads from the flat project
     // contributions list; without refreshing it, archived subs stay visible in
     // the sub-list.

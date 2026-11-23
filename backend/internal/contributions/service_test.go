@@ -1130,6 +1130,78 @@ func TestArchiveContribution_KeepsRewardedSubContributions(t *testing.T) {
 	}
 }
 
+func TestArchiveContributionWithSubs_ChoiceAndPromote(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "s"
+
+	proj, plan, ms := setupPlanWithMilestone(ctx, t, svc, spaceID)
+	mk := func(title, parentID, milestoneID string) *Contribution {
+		c, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+			ProjectID: proj.ID, MilestoneID: milestoneID, Title: title, Description: "d", ContributionType: "development", CreatedBy: "u",
+			ParentContributionID: parentID,
+			Objectives:           []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+		})
+		if err != nil {
+			t.Fatalf("CreateContribution %s: %v", title, err)
+		}
+		return c
+	}
+	parent := mk("Parent", "", ms.MilestoneID)
+	paid := mk("Paid", parent.ID, "")
+	open := mk("Open", parent.ID, "")
+	paid.Status = ContribRewarded
+	if err := svc.SaveContribution(ctx, spaceID, paid); err != nil {
+		t.Fatal(err)
+	}
+
+	// No choice with children: rejected, nothing changed.
+	if err := svc.ArchiveContributionWithSubs(ctx, spaceID, parent.ID, "u", ""); !errors.Is(err, ErrSubContributionChoiceRequired) {
+		t.Fatalf("err = %v, want ErrSubContributionChoiceRequired", err)
+	}
+	if g, _ := svc.GetContribution(ctx, spaceID, parent.ID); g.Status == ContribArchived {
+		t.Fatal("parent archived despite missing choice")
+	}
+
+	if err := svc.ArchiveContributionWithSubs(ctx, spaceID, parent.ID, "u", SubPromote); err != nil {
+		t.Fatalf("promote archive: %v", err)
+	}
+	gotParent, _ := svc.GetContribution(ctx, spaceID, parent.ID)
+	if gotParent.Status != ContribArchived || len(gotParent.ChildContributionIDs) != 0 {
+		t.Errorf("parent = %s children=%v, want archived with no children", gotParent.Status, gotParent.ChildContributionIDs)
+	}
+	for _, c := range []*Contribution{paid, open} {
+		got, _ := svc.GetContribution(ctx, spaceID, c.ID)
+		if got.ParentContributionID != "" || got.MilestoneID != ms.MilestoneID {
+			t.Errorf("%s parent=%q milestone=%q, want top-level in %q", got.Title, got.ParentContributionID, got.MilestoneID, ms.MilestoneID)
+		}
+		if got.Status == ContribArchived {
+			t.Errorf("%s archived, want kept", got.Title)
+		}
+	}
+	if g, _ := svc.GetContribution(ctx, spaceID, paid.ID); g.Status != ContribRewarded {
+		t.Errorf("paid status = %s, want rewarded", g.Status)
+	}
+	gotMs, _ := svc.GetMilestone(ctx, spaceID, ms.MilestoneID)
+	inMs := map[string]bool{}
+	for _, id := range gotMs.ContributionIDs {
+		inMs[id] = true
+	}
+	if !inMs[paid.ID] || !inMs[open.ID] {
+		t.Errorf("milestone contributions %v missing promoted children", gotMs.ContributionIDs)
+	}
+	gotPlan, _ := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	promoted := 0
+	for _, e := range gotPlan.ChangeLog {
+		if e.Kind == "contribution_promoted" {
+			promoted++
+		}
+	}
+	if promoted != 2 {
+		t.Errorf("contribution_promoted entries = %d, want 2", promoted)
+	}
+}
+
 func TestArchiveContribution_RewardedRootStillArchives(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(NewMockStore())

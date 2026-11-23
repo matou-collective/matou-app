@@ -1195,7 +1195,15 @@ func (h *ContributionsHandler) HandleArchive(w http.ResponseWriter, r *http.Requ
 	if actorID == "" {
 		actorID = r.Header.Get("X-User-AID")
 	}
-	if err := h.service.ArchiveContribution(r.Context(), spaceID, id, actorID); err != nil {
+	// Optional body {"sub_contributions": "archive"|"promote"}; required (400
+	// otherwise) when the contribution has non-archived sub-contributions.
+	var archiveReq struct {
+		SubContributions string `json:"sub_contributions"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&archiveReq)
+	}
+	if err := h.service.ArchiveContributionWithSubs(r.Context(), spaceID, id, actorID, contributions.SubContributionChoice(archiveReq.SubContributions)); err != nil {
 		log.Printf("[Contributions] archive failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
