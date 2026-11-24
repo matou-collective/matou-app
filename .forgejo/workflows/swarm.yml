@@ -217,7 +217,42 @@ jobs:
           # just means this poll loses; the cron/backstop re-fires.
           workdir_lock="/tmp/matou-workdir-$(printf '%s' "$REPO_SLUG" | tr '/' '-').lock"
           exec 8>"$workdir_lock"
-          if ! flock -n 8; then
+          # #388: a DISPATCHED leg (SWARM_TICKET set) is the ONLY run that will work
+          # its ticket until the dispatch marker expires (~FLEET_QUEUE_MARK_TTL=600s),
+          # so a short-lived same-repo BACKSTOP leg that holds this lock for 30–100s
+          # (a `closed`/cron tick that only stands down, #384's sibling — it is not
+          # placed by the dispatcher and so cannot be avoided by #384's held-repos
+          # rule) must not throw the dispatched leg away. A dispatched leg therefore
+          # WAITS a bounded SWARM_DISPATCH_LOCK_WAIT (default 150s) for the lock with
+          # `flock -w`: the backstop is short, so the wait almost always wins and the
+          # ticket is worked in THIS run — no second dispatch ~10 min later. It holds
+          # a heavy slot (fd 9, still open) while it waits; that is the accepted cost.
+          # A cron/`closed` leg is NOT placed by the dispatcher and the next
+          # cron/backstop re-fires it, so it keeps `flock -n` and NEVER camps
+          # (idss #238 — the never-camp rule was about polls, not a placed run). If a
+          # dispatched leg STILL can't get the lock before the deadline, it deletes
+          # its own dispatch marker so the dispatcher re-offers on its next ~17s pass
+          # instead of after the full marker TTL; #384 then keeps the re-offer off a
+          # host that genuinely runs this repo. FORGEJO_API already includes
+          # /repos/<slug>, so the marker (a `fleet-dispatch host=…` comment, #351) is
+          # deleted by its comment id; best-effort, a tracker error never changes the
+          # clean yield exit (the marker's own TTL still frees the ticket as before).
+          release_dispatch_marker() { # release_dispatch_marker <ticket>
+            local n="$1" ids id
+            [ -n "${n:-}" ] && [ -n "${FORGEJO_TOKEN:-}" ] && [ -n "${FORGEJO_API:-}" ] || return 0
+            ids="$(curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$FORGEJO_API/issues/$n/comments" 2>/dev/null |
+              jq -r '[ .[]? | select((.body // "") | test("^fleet-dispatch host=")) | .id ] | .[]' 2>/dev/null)" || return 0
+            for id in $ids; do
+              curl -sf -X DELETE -H "Authorization: token $FORGEJO_TOKEN" "$FORGEJO_API/issues/comments/$id" >/dev/null 2>&1 || true
+            done
+          }
+          if [ -n "${SWARM_TICKET:-}" ]; then
+            if ! flock -w "${SWARM_DISPATCH_LOCK_WAIT:-150}" 8; then
+              echo "swarm: workdir $workdir still busy after waiting ${SWARM_DISPATCH_LOCK_WAIT:-150}s for dispatched ticket #$SWARM_TICKET — releasing its dispatch marker so the dispatcher can re-offer; the next pass re-fires"
+              release_dispatch_marker "$SWARM_TICKET"
+              exit 0
+            fi
+          elif ! flock -n 8; then
             echo "swarm: workdir $workdir busy with another job for this repo — yielding; the cron/backstop re-fires"
             exit 0
           fi

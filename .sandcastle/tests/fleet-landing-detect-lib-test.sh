@@ -178,6 +178,18 @@ check "unlanded does NOT clear on an UNreferenced number (still flagged)" \
 check "the ref witness honours a digit boundary (#77 does not match #777)" \
   '! _fleet_landing_ref_on_main "$repo" main 77'
 
+# ── fail safe when the main-ref baseline cannot be resolved (#385) ─────────────
+# A cold / unfetched dispatcher checkout cannot resolve origin/main; every git read
+# then silently returns nothing and a LANDED commit reads absent. Detection must
+# judge NOTHING on an unreadable baseline, not manufacture a stranded-close for
+# every recently-closed ticket (the 12-flag shadow-pass signature of #385).
+check "ref_resolves is true for a real ref, false for a missing one (#385)" \
+  '_fleet_landing_ref_resolves "$repo" main && ! _fleet_landing_ref_resolves "$repo" refs/heads/does-not-exist'
+check "unlanded FAILS SAFE (flags nothing, even for an absent sha) when main cannot resolve (#385)" \
+  '[ -z "$(fleet_landing_unlanded "$repo" refs/heads/does-not-exist "$SHA_B $SHA_C deadbeefdeadbeef" 777 2>/dev/null)" ]'
+check "the baseline collapse emits a diagnostic on stderr (#385)" \
+  'fleet_landing_unlanded "$repo" refs/heads/does-not-exist "$SHA_B" 1 2>&1 >/dev/null | grep -qi "cannot resolve"'
+
 # ── gather: the close grace defers a just-closed ticket (#363 / idss#2202) ──────
 # FLEET_LANDING_NOW is pinned to 1000000 at the top; a close younger than the grace
 # must not be judged (a run may still be landing it).
@@ -204,6 +216,10 @@ check "rescues marks an off-main rescue head merged:false" \
 # feeding rescues through detect surfaces only the unlanded one
 check "the unlanded rescue is the only one detect flags" \
   '[ "$(fleet_landing_detect "$(jq -cn --argjson r "$res" "{rescues:\$r}")" | jq length)" = 1 ]'
+# an unresolvable main-ref would read every rescue head merged:false — fail safe to
+# empty rather than flag every rescue branch (#385, the same baseline collapse).
+check "rescues FAILS SAFE (empty) when the main-ref cannot be resolved (#385)" \
+  '[ "$(fleet_landing_rescues "$root" Acme/alpha "$repo" refs/heads/does-not-exist 2>/dev/null | jq length)" = 0 ]'
 
 # ── gather: agent PRs + combined status ──────────────────────────────────────
 FIX_PULLS='[{"number":20,"head":{"ref":"agent/issue-20","sha":"s20"}},

@@ -25,6 +25,7 @@ fleet-dispatch.sh
 fleet-landing-detect-lib.sh
 fleet-queue-lib.sh
 fleet-queue.sh
+fleet-session-lib.sh
 fleet-slot-report-lib.sh
 forgejo-lib.sh
 gate-lib.sh
@@ -75,6 +76,7 @@ schedule-backstop.sh
 schedule-lib.sh
 scheduler-canary.sh
 session-host-lib.sh
+session-offer-wait.sh
 session-runner.sh
 swarm.config
 swarm-db-lib.sh
@@ -122,6 +124,7 @@ tests/fleet-dispatch-test.sh
 tests/fleet-landing-detect-lib-test.sh
 tests/fleet-queue-lib-test.sh
 tests/fleet-queue-test.sh
+tests/fleet-session-lib-test.sh
 tests/fleet-slot-report-contract-test.sh
 tests/fleet-slot-report-lib-test.sh
 tests/fleet-tui-test.sh
@@ -179,8 +182,10 @@ tests/schedule-lib-test.sh
 tests/scheduler-canary-test.sh
 tests/self-rearm-test.sh
 tests/session-host-lib-test.sh
+tests/session-offer-wait-test.sh
 tests/session-runner-test.sh
 tests/swarm-db-test.sh
+tests/swarm-dispatch-lock-wait-test.sh
 tests/swarm-identity-test.sh
 tests/swarm-lock-yield-test.sh
 tests/swarm-yield-signal-test.sh

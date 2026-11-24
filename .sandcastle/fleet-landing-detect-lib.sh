@@ -209,6 +209,18 @@ fleet_landing_unreached() {
   printf '%s' "${out% }"
 }
 
+# _fleet_landing_ref_resolves <checkout> <ref> -> rc 0 iff <ref> resolves to a
+# commit in <checkout>. The reachability witnesses (ancestry, patch-id, #N-on-main)
+# are ALL measured against the main-ref; a checkout that cannot resolve it (never
+# fetched, a cold dispatcher checkout, a wrong remote name) makes EVERY git read
+# silently return nothing, so a landed commit reads absent and a landed ticket reads
+# stranded — one unresolvable baseline manufactures a stranded-close for every
+# recently-closed ticket in the repo (#385). This is the probe the reachability
+# gathers consult before they judge, so they can FAIL SAFE on an unreadable baseline.
+_fleet_landing_ref_resolves() {
+  git -C "$1" rev-parse --verify --quiet "${2}^{commit}" >/dev/null 2>&1
+}
+
 # _fleet_landing_main_patch_ids <checkout> <main-ref> -> the patch-id of each of the
 # last FLEET_LANDING_PATCHID_SCAN commits on <main-ref>, one per line. Empty when the
 # ref cannot be resolved. A patch-id is the stable hash of a commit's DIFF, so a
@@ -254,6 +266,15 @@ _fleet_landing_ref_on_main() {
 fleet_landing_unlanded() {
   local checkout="$1" main="${2:-$FLEET_LANDING_MAIN_REF}" shas="$3" number="${4:-}" c out="" mainids="" pid
   shas="${shas//,/ }"
+  # The main-ref is the baseline every witness is measured against; if the checkout
+  # cannot resolve it (never fetched / cold / wrong remote), every git read below
+  # silently returns nothing and every claimed commit would read absent — a bogus
+  # stranded-close for every recently-closed ticket (#385). FAIL SAFE: judge nothing
+  # when the baseline cannot be read, the posture the slice header promises each gather.
+  if ! _fleet_landing_ref_resolves "$checkout" "$main"; then
+    echo "fleet-landing: $checkout cannot resolve $main — no stranded-close judged this pass (#385)" >&2
+    printf ''; return 0
+  fi
   # Witness 3 first (cheap, one git log) — a referenced ticket is wholly landed.
   if [ -n "$number" ] && _fleet_landing_ref_on_main "$checkout" "$main" "$number"; then
     printf ''; return 0
@@ -352,6 +373,14 @@ _fleet_landing_session_held() {
 # rescue refs); reachability is the local main the checkout DOES track.
 fleet_landing_rescues() {
   local root="$1" slug="$2" checkout="$3" main="${4:-$FLEET_LANDING_MAIN_REF}" raw out="[]" line branch head merged
+  # Merged-ness is a reachability test against the main-ref; if the checkout cannot
+  # resolve it, EVERY rescue head reads merged:false and every branch is flagged
+  # unrelanded — the same baseline collapse that over-fires stranded-close (#385).
+  # FAIL SAFE: surface NOTHING when the baseline cannot be read.
+  if ! _fleet_landing_ref_resolves "$checkout" "$main"; then
+    echo "fleet-landing: $checkout cannot resolve $main — no rescue judged this pass (#385)" >&2
+    printf '[]'; return 0
+  fi
   raw="$(_fleet_landing_api "$root/repos/$slug/branches?limit=100" 2>/dev/null)" || return 1
   while IFS=$'\t' read -r branch head; do
     [ -n "$branch" ] || continue

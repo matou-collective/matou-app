@@ -275,5 +275,49 @@ SH
 check "waiting_runs fails open (rc 1, no output) when the read fails" \
   '! wr2="$(_fleet_dispatch_waiting_runs https://forge.test/api/v1 Acme/alpha 2>/dev/null)"; [ -z "${wr2:-}" ]'
 
+# ── #384: one run per repo per host ──────────────────────────────────────────
+# A host works at most one run of a repo (the workflow's per-repo workdir lock),
+# so the allocator never sends a host a second pick of a repo it already runs.
+o384='[{"repo":"Acme/alpha","number":1},{"repo":"Acme/alpha","number":2},{"repo":"Acme/alpha","number":3},{"repo":"Acme/beta","number":9}]'
+f384='[{"host":"boxA","n":1,"path":"/s/1"},{"host":"boxA","n":2,"path":"/s/2"},{"host":"boxB","n":1,"path":"/s/1"},{"host":"boxB","n":2,"path":"/s/2"}]'
+d384="$(fleet_dispatch_allocate "$o384" "$f384")"
+check "#384 two same-repo picks in one pass land on DIFFERENT hosts" \
+  '[ "$(jq -c "[.[0].host,.[1].host]" <<<"$d384")" = "[\"boxA\",\"boxB\"]" ]'
+check "#384 a third same-repo pick is queued though slots are still free" \
+  '[ "$(jq -r ".[2].placed" <<<"$d384")" = false ]'
+check "#384 its reason names the one-run-per-repo-per-host rule" \
+  'jq -r ".[2].reason" <<<"$d384" | grep -q "already running a Acme/alpha run" && jq -r ".[2].reason" <<<"$d384" | grep -q "#384"'
+check "#384 a different repo behind it still takes a free slot the blocked pick left" \
+  '[ "$(jq -r ".[3].placed" <<<"$d384")" = true ] && [ "$(jq -r ".[3].host" <<<"$d384")" = boxA ] && [ "$(jq -r ".[3].slot" <<<"$d384")" = 2 ]'
+h384='[{"host":"boxA","repo":"Acme/alpha","number":77}]'
+dh="$(fleet_dispatch_allocate "$o384" "$f384" "$h384")"
+check "#384 a host already running the repo is skipped for the head pick" \
+  '[ "$(jq -r ".[0].host" <<<"$dh")" = boxB ] && [ "$(jq -r ".[1].placed" <<<"$dh")" = false ]'
+check "#384 the held host still takes another repo's pick" \
+  '[ "$(jq -r ".[3].host" <<<"$dh")" = boxA ]'
+check "#384 a pick's OWN held entry never blocks it (the re-offer is the marker's business, #365)" \
+  '[ "$(jq -r ".[0].host" <<<"$(fleet_dispatch_allocate "$o384" "$f384" "[{\"host\":\"boxA\",\"repo\":\"Acme/alpha\",\"number\":1}]")")" = boxA ]'
+check "#384 a garbled held list is ignored (allocates as if none held)" \
+  '[ "$(jq -r ".[0].host" <<<"$(fleet_dispatch_allocate "$o384" "$f384" "not json")")" = boxA ]'
+
+# held_repos: a busy ticket holder counts, a session holder and a free slot do not,
+# and a recent placement counts until its TTL passes.
+rm -f "$FLEET_DISPATCH_REPORTS"/*.json "$(_fleet_dispatch_placed_path)"
+fleet_dispatch_ingest "$(report boxA false "[$(slot 1 busy 10 Acme/alpha),$(slot 2 free)]")"
+sess="$(slot 1 busy 7 Acme/beta | jq -c '.holder.kind = "session"')"
+fleet_dispatch_ingest "$(report boxB false "[$sess,$(slot 2 free)]")"
+hr="$(fleet_dispatch_held_repos)"
+check "#384 held_repos names a busy ticket holder's host+repo" 'jq -e "any(.[]; .host==\"boxA\" and .repo==\"Acme/alpha\")" <<<"$hr" >/dev/null'
+check "#384 held_repos skips a session holder (no workdir lock)" '! jq -e "any(.[]; .host==\"boxB\")" <<<"$hr" >/dev/null'
+fleet_dispatch_placed_record Acme/gamma boxB 4
+hr2="$(fleet_dispatch_held_repos)"
+check "#384 a recent placement is held before its leg takes the slot" 'jq -e "any(.[]; .host==\"boxB\" and .repo==\"Acme/gamma\")" <<<"$hr2" >/dev/null'
+hr3="$(FLEET_DISPATCH_NOW=$(( $(_fleet_dispatch_now) + FLEET_DISPATCH_PLACED_TTL + 1 )) fleet_dispatch_held_repos)"
+check "#384 a placement past its TTL no longer holds the host" '! jq -e "any(.[]; .repo==\"Acme/gamma\")" <<<"$hr3" >/dev/null'
+FLEET_DISPATCH_NOW=$(( $(_fleet_dispatch_now) + FLEET_DISPATCH_PLACED_TTL + 1 )) fleet_dispatch_placed_record Acme/delta boxA 6
+check "#384 recording a placement prunes the expired ones" '[ "$(wc -l <"$(_fleet_dispatch_placed_path)")" = 1 ]'
+check "#384 held_repos is [] with no reports and no placements" \
+  'rm -f "$FLEET_DISPATCH_REPORTS"/*.json "$(_fleet_dispatch_placed_path)"; [ "$(fleet_dispatch_held_repos)" = "[]" ]'
+
 echo "fleet-dispatch-lib-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

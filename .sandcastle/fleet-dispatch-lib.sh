@@ -211,11 +211,17 @@ fleet_dispatch_ingest() {
 # the inbox). Echoes the count ingested. A report file still being written by the
 # receiver is renamed into place atomically, so a partial read cannot happen.
 fleet_dispatch_drain_inbox() {
-  local f n=0
+  local f n=0 body
   [ -d "$FLEET_DISPATCH_INBOX" ] || { echo 0; return 0; }
   for f in "$FLEET_DISPATCH_INBOX"/*; do
     [ -f "$f" ] || continue
-    if fleet_dispatch_ingest "$(cat "$f" 2>/dev/null)" 2>/dev/null; then n=$(( n + 1 )); fi
+    body="$(cat "$f" 2>/dev/null)"
+    # ADR 0010: a host's session DECLINE arrives on the same spool as its slot
+    # reports. It is routed by its `kind`; the lane's own lib validates it.
+    if command -v fleet_session_decline_ingest >/dev/null 2>&1 \
+       && printf '%s' "$body" | jq -e 'type == "object" and .kind == "session-decline"' >/dev/null 2>&1; then
+      fleet_session_decline_ingest "$body" >&2 || echo "fleet-dispatch: ignoring a malformed session decline" >&2
+    elif fleet_dispatch_ingest "$body" 2>/dev/null; then n=$(( n + 1 )); fi
     rm -f "$f"
   done
   echo "$n"
@@ -301,40 +307,139 @@ fleet_dispatch_host_lines() {
   done
 }
 
-# fleet_dispatch_allocate <ordered-json> <free-slots-json> -> the allocation
-# decisions, one per ready ticket in fleet order, as a JSON array of
-# {repo, number, placed, host, slot, reason, rank_index}. The rule is the
-# simplest that answers the acceptance: walk the order, hand the i-th ready
-# ticket the i-th free slot. A ticket past the free-slot count is QUEUED with a
-# reason that says exactly why it was not offered sooner — the N free slots went
-# to the N higher picks ahead, or nothing is free fleet-wide this pass. Pure (no
-# disk, no clock): the caller passes the inventory in, so it is trivially tested.
+# ── one run per repo per host (#384) ─────────────────────────────────────────
+# The swarm workflow holds a per-repo workdir lock for a whole run, so a host
+# works at most ONE run of a given repo at a time: a second same-repo leg sent to
+# its other free slot yields in seconds, nothing claims the ticket, and the pick
+# is re-dispatched every marker TTL while the slot sits idle. The allocator
+# therefore needs to know which (host, repo) pairs are taken. Two sources, both
+# rebuildable hints (decision 2 — losing either only costs one wasted leg):
+#   - a BUSY slot's holder on a fresh report (a session holder is skipped: the
+#     session-runner works a dedicated checkout and takes no workdir lock);
+#   - a pick this dispatcher placed in the last FLEET_DISPATCH_PLACED_TTL seconds
+#     whose leg has not taken its slot yet (the slot still reads `free`).
+FLEET_DISPATCH_PLACED_TTL="${FLEET_DISPATCH_PLACED_TTL:-180}"
+_fleet_dispatch_placed_path() { printf '%s' "${FLEET_DISPATCH_PLACED:-$FLEET_DISPATCH_HOME/recent-placements}"; }
+
+# fleet_dispatch_placed_record <repo> <host> <number> — remember a real dispatch. Also
+# drops the entries past the TTL, so the file never grows. Best-effort.
+fleet_dispatch_placed_record() {
+  local f now at repo host num kept=""
+  f="$(_fleet_dispatch_placed_path)"; now="$(_fleet_dispatch_now)"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+  if [ -s "$f" ]; then
+    while read -r at repo host num; do
+      case "$at" in ''|*[!0-9]*) continue ;; esac
+      [ $(( now - at )) -lt "$FLEET_DISPATCH_PLACED_TTL" ] || continue
+      kept="$kept$at $repo $host $num"$'\n'
+    done <"$f"
+  fi
+  printf '%s%s %s %s %s\n' "$kept" "$now" "$1" "$2" "${3:-0}" >"$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f" 2>/dev/null || true
+}
+
+# fleet_dispatch_held_repos -> a JSON array of {host, repo, number}: every run a
+# host holds or is about to hold. A pick of the same repo with a DIFFERENT number
+# must not be placed on that host this pass (the ticket's own entry never blocks
+# it — a re-offer of the same pick is the marker arbitration's business, #365).
+# Never fails: an unreadable report or placements file contributes nothing.
+fleet_dispatch_held_repos() {
+  local f now at repo host num
+  now="$(_fleet_dispatch_now)"
+  {
+    for f in $(_fleet_dispatch_fresh_reports | sort); do
+      jq -c '(.host) as $h | .slots[]? | select(.state == "busy")
+             | select((.holder.kind // "") != "session")
+             | select((.holder.repo // "") != "")
+             | {host: $h, repo: .holder.repo, number: (.issue // 0)}' "$f" 2>/dev/null
+    done
+    f="$(_fleet_dispatch_placed_path)"
+    if [ -s "$f" ]; then
+      while read -r at repo host num; do
+        case "$at" in ''|*[!0-9]*) continue ;; esac
+        [ -n "${host:-}" ] || continue
+        case "${num:-}" in ''|*[!0-9]*) num=0 ;; esac
+        [ $(( now - at )) -lt "$FLEET_DISPATCH_PLACED_TTL" ] || continue
+        jq -cn --arg h "$host" --arg r "$repo" --argjson n "$num" '{host: $h, repo: $r, number: $n}'
+      done <"$f"
+    fi
+  } | jq -s 'unique'
+}
+
+# fleet_dispatch_allocate <ordered-json> <free-slots-json> [held-json] [blocks-json]
+# -> the allocation decisions, one per ready ticket in fleet order, as a JSON
+# array of {repo, number, lane, placed, host, slot, reason, rank_index}. Walk the
+# order; each ticket takes the FIRST free slot left that its lane allows:
+#   - a SWARM ticket (no `lane`, or lane "swarm"): a slot whose host is not
+#     already running a run of that ticket's repo (#384: <held-json> from
+#     fleet_dispatch_held_repos, plus the placements made earlier in this pass);
+#   - a SESSION ticket (lane "session", ADR 0010): a slot whose host no entry of
+#     <blocks-json> rules out for it (fleet_session_blocks: a host's decline, an
+#     offer still outstanding, a session already running for that repo there),
+#     plus the session placements made earlier in this pass (one session per repo
+#     per host). A session works a dedicated checkout, so the two lanes never
+#     block each other on a host — they only compete for its slots.
+# A ticket that gets no slot is QUEUED with a reason that says exactly why it was
+# not offered sooner — nothing is free fleet-wide, the free slots went to higher
+# picks, or the slots left are all on hosts its lane's rule excludes (for a
+# session ticket the rule is quoted, so a host's decline reads in its own words).
+# Pure (no disk, no clock): the caller passes the inventory in, so it is
+# trivially tested. <held-json> and <blocks-json> default empty, and an order
+# with no session ticket allocates exactly as it did before ADR 0010.
 fleet_dispatch_allocate() {
-  local order="$1" free="$2" nfree
+  local order="$1" free="$2" held="${3:-[]}" blocks="${4:-[]}" nfree
+  jq -e 'type == "array"' <<<"$held" >/dev/null 2>&1 || held='[]'
+  jq -e 'type == "array"' <<<"$blocks" >/dev/null 2>&1 || blocks='[]'
   nfree="$(jq 'length' <<<"$free")"
-  jq -c --argjson free "$free" --argjson nfree "$nfree" '
-    to_entries | map(
-      .key as $i | .value as $t
-      | if $i < $nfree then
-          $free[$i] as $s
-          | {repo: $t.repo, number: $t.number, placed: true, host: $s.host, slot: $s.n,
-             rank_index: $i,
-             reason: (if $i == 0 then "offered slot \($s.n) on \($s.host) (fleet head)"
-                      else "offered slot \($s.n) on \($s.host) (\($i) higher pick(s) took the earlier free slot(s))" end)}
+  jq -c --argjson free "$free" --argjson nfree "$nfree" --argjson held "$held" --argjson blocks "$blocks" '
+    reduce to_entries[] as $e ({free: $free, held: $held, blocks: $blocks, out: []};
+      $e.key as $i | $e.value as $t | .held as $hd | .blocks as $bl
+      | ($t.lane // "swarm") as $lane
+      | ([.free | to_entries[]
+          | . as $fe
+          | ( if $lane == "session" then
+                [$bl[] | select((.host == $fe.value.host or .host == "*")
+                                and (.scope == "host"
+                                     or (.scope == "repo" and .repo == $t.repo)
+                                     or (.scope == "ticket" and .repo == $t.repo and (.number // 0) == $t.number)))
+                       | (.reason // "ruled out")]
+              else
+                [$hd[] | select(.host == $fe.value.host and .repo == $t.repo and ((.number // 0) != $t.number))
+                       | "already running a \($t.repo) run"]
+              end ) as $why
+          | $fe + {why: $why}]) as $cands
+      | ([$cands[] | select((.why | length) == 0)] | .[0]) as $pick
+      | (.free | length) as $left
+      | if $pick != null then
+          $pick.value as $s
+          | .out += [{repo: $t.repo, number: $t.number, lane: $lane, placed: true, host: $s.host, slot: $s.n,
+               rank_index: $i,
+               reason: (if $i == 0 then "offered slot \($s.n) on \($s.host) (fleet head)"
+                        else "offered slot \($s.n) on \($s.host) (\($i) higher pick(s) took the earlier free slot(s))" end)}]
+          | .free |= del(.[$pick.key])
+          | if $lane == "session" then
+              .blocks += [{host: $s.host, scope: "repo", repo: $t.repo, number: $t.number,
+                           reason: "\($s.host) was offered \($t.repo)#\($t.number) this pass (one session per repo per host)"}]
+            else
+              .held += [{host: $s.host, repo: $t.repo, number: $t.number}]
+            end
         else
-          {repo: $t.repo, number: $t.number, placed: false, host: null, slot: null,
-           rank_index: $i,
-           reason: (if $nfree == 0 then "no free slot anywhere this pass (every pool slot busy, stale, or drive-reserved)"
-                    else "no free slot — the \($nfree) free slot(s) went to the \($nfree) higher pick(s) ahead" end)}
-        end
-    )' <<<"$order"
+          .out += [{repo: $t.repo, number: $t.number, lane: $lane, placed: false, host: null, slot: null,
+               rank_index: $i,
+               reason: (if $nfree == 0 then "no free slot anywhere this pass (every pool slot busy, stale, or drive-reserved)"
+                        elif $left == 0 then "no free slot — the \($nfree) free slot(s) went to the \($nfree) higher pick(s) ahead"
+                        elif $lane == "session" then
+                          "not placed — the \($left) free slot(s) left cannot take this session ticket: "
+                          + ([$cands[].why[]] | unique | .[0:3] | join("; "))
+                        else "not placed — the \($left) free slot(s) left are on host(s) already running a \($t.repo) run (one run per repo per host, #384)" end)}]
+        end)
+    | .out' <<<"$order"
 }
 
 # fleet_dispatch_format_decisions <decisions-json> -> the shadow log lines, one
 # per decision: a placed pick names the slot it would be offered; a queued pick
 # names why not sooner. This is the acceptance surface, so it reads for a human.
 fleet_dispatch_format_decisions() {
-  jq -r '.[] |
+  jq -r '.[] | select((.lane // "swarm") != "session") |
     if .placed then "  ALLOC  \(.repo)#\(.number) -> \(.host) slot \(.slot)  [\(.reason)]"
     else            "  QUEUE  \(.repo)#\(.number) -> (none)  [\(.reason)]" end' <<<"$1"
 }

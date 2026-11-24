@@ -90,4 +90,31 @@ ACK_BODY="$body" fleet_slot_report_send "$report" 2>/dev/null
 check "stage 6b: an out-of-scope host keeps ticking (not acked_fresh)" \
   '! fleet_slot_report_acked_fresh'
 
+# ── the session half (ADR 0010 decision 5): both ends, one shape ─────────────
+# `session_acting` rides the same ack. The receiver says it only for a host the
+# session lane is live for AND whose offer poll is connected (a fresh waiter
+# stamp); the host records it in its OWN file, so the swarm half above never
+# changes shape. The report above is from host mach-01.
+export FLEET_DISPATCH_SESSION_ACK_STATE="$tmp/state/fleet-dispatch-session-ack"
+export FLEET_DISPATCH_SESSION_WAITERS="$tmp/waiters"
+mkdir -p "$FLEET_DISPATCH_SESSION_WAITERS"; : >"$FLEET_DISPATCH_SESSION_WAITERS/mach-01"
+sack_for() { env -u FLEET_DISPATCH_MODE FLEET_DISPATCH_MODE=live FLEET_DISPATCH_SESSION_MODE="$1" \
+  python3 "$sc/fleet-dispatch-receiver.py" --ack --host "$2"; }
+ACK_BODY="$(sack_for live mach-01)" fleet_slot_report_send "$report" 2>/dev/null
+check "session lane live + waiter connected: the host is session-acked (tick stands down)" \
+  'fleet_slot_report_session_acked_fresh'
+check "…and the swarm half is recorded exactly as before" 'fleet_slot_report_acked_fresh'
+ACK_BODY="$(sack_for shadow mach-01)" fleet_slot_report_send "$report" 2>/dev/null
+check "session lane in shadow: the host keeps its own session tick" \
+  '! fleet_slot_report_session_acked_fresh && fleet_slot_report_acked_fresh'
+ACK_BODY="$(sack_for live mach-02)" fleet_slot_report_send "$report" 2>/dev/null
+check "session lane live but no offer poll connected: the host keeps its own session tick" \
+  '! fleet_slot_report_session_acked_fresh'
+ACK_BODY='{"ok":true,"acting":true,"mode":"live"}' fleet_slot_report_send "$report" 2>/dev/null
+check "an ack from a dispatcher that predates the session lane reads not session-acting" \
+  '! fleet_slot_report_session_acked_fresh && fleet_slot_report_acked_fresh'
+ACK_BODY="$(sack_for live mach-01)" fleet_slot_report_send "$report" 2>/dev/null
+check "a session ack ages out on the ack TTL" \
+  'fleet_slot_report_session_acked_fresh && ! FLEET_SLOT_REPORT_NOW=$(( $(date +%s) + FLEET_DISPATCH_ACK_TTL + 1 )) fleet_slot_report_session_acked_fresh'
+
 summary fleet-dispatch-ack-contract-test

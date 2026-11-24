@@ -38,6 +38,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/fleet-dispatch-lib.sh"
 # shellcheck source=fleet-landing-detect-lib.sh
 . "$here/fleet-landing-detect-lib.sh"
+# shellcheck source=fleet-session-lib.sh
+. "$here/fleet-session-lib.sh"   # the session lane (ADR 0010): off unless FLEET_DISPATCH_SESSION_MODE says otherwise
 
 mode="${1:-once}"; [ $# -gt 0 ] && shift
 case "$mode" in once|loop|serve|ingest) ;; *) echo "usage: fleet-dispatch.sh {once|loop|serve|ingest}" >&2; exit 2 ;; esac
@@ -109,9 +111,24 @@ _fleet_dispatch_queue_lagmap() {
   printf '%s' "$map"
 }
 
+# _fleet_dispatch_session_scope_blocks <free-slots-json> -> a host-scope block
+# for every host with a free slot that the session lane is NOT live for (a
+# non-empty FLEET_DISPATCH_SESSION_LIVE_HOSTS that does not name it), so a staged
+# rollout offers session work only where it has been switched on.
+_fleet_dispatch_session_scope_blocks() {
+  local h out='[]'
+  for h in $(jq -r '[.[].host] | unique | .[]' <<<"$1" 2>/dev/null); do
+    _fleet_session_host_is_live "$h" && continue
+    out="$(jq -c --arg h "$h" '. + [{host: $h, scope: "host", repo: null, number: 0,
+            reason: "\($h) is not in the session lane\u0027s live host list (it runs its own session tick)"}]' <<<"$out")"
+  done
+  printf '%s' "$out"
+}
+
 # one allocation pass — the acceptance surface
 fleet_dispatch_once() {
   local api_root merged ordered free dec total now lagmap='{}'
+  local smode sess='[]' sall='[]' sblocks='[]' sdec='' held all
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   fleet_dispatch_drain_inbox >/dev/null
 
@@ -139,14 +156,51 @@ fleet_dispatch_once() {
   merged="$(fleet_queue_collect "${repos[@]}")"
   ordered="$(fleet_queue_order "$merged")"
   free="$(fleet_dispatch_free_slots "$lagmap")"
-  dec="$(fleet_dispatch_allocate "$ordered" "$free")"
+  # #384: the (host, repo) pairs already taken — a host runs one run per repo.
+  held="$(fleet_dispatch_held_repos)"
   total="$(jq length <<<"$ordered")"
+
+  # The session lane (ADR 0010). off: untouched — no read, no line, the allocation
+  # below is byte-for-byte the swarm-only one. shadow: the session queues are read
+  # and the MERGED order is allocated BESIDE the live swarm allocation and only
+  # logged, so the swarm lane cannot be changed by it. live: the merged order IS
+  # the allocation — a session ticket takes a slot on the same terms as a swarm
+  # ticket (priority label, then filing date), but only on a host that is being
+  # allocated for and whose offer poll is connected (a host that could not
+  # receive the offer keeps its own session tick, decision 5).
+  smode="$(fleet_session_mode)"
+  if [ "$smode" != off ]; then
+    fleet_session_outbox_sweep
+    sall="$(fleet_session_collect "${repos[@]}")"
+    [ -n "$sall" ] || sall='[]'
+    sess="$(fleet_session_ready "$sall")"     # workable now; the rest is logged as HELD
+    sblocks="$(fleet_session_blocks)"
+    all="$(fleet_queue_order "$(jq -cn --argjson a "$ordered" --argjson b "$sess" '$a + $b')")"
+  fi
+  if [ "$smode" = live ]; then
+    sblocks="$(jq -cn --argjson a "$sblocks" --argjson b "$(fleet_session_unconnected_blocks "$free")" \
+                 --argjson c "$(_fleet_dispatch_session_scope_blocks "$free")" '$a + $b + $c')"
+    dec="$(fleet_dispatch_allocate "$all" "$free" "$held" "$sblocks")"
+  else
+    dec="$(fleet_dispatch_allocate "$ordered" "$free" "$held")"
+    [ "$smode" = shadow ] && sdec="$(fleet_dispatch_allocate "$all" "$free" "$held" "$sblocks")"
+  fi
 
   echo "fleet-dispatch [$now] mode=$FLEET_DISPATCH_MODE${FLEET_DISPATCH_LIVE_HOSTS:+ (live hosts: $FLEET_DISPATCH_LIVE_HOSTS)}: $total ready fleet-wide, $(jq length <<<"$free") free slot(s)"
   echo "fleet-dispatch [$now] hosts:"
   fleet_dispatch_host_lines "$lagmap"
   echo "fleet-dispatch [$now] allocation:"
   fleet_dispatch_format_decisions "$dec"
+  case "$smode" in
+    live)
+      echo "fleet-dispatch [$now] session lane (live): $(jq length <<<"$sess") workable of $(jq length <<<"$sall") ready-for-session, one fleet order with the swarm lane"
+      fleet_session_format "$dec"
+      fleet_session_format_held "$sall" ;;
+    shadow)
+      echo "fleet-dispatch [$now] session lane (shadow — offering nothing): $(jq length <<<"$sess") workable of $(jq length <<<"$sall") ready-for-session; in one fleet order with the swarm lane it would be:"
+      fleet_session_format "$sdec"
+      fleet_session_format_held "$sall" ;;
+  esac
 
   # The start-a-run seam, once per placed pick (ruling C). The mode is decided PER
   # HOST (fleet_dispatch_host_mode), not from the global FLEET_DISPATCH_MODE: in
@@ -155,6 +209,8 @@ fleet_dispatch_once() {
   # Shadow logs "would start" and dispatches nothing; empty allowlist in live mode
   # is fleet-wide (stage 6c).
   local i n repo number host slot hmode arb
+  local sdecs="$dec"
+  dec="$(jq -c '[.[] | select((.lane // "swarm") != "session")]' <<<"$dec")"
   n="$(jq '[.[]|select(.placed)]|length' <<<"$dec")"
   for (( i = 0; i < n; i++ )); do
     repo="$(jq -r "[.[]|select(.placed)][$i].repo" <<<"$dec")"
@@ -176,13 +232,39 @@ fleet_dispatch_once() {
     case "$arb" in
       2) echo "fleet-dispatch [$now]: SKIP $repo#$number -> $host slot $slot — a live dispatch marker (host=$FLEET_DISPATCH_ARB_HOLDER) already holds it; not re-dispatching until it claims or the marker expires" ;;
       1) echo "fleet-dispatch [$now]: SKIP $repo#$number -> $host slot $slot — a peer host ($FLEET_DISPATCH_ARB_HOLDER) is already dispatching it (#351)" ;;
-      *) if ! fleet_dispatch_start_run live "$api_root" "$repo" "$number" "$host" "$slot"; then
+      *) if fleet_dispatch_start_run live "$api_root" "$repo" "$number" "$host" "$slot"; then
+           # #384: until this leg takes its slot the host still reads `free`, so
+           # remember the placement — the next pass must not send it a second
+           # run of the same repo.
+           fleet_dispatch_placed_record "$repo" "$host" "$number"
+         else
            # Nothing is running for this pick: release our marker now so the next
            # pass retries rather than waiting out the TTL (the host tick's rule).
            [ -z "${FLEET_DISPATCH_ARB_MARK:-}" ] || fleet_queue_mark_release "$api_root" "$FLEET_DISPATCH_ARB_MARK"
          fi ;;
     esac
   done
+
+  # The session lane's start seam (ADR 0010 decision 3), LIVE only: a placed
+  # session ticket becomes an OFFER in its host's outbox, which that host's long
+  # poll collects within a second. Nothing is posted to the tracker — the offer is
+  # remembered in the dispatcher's own spool until the host claims or declines.
+  if [ "$smode" = live ]; then
+    local title
+    n="$(jq '[.[]|select(.placed and (.lane // "swarm") == "session")]|length' <<<"$sdecs")"
+    for (( i = 0; i < n; i++ )); do
+      repo="$(jq -r "[.[]|select(.placed and (.lane // \"swarm\") == \"session\")][$i].repo" <<<"$sdecs")"
+      number="$(jq -r "[.[]|select(.placed and (.lane // \"swarm\") == \"session\")][$i].number" <<<"$sdecs")"
+      host="$(jq -r "[.[]|select(.placed and (.lane // \"swarm\") == \"session\")][$i].host" <<<"$sdecs")"
+      slot="$(jq -r "[.[]|select(.placed and (.lane // \"swarm\") == \"session\")][$i].slot" <<<"$sdecs")"
+      title="$(jq -r --arg r "$repo" --argjson n "$number" '[.[] | select(.repo == $r and .number == $n)][0].title // ""' <<<"$sess")"
+      if fleet_session_offer "$repo" "$host" "$number" "$title"; then
+        echo "fleet-session: offered $repo#$number to $host (slot $slot)"
+      else
+        echo "fleet-session: could not write the offer of $repo#$number to $host — it is retried next pass" >&2
+      fi
+    done
+  fi
 
   # Landing detection is NOT run here (#363): a pass's per-repo tracker reads can
   # take minutes, and run inline they would stall the allocator for most of every
@@ -347,6 +429,12 @@ if [ "$mode" = serve ]; then
   # posture the loop runs in (shadow acks acting=false; live acks acting=true only
   # for a host the loop actually dispatches to, so stage 6b stands down one host).
   export FLEET_DISPATCH_INBOX FLEET_DISPATCH_MODE FLEET_DISPATCH_LIVE_HOSTS
+  # The session lane's half (ADR 0010): the receiver serves the offer outbox to a
+  # host's long poll, stamps the poll as the proof that host's waiter is connected,
+  # and acknowledges "allocating session work" only for a host that is both.
+  export FLEET_DISPATCH_SESSION_MODE FLEET_DISPATCH_SESSION_LIVE_HOSTS
+  export FLEET_DISPATCH_SESSION_OUTBOX FLEET_DISPATCH_SESSION_WAITERS FLEET_DISPATCH_SESSION_WAITER_TTL
+  mkdir -p "$FLEET_DISPATCH_SESSION_OUTBOX" "$FLEET_DISPATCH_SESSION_WAITERS"
   python3 "$here/fleet-dispatch-receiver.py" &
   _rx=$!
   mode=loop

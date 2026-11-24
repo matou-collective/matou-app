@@ -1258,4 +1258,96 @@ grep -q "picked #25" <<<"$out" \
 rm -rf "$tmp/checkout/.sandcastle"
 echo "ok 27 a changed entrypoint re-execs the fresh checkout copy before the pick (#319)"
 
-echo "session-runner: 27 groups passed"
+# 28: the fleet dispatcher's offer (ADR 0010). An offered tick works the OFFERED
+#     ticket or nothing; this host keeps the veto and says why in the decline
+#     file; a plain tick on a host the dispatcher allocates for stands down.
+decl="$tmp/decline"
+# 28a: an offer of #30 is worked even though priority #25 outranks it here — the
+#      fleet order is the dispatcher's, not this host's — and leaves no decline.
+reset_case; : > "$decl"
+out="$(run_runner SESSION_RUNNER_OFFER=30 SESSION_RUNNER_DECLINE_FILE="$decl")"
+grep -q "offered #30 by the fleet dispatcher" <<<"$out" || fail "28a: an offered tick must say so (got: $out)"
+grep -q "picked #30" <<<"$out" || fail "28a: an offered tick must work the OFFERED ticket (got: $out)"
+grep -q "picked #25" <<<"$out" && fail "28a: an offered tick must not pick a different ticket"
+[ -s "$decl" ] && fail "28a: an accepted offer must leave no decline (got: $(cat "$decl"))"
+# 28b: an offered ticket this host's own read filters out (deferred) is declined
+#      before any claim.
+reset_case; : > "$decl"
+out="$(run_runner SESSION_RUNNER_OFFER=12 SESSION_RUNNER_DECLINE_FILE="$decl")"
+grep -q "offered #12 is not workable" <<<"$out" || fail "28b: a filtered-out offer must be declined (got: $out)"
+grep -q "^ticket 600 " "$decl" || fail "28b: the decline must be ticket-scoped with its hold (got: $(cat "$decl"))"
+grep -q "POST .*/issues/.*/labels" "$tmp/curl.log" && fail "28b: a declined offer must claim nothing"
+[ -s "$tmp/claude.calls" ] && fail "28b: a declined offer must start no session"
+# 28c: an offered ticket with an open dependency is declined with that reason.
+reset_case; : > "$decl"
+out="$(run_runner SESSION_RUNNER_OFFER=20 SESSION_RUNNER_DECLINE_FILE="$decl")"
+grep -q "^ticket 300 blocked by 1 open issue" "$decl" || fail "28c: a blocked offer must be declined naming the block (got: $(cat "$decl"))"
+[ -s "$tmp/claude.calls" ] && fail "28c: a blocked offer must start no session"
+# 28d: the kill switch declines for the whole repo; a full pool for the whole host.
+reset_case; : > "$decl"
+run_runner SESSION_RUNNER=0 SESSION_RUNNER_OFFER=30 SESSION_RUNNER_DECLINE_FILE="$decl" >/dev/null
+grep -q "^repo 1800 " "$decl" || fail "28d: the kill switch must decline repo-wide (got: $(cat "$decl"))"
+reset_case; : > "$decl"
+exec 7>"$tmp/hc-slot1"; flock -n 7 || fail "test setup: could not hold hc-slot1"
+exec 6>"$tmp/hc-slot2"; flock -n 6 || fail "test setup: could not hold hc-slot2"
+run_runner SESSION_RUNNER_OFFER=30 SESSION_RUNNER_DECLINE_FILE="$decl" >/dev/null
+exec 7>&-; exec 6>&-
+grep -q "^host 60 " "$decl" || fail "28d: a full pool must decline host-wide (got: $(cat "$decl"))"
+# 28e: a cooling-down ticket is declined for the time it has left; the host
+#      affinity marker declines a ticket declared for another host.
+reset_case; : > "$decl"; touch "$tmp/state/attempt-30"
+run_runner SESSION_RUNNER_COOLDOWN=3600 SESSION_RUNNER_OFFER=30 SESSION_RUNNER_DECLINE_FILE="$decl" >/dev/null
+read -r d_scope d_hold d_rest < "$decl" || true
+[ "$d_scope" = ticket ] && [ "$d_hold" -gt 3500 ] && [ "$d_hold" -le 3600 ] \
+  || fail "28e: a cooling-down offer must be declined for its remaining cool-down (got: $(cat "$decl"))"
+# 28f: an offer that is not a ticket number is refused outright (never "any ticket").
+reset_case; : > "$decl"
+rc=0; run_runner SESSION_RUNNER_OFFER="30;x" SESSION_RUNNER_DECLINE_FILE="$decl" >/dev/null || rc=$?
+[ "$rc" = 2 ] || fail "28f: a non-numeric offer must exit 2 (got rc=$rc)"
+[ -s "$tmp/curl.log" ] && fail "28f: a non-numeric offer must make no API call"
+# 28g: a plain tick WITHOUT an offer never writes a decline file.
+reset_case; : > "$decl"
+run_runner SESSION_RUNNER_DECLINE_FILE="$decl" >/dev/null
+[ -s "$decl" ] && fail "28g: an un-offered tick must write no decline"
+# 28h: stand-down — a fresh session acknowledgement makes a plain tick do its
+#      housekeeping and then stop: no slot, no claim, no session.
+sack="$tmp/session-ack"
+reset_case; printf '%s true true\n' "$(date +%s)" > "$sack"
+exec 7>"$tmp/hc-slot1"; flock -n 7 || fail "test setup: could not hold hc-slot1"
+exec 6>"$tmp/hc-slot2"; flock -n 6 || fail "test setup: could not hold hc-slot2"
+out="$(run_runner FLEET_DISPATCH_SESSION_ACK_STATE="$sack")"
+exec 7>&-; exec 6>&-
+grep -q "tick stands down after housekeeping" <<<"$out" || fail "28h: a session-acked plain tick must stand down (got: $out)"
+grep -qi "pool exhausted" <<<"$out" && fail "28h: a stood-down tick must not even try for a slot"
+grep -q "ready-for-session" "$tmp/curl.log" || fail "28h: a stood-down tick must still run its stale-claim sweep"
+grep -q "POST .*/issues/.*/labels" "$tmp/curl.log" && fail "28h: a stood-down tick must claim nothing"
+[ -s "$tmp/claude.calls" ] && fail "28h: a stood-down tick must start no session"
+# …but an OFFERED tick under the same acknowledgement runs, and a stale or
+# not-acting acknowledgement leaves the plain tick picking exactly as before.
+reset_case
+out="$(run_runner FLEET_DISPATCH_SESSION_ACK_STATE="$sack" SESSION_RUNNER_OFFER=30)"
+grep -q "picked #30" <<<"$out" || fail "28h: an offered tick must never be stood down (got: $out)"
+reset_case; printf '%s true true\n' "$(( $(date +%s) - 100000 ))" > "$sack"
+out="$(run_runner FLEET_DISPATCH_SESSION_ACK_STATE="$sack")"
+grep -q "picked #25" <<<"$out" || fail "28h: a STALE session ack must leave the tick picking for itself (got: $out)"
+reset_case; printf '%s true false\n' "$(date +%s)" > "$sack"
+out="$(run_runner FLEET_DISPATCH_SESSION_ACK_STATE="$sack")"
+grep -q "picked #25" <<<"$out" || fail "28h: a not-acting session ack must leave the tick picking for itself (got: $out)"
+# 28i: a session reports its slot take and its release to the dispatcher.
+reset_case
+run_runner HOST_NAME=box1 FLEET_DISPATCHER_URL=http://dispatcher.test/report FLEET_DISPATCH_SESSION_ACK_STATE="$tmp/sack2" \
+  FLEET_DISPATCH_ACK_STATE="$tmp/ack2" >/dev/null
+[ "$(grep -c "POST http://dispatcher.test/report" "$tmp/curl.log")" -ge 2 ] \
+  || fail "28i: a session must report its slot take and release to the dispatcher (got: $(grep dispatcher.test "$tmp/curl.log" || true))"
+reset_case
+run_runner >/dev/null
+grep -q "dispatcher" "$tmp/curl.log" && fail "28i: with no dispatcher declared a session must report nowhere"
+# 28j: with NO declared host name a session reports nothing — its own hostname is
+# not the fleet's name for it, and a report under it invents a host.
+reset_case
+run_runner SWARM_HOST= HOST_NAME= FLEET_DISPATCHER_URL=http://dispatcher.test/report FLEET_DISPATCH_SESSION_ACK_STATE="$tmp/sack3" \
+  FLEET_DISPATCH_ACK_STATE="$tmp/ack3" >/dev/null
+grep -q "dispatcher.test" "$tmp/curl.log" && fail "28j: a session with no declared host name must not report under its hostname"
+echo "ok 28 a dispatcher offer is worked or declined with a reason; a plain tick stands down only on a fresh session acknowledgement (ADR 0010)"
+
+echo "session-runner: 28 groups passed"

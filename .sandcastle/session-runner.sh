@@ -28,6 +28,19 @@
 # is picked ONLY by a host it names (no marker = any host, so nothing existing
 # changes). Skipped at pick time, so a wrong-host skip burns no attempt.
 # SESSION_RUNNER_HOST=<name> overrides the name this host answers to.
+#
+# The fleet dispatcher (ADR 0010): when the dispatcher allocates session work, it
+# OFFERS this host one ticket and the host's offer waiter (session-offer-wait.sh)
+# runs this script with SESSION_RUNNER_OFFER=<n>. The tick then works that ticket
+# or nothing — and every rule below still applies to it: this host KEEPS THE VETO.
+# A refusal is written to SESSION_RUNNER_DECLINE_FILE as one line
+# `<scope> <retry-after-seconds> <reason>` (scope = ticket | repo | host), which
+# the waiter sends back so the dispatcher stops offering it here for that long.
+# A plain cron tick (no offer) on a host the dispatcher is allocating session work
+# for — a fresh acknowledgement says so — does its housekeeping (self-refresh,
+# stale-claim sweep) and then stands down instead of picking; with no such
+# acknowledgement it picks for itself exactly as before, so stopping the
+# dispatcher changes nothing here but the latency.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -47,10 +60,26 @@ if [ -z "${SESSION_RUNNER_NO_STAMP:-}" ]; then
 fi
 SESSION_RUNNER_PROMPT_FILE="${SESSION_RUNNER_PROMPT_FILE:-$here/session-runner-prompt.md}"
 
+# ── offered by the fleet dispatcher (ADR 0010) ───────────────────────────────
+# An offer names ONE ticket number; anything else is not an offer and is ignored
+# loudly (never worked as "any ticket"). sr_decline records why this host will
+# not take the offered ticket — a no-op on a plain cron tick, so every call site
+# below costs an un-offered tick nothing.
+SESSION_RUNNER_OFFER="${SESSION_RUNNER_OFFER:-}"
+SESSION_RUNNER_DECLINE_FILE="${SESSION_RUNNER_DECLINE_FILE:-}"
+case "$SESSION_RUNNER_OFFER" in
+  ''|*[!0-9]*) [ -z "$SESSION_RUNNER_OFFER" ] || { echo "session-runner: SESSION_RUNNER_OFFER='$SESSION_RUNNER_OFFER' is not a ticket number — refusing to run"; exit 2; } ;;
+esac
+sr_decline() { # <scope: ticket|repo|host> <retry-after-seconds> <reason>
+  [ -n "$SESSION_RUNNER_OFFER" ] && [ -n "$SESSION_RUNNER_DECLINE_FILE" ] || return 0
+  printf '%s %s %s\n' "$1" "$2" "$3" >"$SESSION_RUNNER_DECLINE_FILE" 2>/dev/null || true
+}
+
 # ── kill switch: before any API call ─────────────────────────────────────────
 SESSION_RUNNER_OFF_FILE="${SESSION_RUNNER_OFF_FILE:-$here/session-runner.off}"
 if [ "${SESSION_RUNNER:-1}" = "0" ] || [ -f "$SESSION_RUNNER_OFF_FILE" ]; then
   echo "session-runner: kill switch is on — quiet tick"
+  sr_decline repo 1800 "the session-runner kill switch is on for this repo"
   exit 0
 fi
 
@@ -184,12 +213,17 @@ session_runner_alarm() {
 if ! id_err="$(identity_require 2>&1)"; then
   echo "session-runner: $id_err" >&2
   session_runner_alarm "$id_err"
+  sr_decline repo 3600 "identity layer does not satisfy the harness contract"
   exit 2
 fi
 
 # ── one at a time: a session in flight absorbs this tick ─────────────────────
 exec 9>"$SESSION_RUNNER_LOCK"
-if ! flock -n 9; then echo "session-runner: session in flight — tick absorbed"; exit 0; fi
+if ! flock -n 9; then
+  echo "session-runner: session in flight — tick absorbed"
+  sr_decline repo 300 "a session for this repo is already in flight on this host"
+  exit 0
+fi
 
 # ── belt: one live session per CHECKOUT (#78, GOTCHAS 25) ────────────────────
 # The outer lock above is keyed by slug; this one is keyed by the checkout, so a
@@ -203,6 +237,7 @@ if ! flock -n 9; then echo "session-runner: session in flight — tick absorbed"
 exec {sr_owner_fd}>"$SESSION_RUNNER_OWNER_LOCK"
 if ! flock -n "$sr_owner_fd"; then
   echo "session-runner: another live session owns the checkout — tick absorbed"
+  sr_decline repo 300 "another live session owns this repo's session checkout"
   exit 0
 fi
 
@@ -271,6 +306,22 @@ sr_self_refresh "$@"
 #    SESSION_RUNNER_LOCK already covers — process exit releases both fds.
 # shellcheck source=host-capacity-lib.sh
 . "$here/host-capacity-lib.sh"
+# The slot report + the dispatcher's acknowledgement (ADR 0009 / ADR 0010). A
+# harness copy that predates the session lane has no session half; guard the
+# call so this script still runs beside an older lib during a pin bump.
+# shellcheck source=fleet-slot-report-lib.sh
+[ -f "$here/fleet-slot-report-lib.sh" ] && . "$here/fleet-slot-report-lib.sh"
+# Stand down (ADR 0010 decision 5): a plain cron tick on a host the dispatcher is
+# allocating session work for takes NO slot and makes NO pick — it would only
+# race the dispatcher for a slot the dispatcher has already counted. It still
+# runs the housekeeping below (the limit sweep, the stale-claim sweep). An
+# offered tick, and the manual SESSION_RUNNER_PICK knob, are never stood down.
+sr_stand_down=0
+if [ -z "$SESSION_RUNNER_OFFER" ] && [ -z "${SESSION_RUNNER_PICK:-}" ] \
+   && command -v fleet_slot_report_session_acked_fresh >/dev/null 2>&1 \
+   && fleet_slot_report_session_acked_fresh; then
+  sr_stand_down=1
+fi
 # Drive reservation (#663 producer / #664 consumer): a waiting rehearsal drive
 # needs EVERY host lock at once and yields the instant one is busy, so it loses
 # to anything that claims in the gap — unboundedly. Stand down BEFORE taking a
@@ -280,15 +331,19 @@ sr_self_refresh "$@"
 # is session-runner's OWN (not the drive's) — its */10 cadence differs from
 # swarm's and triage's, so each consumer tracks its own streak (#664).
 SESSION_RUNNER_DRIVE_DEFER_COUNT="${SESSION_RUNNER_DRIVE_DEFER_COUNT:-$SESSION_RUNNER_TMP/matou-session-runner-$sr_slug-drive-defer-count}"
-if host_capacity_drive_wanted; then
-  n="$(host_capacity_consumer_defer_bump "$SESSION_RUNNER_DRIVE_DEFER_COUNT")"
-  echo "session-runner: a rehearsal drive has reserved host capacity (#663) — deferring to a ready drive — skipped $n consecutive tick(s)"
-  exit 0
-fi
-host_capacity_consumer_defer_reset "$SESSION_RUNNER_DRIVE_DEFER_COUNT"
-if ! host_capacity_acquire_heavy; then
-  echo "session-runner: host capacity pool exhausted — tick absorbed"
-  exit 0
+if [ "$sr_stand_down" = 0 ]; then
+  if host_capacity_drive_wanted; then
+    n="$(host_capacity_consumer_defer_bump "$SESSION_RUNNER_DRIVE_DEFER_COUNT")"
+    echo "session-runner: a rehearsal drive has reserved host capacity (#663) — deferring to a ready drive — skipped $n consecutive tick(s)"
+    sr_decline host 300 "a rehearsal drive has reserved this host's capacity"
+    exit 0
+  fi
+  host_capacity_consumer_defer_reset "$SESSION_RUNNER_DRIVE_DEFER_COUNT"
+  if ! host_capacity_acquire_heavy; then
+    echo "session-runner: host capacity pool exhausted — tick absorbed"
+    sr_decline host 60 "no free heavy slot on this host (both taken since the last slot report)"
+    exit 0
+  fi
 fi
 
 # ── the host-global limit guard every claude caller rides (#253/#510) ────────
@@ -297,12 +352,13 @@ fi
 claude_limit_sweep
 if claude_limit_parked; then
   echo "session-runner: host is limit-parked — quiet tick"
+  sr_decline host 900 "this host is parked on the Claude usage limit"
   exit 0
 fi
 
 # ── label ids, LOUD on a missing label (never guess an id) ───────────────────
 labels_json="$(api "$FORGEJO_API/labels?limit=50")" \
-  || { echo "session-runner: cannot read labels — quiet tick"; exit 0; }
+  || { echo "session-runner: cannot read labels — quiet tick"; sr_decline repo 120 "this host could not read the repo's labels"; exit 0; }
 label_id() {
   jq -er --arg n "$1" '.[] | select(.name == $n) | .id' <<<"$labels_json" \
     || { echo "session-runner: label '$1' missing on the repo" >&2; return 1; }
@@ -390,13 +446,19 @@ if [ -n "$sweep_queue" ]; then
   done
 fi
 
+# ── stood down: the dispatcher allocates this host's session work ────────────
+if [ "$sr_stand_down" = 1 ]; then
+  echo "session-runner: the fleet dispatcher allocates this host's session work (fresh acknowledgement, ADR 0010) — tick stands down after housekeeping"
+  exit 0
+fi
+
 # ── pick: priority first, then oldest; hard filters in jq, per-ticket checks
 #    (deps, cooldown, fail cap) in the loop ────────────────────────────────────
 if [ -n "${SESSION_RUNNER_PICK:-}" ]; then
   candidates="$SESSION_RUNNER_PICK"
 else
   queue="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=ready-for-session&limit=50")" \
-    || { echo "session-runner: cannot read the queue — quiet tick"; exit 0; }
+    || { echo "session-runner: cannot read the queue — quiet tick"; sr_decline repo 120 "this host could not read the session queue"; exit 0; }
   candidates="$(jq -r --arg drive "$REHEARSAL_DRIVE_ISSUE" '
     [ .[]
       | select(.state == "open")
@@ -408,6 +470,20 @@ else
     ]
     | sort_by((if ([.labels[].name] | index("priority")) != null then 0 else 1 end), .number)
     | .[].number' <<<"$queue")"
+  # An offered tick (ADR 0010) works the OFFERED ticket or nothing. It must still
+  # be a candidate by this host's own read of the queue — the same label filter
+  # as any tick — so a ticket relabelled since the dispatcher read it is declined,
+  # never worked on the dispatcher's word.
+  if [ -n "$SESSION_RUNNER_OFFER" ]; then
+    if grep -qx "$SESSION_RUNNER_OFFER" <<<"$candidates"; then
+      candidates="$SESSION_RUNNER_OFFER"
+      echo "session-runner: offered #$SESSION_RUNNER_OFFER by the fleet dispatcher (ADR 0010)"
+    else
+      echo "session-runner: offered #$SESSION_RUNNER_OFFER is not workable by this host's read of the queue — declined"
+      sr_decline ticket 600 "not in this host's workable session queue (relabelled, claimed or closed since it was offered)"
+      candidates=""
+    fi
+  fi
 fi
 
 # sr_issue_body <n> — the ticket's body, from the queue read we already hold
@@ -435,17 +511,22 @@ for n in $candidates; do
   sr_want="$(session_host_marker "$(sr_issue_body "$n")")"
   if ! session_host_match "$sr_want" "$sr_host"; then
     echo "session-runner: #$n is declared for host(s) '$sr_want' — this host is '$sr_host'; skipped (not an attempt, #89)"
+    sr_decline ticket 21600 "the ticket is declared for host(s) '$sr_want' (session-host marker)"
     continue
   fi
   # cooling down after a failed attempt? (mtime-fresh attempt marker)
   am="$SESSION_RUNNER_STATE/attempt-$n"
   if [ "$SESSION_RUNNER_COOLDOWN" -gt 0 ] && [ -f "$am" ] \
      && [ $(( $(date +%s) - $(stat -c %Y "$am") )) -le "$SESSION_RUNNER_COOLDOWN" ]; then
-    echo "session-runner: #$n cooling down — skipped"; continue
+    echo "session-runner: #$n cooling down — skipped"
+    sr_decline ticket "$(( SESSION_RUNNER_COOLDOWN - ( $(date +%s) - $(stat -c %Y "$am") ) ))" "cooling down after an attempt on this host that did not advance it"
+    continue
   fi
   # already escalated? (belt to agent-blocked's braces)
   if [ -f "$SESSION_RUNNER_STATE/fail-$n" ] && [ "$(cat "$SESSION_RUNNER_STATE/fail-$n")" -ge 2 ]; then
-    echo "session-runner: #$n failed twice — escalated, skipped"; continue
+    echo "session-runner: #$n failed twice — escalated, skipped"
+    sr_decline ticket 86400 "two attempts on this host did not advance it (escalated)"
+    continue
   fi
   # how the ticket lands (#164): push or pr. #302 lets the session WORK a pr-mode
   # ticket — the prompt branches on the mode resolved here, opening the ticket's PR
@@ -458,6 +539,7 @@ for n in $candidates; do
   # attempt marker/fail-$n) — rather than guessed.
   if ! sr_landing="$(landing_mode_for "$n" 2>/dev/null)"; then
     echo "session-runner: #$n — cannot resolve how it lands; skipped rather than risk landing it the wrong way (#165/#302, not an attempt)"
+    sr_decline ticket 1800 "this host cannot resolve how the ticket lands (push or pr)"
     continue
   fi
   if [ "$sr_landing" = pr ]; then
@@ -470,18 +552,23 @@ for n in $candidates; do
     if sr_existing_pr="$(landing_open_pr_for "$n" 2>/dev/null)" && [ -n "$sr_existing_pr" ]; then
       echo "session-runner: #$n already has an open PR (#$sr_existing_pr) — handed to review; dropping ready-for-session, skipped (#302, not an attempt)"
       api -X DELETE "$FORGEJO_API/issues/$n/labels/$rfs_id" >/dev/null 2>&1 || true
+      sr_decline ticket 3600 "the ticket already has an open pull request (handed to review)"
       continue
     fi
   fi
   open_deps="$(api "$FORGEJO_API/issues/$n/dependencies?limit=50" \
     | jq '[.[] | select(.state == "open")] | length')" \
-    || { echo "session-runner: #$n dependency check failed — skipped (never run on an unverified frontier)"; continue; }
-  [ "$open_deps" = "0" ] || { echo "session-runner: #$n blocked by $open_deps open issue(s) — skipped"; continue; }
+    || { echo "session-runner: #$n dependency check failed — skipped (never run on an unverified frontier)"; sr_decline ticket 120 "this host could not read the ticket's dependencies"; continue; }
+  [ "$open_deps" = "0" ] || { echo "session-runner: #$n blocked by $open_deps open issue(s) — skipped"; sr_decline ticket 300 "blocked by $open_deps open issue(s)"; continue; }
   pick="$n"; break
 done
 [ -n "$pick" ] || { echo "session-runner: nothing workable in the session queue — quiet tick"; exit 0; }
+# An offered ticket that got this far is being taken: drop anything a skipped
+# sibling wrote (there is none on an offered tick, but the file must not carry a
+# stale refusal of a ticket this host goes on to claim).
+[ -z "$SESSION_RUNNER_DECLINE_FILE" ] || : >"$SESSION_RUNNER_DECLINE_FILE" 2>/dev/null || true
 
-issue="$(api "$FORGEJO_API/issues/$pick")" || { echo "session-runner: cannot read #$pick — quiet tick"; exit 0; }
+issue="$(api "$FORGEJO_API/issues/$pick")" || { echo "session-runner: cannot read #$pick — quiet tick"; sr_decline ticket 120 "this host could not read the ticket"; exit 0; }
 title="$(jq -r '.title' <<<"$issue")"
 body="$(jq -r '.body' <<<"$issue")"
 echo "session-runner: picked #$pick — $title"
@@ -526,6 +613,13 @@ sr_on_exit() {
   # other cleanup.
   host_capacity_holder_clear_held 2>/dev/null || true
   [ "$session_recorded" = 1 ] || return 0
+  # A session that ends WITHOUT reaching the release above (a limit park, a
+  # trapped signal) still frees its slot now: release it and say so, so the
+  # dispatcher does not carry a dead session until the host's next tick.
+  if [ -n "${HOST_CAPACITY_HELD_SLOT:-}" ]; then
+    host_capacity_release_heavy 2>/dev/null || true
+    command -v fleet_slot_report_emit >/dev/null 2>&1 && fleet_slot_report_emit end >/dev/null 2>&1 || true
+  fi
   local now reason
   now="$(date +%s)"
   reason="${sr_verdict:-died-in:session}"
@@ -544,7 +638,7 @@ trap 'sr_on_signal SIGINT 130' INT
 jq -n --argjson l "$aw_id" '{labels: [$l]}' \
   | api -X POST -H 'Content-Type: application/json' -d @- \
       "$FORGEJO_API/issues/$pick/labels" >/dev/null \
-  || { echo "session-runner: could not claim #$pick — quiet tick"; exit 0; }
+  || { echo "session-runner: could not claim #$pick — quiet tick"; sr_decline ticket 120 "this host could not post its claim on the ticket"; exit 0; }
 claimed=1
 
 # ── cross-host claim arbitration (#125): before the expensive checkout+session ─
@@ -584,6 +678,7 @@ if [ -n "$sr_claim_id" ] && [ "$sr_claim_id" != null ]; then
   sr_alive="$(claim_fresh_runs "$pick" "$SESSION_RUNNER_CLAIM_TTL" 2>/dev/null || echo '[]')"
   if ! claim_won "$pick" "$sr_claim_id" "${sr_alive:-[]}"; then
     echo "session-runner: #$pick — a peer host's claim outranks ours (#125); standing down before the session (a lost race is not a failed attempt)"
+    sr_decline ticket 600 "a peer host's claim on the ticket outranks this host's"
     release_claim
     exit 0
   fi
@@ -628,6 +723,21 @@ touch "$SESSION_RUNNER_STATE/attempt-$pick"
 # monitor reads <slot>.holder to show what each slot is busy with — a session
 # writes no swarm.db run row, so without this it is invisible there.
 host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" session "$pick" "$REPO_SLUG" session-runner
+# Tell the fleet dispatcher this slot is now taken by a session (ADR 0009 ruling
+# A's `take` moment, ADR 0010): without it the dispatcher learns of a session
+# only at the host's next two-minute tick and can offer the slot away meanwhile.
+# Best-effort and silent with no dispatcher declared — it never fails a tick.
+# ONLY under a DECLARED host name (SWARM_HOST or HOST_NAME, the registry's name):
+# a session cron line sets neither on every host, and the report's fallback — the
+# machine's own hostname — is not the name the fleet knows the host by, so a
+# report sent under it shows the dispatcher a host that does not exist, with
+# free slots it would dispatch swarm work to. No declared name = no report; the
+# host's own queue tick reports this slot within its cadence, as it always did.
+sr_slot_report() {
+  [ -n "${SWARM_HOST:-${HOST_NAME:-}}" ] || return 0
+  command -v fleet_slot_report_emit >/dev/null 2>&1 && fleet_slot_report_emit "$1" >/dev/null 2>&1 || true
+}
+sr_slot_report take
 prompt="$(cat "$SESSION_RUNNER_PROMPT_FILE")
 
 Ticket #$pick: $title
@@ -677,6 +787,7 @@ while :; do
       continue
     fi
     claude_limit_park
+    sr_decline host 900 "this host hit the Claude usage limit and parked"
     sr_verdict="limit-parked"   # not a ticket failure; the run row records why the session ended without advancing
     echo "session-runner: Claude usage limit — parked the host; #$pick is untouched (not a failure)"
     notify ":hourglass_flowing_sand: **session-runner parked — Claude limit** while holding #$pick; claim released, the ticket re-queues after the window."
@@ -705,6 +816,7 @@ fi
 # reaches here — every yield/absorb/limit-park path exited above — so this is
 # one nudge per session end, none on a yielded or absorbed tick.
 host_capacity_release_heavy
+sr_slot_report end   # the freed slot, in seconds rather than at the next tick (ADR 0010)
 session_runner_nudge
 
 # ── outcome: the ticket itself is the verdict ────────────────────────────────

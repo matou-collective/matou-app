@@ -75,7 +75,12 @@ STATUS_HEADROOM_MIN=$LINE_MAX   # >= 2 KB spare under the ceiling (#374)
 #     hazard row would not fit. Same ADR 0174 two-way-door ruling, same
 #     append-only invariant — raise 32768 → 40960 (32 KB → 40 KB), add the row,
 #     never rewrite a line. Leaves ~7.2 KB — room for ~14 more tightened rows.
-GOTCHAS_MAX=40960  # 40 KB — see rationale above (#359, was 32768 under #331, 24576 under #196)
+#   * #388 is the next successor: #359's ~7.2 KB had been consumed by the rows
+#     since (through #384), leaving the 40960 ceiling ~366 B of headroom — this
+#     ticket's one compact hazard row would not fit. Same ADR 0174 two-way-door
+#     ruling, same append-only invariant — raise 40960 → 49152 (40 KB → 48 KB),
+#     add the row, never rewrite a line. Leaves ~7.5 KB — room for ~14 more.
+GOTCHAS_MAX=49152  # 48 KB — see rationale above (#388, was 40960 under #359, 32768 under #331, 24576 under #196)
 
 status="$root/STATUS.md"
 gotchas="$root/docs/GOTCHAS.md"

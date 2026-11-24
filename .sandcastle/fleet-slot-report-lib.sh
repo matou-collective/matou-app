@@ -133,6 +133,41 @@ fleet_slot_report_acked_fresh() {
   [ "$age" -ge 0 ] && [ "$age" -lt "$FLEET_DISPATCH_ACK_TTL" ]
 }
 
+# ── the session half of the acknowledgement (ADR 0010 decision 5) ────────────
+# The same 2xx body carries `session_acting`: true iff the dispatcher is
+# allocating SESSION work for this host — its session lane is live for the host
+# AND the host's offer poll (session-offer-wait.sh) is connected. A host with a
+# fresh such ack stands its ten-minute session tick down to housekeeping; without
+# one it picks for itself exactly as before. It is recorded in its OWN file, in
+# the same "<receipt-epoch> <ok> <acting>" line shape, so the swarm half above is
+# byte-for-byte unchanged and a harness copy that predates the session lane (it
+# reads only the first file) never misreads a line it did not write.
+FLEET_DISPATCH_SESSION_ACK_STATE="${FLEET_DISPATCH_SESSION_ACK_STATE:-$HOST_CAPACITY_STATE_DIR/fleet-dispatch-session-ack}"
+
+_fleet_slot_report_record_session_ack() {
+  local ok="$1" acting="$2" f="$FLEET_DISPATCH_SESSION_ACK_STATE"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  if printf '%s %s %s\n' "$(_fleet_slot_report_now)" "$ok" "$acting" >"$f.tmp" 2>/dev/null; then
+    mv -f "$f.tmp" "$f" 2>/dev/null || rm -f "$f.tmp" 2>/dev/null || true
+  else
+    rm -f "$f.tmp" 2>/dev/null || true
+  fi
+}
+
+# fleet_slot_report_session_acked_fresh -> rc 0 iff this host's most recent slot
+# report drew a FRESH ack saying the dispatcher allocates its session work. rc 1
+# — the session tick picks for itself — on no file, a malformed line, a failed
+# push, a not-acting ack, or one older than the ack TTL.
+fleet_slot_report_session_acked_fresh() {
+  local f="$FLEET_DISPATCH_SESSION_ACK_STATE" at ok acting age
+  [ -s "$f" ] || return 1
+  read -r at ok acting <"$f" || return 1
+  case "$at" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$ok" = true ] && [ "$acting" = true ] || return 1
+  age=$(( $(_fleet_slot_report_now) - at ))
+  [ "$age" -ge 0 ] && [ "$age" -lt "$FLEET_DISPATCH_ACK_TTL" ]
+}
+
 # fleet_slot_report_lock_key <path> -> the "major:minor:inode" key the kernel
 # prints for <path> in /proc/locks ("%02x:%02x:%lu" of the file's st_dev
 # major/minor and inode), or nothing when stat cannot answer. The dev_t decode
@@ -300,7 +335,7 @@ fleet_slot_report_build() {
 # or a tick; the next tick report corrects the dispatcher (decision 3's event
 # wakes, periodic corrects).
 fleet_slot_report_send() {
-  local json="$1" url="${FLEET_DISPATCHER_URL:-}" resp code body acting
+  local json="$1" url="${FLEET_DISPATCHER_URL:-}" resp code body acting sacting
   [ -n "$url" ] || return 0
   command -v curl >/dev/null 2>&1 || return 0
   # Capture the body AND the code ('\n%{http_code}' appends the code on its own
@@ -321,11 +356,17 @@ fleet_slot_report_send() {
       acting="$(printf '%s' "$body" | jq -r '.acting // false' 2>/dev/null)"
       case "$acting" in true) acting=true ;; *) acting=false ;; esac
       _fleet_slot_report_record_ack true "$acting"
+      # The session half (ADR 0010): absent on a dispatcher that predates the
+      # session lane, which reads false — the host keeps its own session tick.
+      sacting="$(printf '%s' "$body" | jq -r '.session_acting // false' 2>/dev/null)"
+      case "$sacting" in true) sacting=true ;; *) sacting=false ;; esac
+      _fleet_slot_report_record_session_ack true "$sacting"
       return 0 ;;
     *)
       # A failed or non-2xx push is a DEAD ack: record it so the host's next tick
       # resumes its own dispatch within one heartbeat, not at the TTL (decision 4).
       _fleet_slot_report_record_ack false false
+      _fleet_slot_report_record_session_ack false false
       echo "fleet-slot-report: push to the dispatcher failed (http=${code:-000}) — the next tick report corrects it" >&2
       return 0 ;;
   esac
