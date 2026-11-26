@@ -364,11 +364,24 @@
             class="archived-section"
             data-testid="archived-contributions"
           >
-            <div class="unassigned-header">
+            <div
+              class="unassigned-header archived-header"
+              data-testid="archived-contributions-toggle"
+              role="button"
+              tabindex="0"
+              :aria-expanded="archivedExpanded"
+              @click="archivedExpanded = !archivedExpanded"
+              @keydown.enter.prevent="archivedExpanded = !archivedExpanded"
+              @keydown.space.prevent="archivedExpanded = !archivedExpanded"
+            >
               <span class="unassigned-title">Archived contributions</span>
               <span class="unassigned-count">{{ archivedContributions.length }}</span>
+              <ChevronDown
+                class="archived-expand-icon"
+                :class="{ rotated: archivedExpanded }"
+              />
             </div>
-            <ul class="archived-list">
+            <ul v-if="archivedExpanded" class="archived-list" data-testid="archived-list">
               <li
                 v-for="c in archivedContributions"
                 :key="c.id"
@@ -737,6 +750,7 @@ import {
   UserPlus,
   Vote,
   ChevronRight,
+  ChevronDown,
   ClipboardList,
   CheckCircle,
   Clock,
@@ -1064,6 +1078,10 @@ const archivedContributions = computed(() => {
 });
 
 const restoringContributionId = ref<string | null>(null);
+
+// Archived contributions (#860): the list can grow extremely long, so it is
+// collapsed by default — only the header + count show until the user expands it.
+const archivedExpanded = ref(false);
 
 async function doRestoreContribution(c: Contribution) {
   if (!project.value || restoringContributionId.value) return;
@@ -2292,6 +2310,27 @@ async function submitAssign() {
 
 .archived-section {
   margin-top: 16px;
+}
+
+.archived-header {
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--matou-radius-sm);
+
+  &:hover .unassigned-title {
+    color: var(--matou-foreground);
+  }
+}
+
+.archived-expand-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--matou-muted-foreground);
+  transition: transform 0.15s ease;
+
+  &.rotated {
+    transform: rotate(180deg);
+  }
 }
 
 .archived-list {
