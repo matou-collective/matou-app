@@ -3207,7 +3207,7 @@ func closeFixture(t *testing.T) (*Service, context.Context, *Contribution, []*Co
 	return svc, ctx, parent, kids
 }
 
-func setCloseTestStatus(t *testing.T, svc *Service, ctx context.Context, c *Contribution, st ContributionStatus) {
+func setCloseTestStatus(ctx context.Context, t *testing.T, svc *Service, c *Contribution, st ContributionStatus) {
 	t.Helper()
 	c.Status = st
 	if err := svc.SaveContribution(ctx, "s", c); err != nil {
@@ -3221,8 +3221,8 @@ func closeProof(id string) *Proof {
 
 func TestCloseParentContribution_AllChildrenRewarded(t *testing.T) {
 	svc, ctx, parent, kids := closeFixture(t)
-	setCloseTestStatus(t, svc, ctx, kids[0], ContribRewarded)
-	setCloseTestStatus(t, svc, ctx, kids[1], ContribArchived) // archived children are ignored
+	setCloseTestStatus(ctx, t, svc, kids[0], ContribRewarded)
+	setCloseTestStatus(ctx, t, svc, kids[1], ContribArchived) // archived children are ignored
 	parent.ActualCost = 50
 	parent.Status = ContribAssigned
 	_ = svc.SaveContribution(ctx, "s", parent)
@@ -3248,8 +3248,8 @@ func TestCloseParentContribution_AllChildrenRewarded(t *testing.T) {
 
 func TestCloseParentContribution_OpenChildRefused(t *testing.T) {
 	svc, ctx, parent, kids := closeFixture(t)
-	setCloseTestStatus(t, svc, ctx, kids[0], ContribRewarded)
-	setCloseTestStatus(t, svc, ctx, kids[1], ContribSignedOff) // signed off but not yet rewarded
+	setCloseTestStatus(ctx, t, svc, kids[0], ContribRewarded)
+	setCloseTestStatus(ctx, t, svc, kids[1], ContribSignedOff) // signed off but not yet rewarded
 	_, err := svc.CloseParentContribution(ctx, "s", parent.ID, "lead", "done", closeProof(parent.ID))
 	var open *OpenChildrenError
 	if !errors.As(err, &open) || len(open.IDs) != 1 || open.IDs[0] != kids[1].ID {
@@ -3263,8 +3263,8 @@ func TestCloseParentContribution_OpenChildRefused(t *testing.T) {
 
 func TestCloseParentContribution_ReasonAndShape(t *testing.T) {
 	svc, ctx, parent, kids := closeFixture(t)
-	setCloseTestStatus(t, svc, ctx, kids[0], ContribRewarded)
-	setCloseTestStatus(t, svc, ctx, kids[1], ContribRewarded)
+	setCloseTestStatus(ctx, t, svc, kids[0], ContribRewarded)
+	setCloseTestStatus(ctx, t, svc, kids[1], ContribRewarded)
 	if _, err := svc.CloseParentContribution(ctx, "s", parent.ID, "lead", " ", closeProof(parent.ID)); err == nil {
 		t.Error("blank reason must be refused")
 	}
