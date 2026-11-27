@@ -59,6 +59,8 @@ run_swarm() { # run_swarm [extra env assignments...] -> stdout+stderr, sets RC
     PATH="$tmp/bin:$PATH" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://x/api/v1/repos/Acme/widget \
     REPO_SLUG=Acme/widget SWARM_HOST=box1 \
+    HOST_CAPACITY_STATE_DIR="$tmp/host-state" \
+    SWARM_FLEET_PICK_SIGNAL="$tmp/no-such-fleet-pick" \
     HOST_CAPACITY_DRIVE_WANTED="$tmp/no-such-reservation" \
     SWARM_DRIVE_DEFER_COUNT="$tmp/defer" \
     SWARM_VERDICT_PATH="$verdict" SWARM_RUNLOG="$runlog" \
@@ -99,6 +101,21 @@ grep -q 'host=box1' "$runlog" || fail "the runlog must carry the executing host 
 grep -q 'runner=unknown' "$runlog" || fail "the runlog must carry the runner name (#135): $(cat "$runlog")"
 pass=$((pass+1))
 
+# #339: the host/cron path (no Actions RUNNER_NAME) resolves the runner name from
+# this host's .runner the way the factory WRITES it — <ONBOARD_HOST_RUNNER_DIR>/.runner,
+# not the old `${SWARM_RUNNER_FILE:-$HOME/.runner}` default that named a path
+# onboarding never creates, which silently lost the #135 runner name on every
+# factory-onboarded host. SWARM_RUNNER_FILE empty, onboarding default present.
+mkdir -p "$tmp/forgejo-runner"
+printf '{"uuid":"4ff4a71f-dead-beef-0000-111111111111","name":"swarm-01"}\n' > "$tmp/forgejo-runner/.runner"
+rm -f "$verdict" "$runlog" "$tmp/stamp"; : > "$curl_log"
+run_swarm SCHEDULE_LIST_READY="$tmp/list-ready-empty" \
+  SWARM_RUNNER_FILE= ONBOARD_HOST_RUNNER_DIR="$tmp/forgejo-runner"
+[ "$RC" = 0 ] || fail "#339 run must exit 0, got $RC: $out"
+grep -q 'runner=swarm-01' "$runlog" \
+  || fail "#339: with no RUNNER_NAME and SWARM_RUNNER_FILE unset, the runner name must come from <ONBOARD_HOST_RUNNER_DIR>/.runner, not the dead \$HOME/.runner default: $(cat "$runlog")"
+pass=$((pass+1))
+
 # the PRESENT-policy-file branch, given explicit coverage (#101). The whole-script
 # run above exercises whichever branch the .sandcastle under test lands on — the
 # defaults branch in the factory's own copy (no swarm-policy.sh), the present-file
@@ -125,16 +142,21 @@ grep -q 'defaults (' <<<"$present_out" \
   && fail "the present-file branch must NOT carry the defaults wrapper: $present_out"
 pass=$((pass+1))
 
-# the drive-reservation gate short-circuits BEFORE any of that — no tracker call,
-# no verdict, no runlog line (proven end-to-end in run-swarm-drive-yield-test.sh;
-# asserted here as the FIRST stage in the sequence)
+# the drive-reservation gate short-circuits BEFORE any of that — no tracker call
+# and no verdict, but it now leaves ONE runlog line so a stood-down host is not
+# invisible on disk (#1733; the elitebook-03 blind spot behind #1732). It is a
+# runlog line, NOT a verdict (a yield stays a clean exit that keys no healer
+# signature) and NOT a tracker touch. Asserted here as the FIRST stage in the
+# sequence; the end-to-end shape is in run-swarm-drive-yield-test.sh.
 rm -f "$verdict" "$runlog" "$tmp/defer"; : > "$curl_log"
 : > "$tmp/drive-wanted"
 run_swarm SCHEDULE_LIST_READY="$tmp/list-ready-empty" HOST_CAPACITY_DRIVE_WANTED="$tmp/drive-wanted"
 [ "$RC" = 0 ] || fail "a drive yield must exit 0, got $RC: $out"
 grep -q 'yielding this run to a ready drive' <<<"$out" || fail "the yield must be reported: $out"
 [ ! -s "$curl_log" ] || fail "the yield must precede EVERY tracker call: $(cat "$curl_log")"
-[ ! -s "$runlog" ] 2>/dev/null || fail "a yield is not a recorded run: $(cat "$runlog")"
+[ ! -s "$verdict" ] 2>/dev/null || fail "a yield keys no healer verdict: $(cat "$verdict")"
+grep -q 'reason=yielded-to-drive' "$runlog" || fail "a yield must record its reason in the runlog (#1733): $(cat "$runlog")"
+grep -q 'exit=0' "$runlog" || fail "a yield is a clean exit — the runlog line must read exit=0: $(cat "$runlog")"
 pass=$((pass+1))
 
 # a red preflight aborts BEFORE the janitor mutates a label or a worker spawns
@@ -158,6 +180,37 @@ $(cat "$verdict")"
 grep -q 'host=box1' "$runlog" || fail "a red run's runlog row must carry the host (#135): $(cat "$runlog")"
 pass=$((pass+1))
 
+# #157a: a red run names its failing stage on the TASK LOG (stderr), not only in
+# the on-disk verdict. The operator reads the actions_log off a red tick; before
+# this it was blank between the policy line and `RUN exit status 1`, so the
+# healer keyed the empty log to one signature and silenced it.
+grep -qE "run-swarm: RUN FAILED — exit 1 in stage 'preflight self-tests[^']*' \\(reason=preflight-red\\)" <<<"$out" \
+  || fail "a red run must name its stage + reason on stderr (#157):
+$out"
+pass=$((pass+1))
+
+# #157b: a ready-list read that fails after its OWN retries is a transient forge
+# blip, not work this host can do — stand down CLEAN and say so, rather than a
+# silent exit 1 that reds a tick with nothing to do (matou-app#442, ~2% of ticks).
+cat > "$tmp/list-ready-fails" <<'SH'
+#!/usr/bin/env bash
+echo "list-ready-tasks: GET /issues failed after 3 attempts (last http=503)" >&2
+exit 22
+SH
+chmod +x "$tmp/list-ready-fails"
+rm -f "$verdict" "$runlog" "$tmp/stamp"; : > "$curl_log"
+run_swarm SCHEDULE_LIST_READY="$tmp/list-ready-fails"
+[ "$RC" = 0 ] || fail "a transient ready-list failure must stand down clean, got $RC:
+$out"
+grep -q 'standing down clean' <<<"$out" || fail "the stand-down must say so on stderr (#157):
+$out"
+grep -q 'reason=list-ready-transient' "$runlog" \
+  || fail "the runlog must name the stand-down reason, not a derived died-in: $(cat "$runlog")"
+grep -q 'exit=0' "$runlog" || fail "the stand-down must record exit=0: $(cat "$runlog")"
+grep -q 'RUN FAILED' <<<"$out" && fail "a clean stand-down must NOT print the red-run line (#157)"
+grep -q 'no ready tasks' <<<"$out" && fail "a failed read must not be reported as an empty ready set"
+pass=$((pass+1))
+
 # ── half 2: the orchestrator is still a SEQUENCE, in order ────────────────
 # One entry point per seam, each in its own library. If a stage's logic is ever
 # pasted back inline, its call disappears and this reds.
@@ -175,6 +228,7 @@ for stage in \
     'preflight_policy_gate' \
     'schedule_janitor_rearm' \
     'schedule_list_ready_or_verdict' \
+    'schedule_fleet_pick' \
     'schedule_debounce_decide' \
     'preflight_model_gate' \
     'provision_env_materialize' \
@@ -197,6 +251,19 @@ for stage in \
 done
 pass=$((pass+1))
 
+# #301: the slot holder is written only once the run has its ticket — AFTER
+# the fleet pick — so a leg that stands down leaves no ticket-shaped holder.
+hp="$(stage_line host_capacity_holder_write)"; fp="$(stage_line schedule_fleet_pick)"
+[ -n "$hp" ] && [ -n "$fp" ] && [ "$hp" -gt "$fp" ] \
+  || fail "host_capacity_holder_write must come after schedule_fleet_pick (holder line $hp, pick line $fp)"
+# The holder NAMES the fleet pick (ref = the ticket number) so the Floor shows
+# the ticket on its slot from claim time, not "ticket —" until the run ends.
+grep -q 'host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket "${SCHEDULE_FLEET_PICK:-run}"' "$rs" \
+  || fail "the ticket holder's ref must be the fleet pick (SCHEDULE_FLEET_PICK), falling back to run"
+grep -q 'report_self_rearm "\$worker_ran" "\$repo_slug" "\$sandcastle_attempts"' "$rs" \
+  || fail "report_self_rearm must be handed the repo slug and the attempts file (#301)"
+pass=$((pass+1))
+
 # every seam library it depends on is sourced
 for lib in preflight schedule provision execute verify landing report; do
   grep -q "^\. \"\$here/$lib-lib.sh\"$" "$rs" || fail "run-swarm.sh must source $lib-lib.sh"
@@ -206,9 +273,14 @@ pass=$((pass+1))
 # …and stays THIN. The 2026-08-15 survey measured 598 lines / 22 responsibilities
 # as the patch-magnet threshold; the decomposition's whole point is that this
 # file cannot drift back there unnoticed. Generous ceiling — this is a ratchet
-# against regrowth, not a golf score.
+# against regrowth, not a golf score. Moved 200 -> 202 for the ADR 0009 slot
+# report seam (#354): one sourced lib + one delegated `fleet_slot_report_emit
+# take` call at the holder write — logic in fleet-slot-report-lib.sh, not inline.
+# Moved 202 -> 203 for #359: one delegated `landing_promote_landed` call on the
+# land-success path — the clear + re-arm logic lives in landing-lib.sh, the thin
+# wiring here mirrors the existing landing_reopen_stranded_closes calls.
 lines="$(grep -cvE '^[[:space:]]*(#|$)' "$rs")"
-[ "$lines" -lt 200 ] || fail "run-swarm.sh has regrown to $lines code lines — a stage has moved back inline"
+[ "$lines" -lt 203 ] || fail "run-swarm.sh has regrown to $lines code lines — a stage has moved back inline"
 pass=$((pass+1))
 
 # the EXIT trap still finalises every trace (verdict, runlog, swarm.db, the #435

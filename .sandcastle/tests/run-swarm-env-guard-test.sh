@@ -57,7 +57,7 @@ pass=$((pass+1))
 # --- 3. Host-mode, clean pre-existing .env → passes, left UNTOUCHED (never
 #        clobber a developer's real .env on a host run). ---
 d="$(setup_workdir host-clean)"
-printf 'CLAUDE_CODE_OAUTH_TOKEN=sk-test\nFORGEJO_API=https://example\n' > "$d/.env"
+printf 'ANTHROPIC_API_KEY=sk-test\nFORGEJO_API=https://example\n' > "$d/.env"
 before="$(cat "$d/.env")"
 host_mode "$d" || fail "host-mode with a clean .env must pass"
 after="$(cat "$d/.env")"
@@ -67,7 +67,7 @@ pass=$((pass+1))
 # --- 4. Host-mode, .env with a stray secret-shaped key → refused, and the
 #        file is left in place (untouched) so the operator can fix it. ---
 d="$(setup_workdir host-bad)"
-printf 'CLAUDE_CODE_OAUTH_TOKEN=sk-test\nFOO_TOKEN=leaked\n' > "$d/.env"
+printf 'ANTHROPIC_API_KEY=sk-test\nFOO_TOKEN=leaked\n' > "$d/.env"
 before="$(cat "$d/.env")"
 vp="$tmp/host-bad-verdict.txt"
 if host_mode "$d" "$vp" 2>"$tmp/err"; then

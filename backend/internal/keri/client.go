@@ -161,7 +161,7 @@ func GetPermissionsForRole(role string) []string {
 		"Cultural Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "manage_cultural"},
 	}
 
-	if perms, ok := permissions[role]; ok {
+	if perms, ok := permissions[CanonicalRole(role)]; ok {
 		return perms
 	}
 	return []string{"read"}
@@ -183,10 +183,33 @@ func ValidRoles() []string {
 	}
 }
 
-// IsValidRole checks if a role is one of the 10 builtin membership roles.
+// IDSS membership roles (idss credschema.RoleOperator / RoleMember): an IDSS
+// community issues Membership with role "operator" (its steward) or "member".
+// They map onto the builtin roles — the steward onto the most-privileged one,
+// matching the frontend's IDSS_STEWARD_APP_ROLE (idss #1876, Ben 2026-09-25).
+const (
+	IDSSRoleOperator = "operator"
+	IDSSRoleMember   = "member"
+)
+
+// CanonicalRole maps an IDSS membership role onto its builtin role; any other
+// role is returned unchanged.
+func CanonicalRole(role string) string {
+	switch role {
+	case IDSSRoleOperator:
+		return "Founding Member"
+	case IDSSRoleMember:
+		return "Member"
+	}
+	return role
+}
+
+// IsValidRole checks if a role is one of the 10 builtin membership roles, or an
+// IDSS membership role that maps onto one (CanonicalRole).
 // Custom roles defined in the community RolePolicy are validated separately
 // (api.isAssignableRole) — this function intentionally knows nothing of them.
 func IsValidRole(role string) bool {
+	role = CanonicalRole(role)
 	for _, r := range ValidRoles() {
 		if r == role {
 			return true

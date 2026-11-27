@@ -122,16 +122,20 @@ SUBJECTS='' SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=human \
 pass=$((pass+1))
 
 # --- 6. push mode's rescue ladder: when nothing lands the commits are PARKED,
-#        never stranded (run 330 lost three closed-issue commits) -----------
+#        never stranded (run 330 lost three closed-issue commits). A CLEAN rebase
+#        reaches the park without the conflict resolver: main moved, the rebase
+#        replays cleanly, but the re-push still fails (the forge went away) — so the
+#        park ladder, not the #207/#364 resolver, is under test here. (#364 repoint:
+#        the old shim reached this park via a rebase CONFLICT with claude absent,
+#        which now defers as `resolver-unusable` instead — see case 6b below.)
 cat > "$tmp/bin/git" <<'SH'
 #!/usr/bin/env bash
 echo "git $*" >> "${GIT_LOG:?}"
 case "$*" in
   "push origin HEAD:main") exit 1 ;;      # main moved under us, and stays moved
-  "rebase origin/main")    exit 1 ;;      # ...with a conflict claude can't fix
   "merge-base --is-ancestor HEAD origin/main") exit 1 ;;  # HEAD carries commits
 esac
-exit 0
+exit 0                                     # rebase replays cleanly; re-push still fails
 SH
 chmod +x "$tmp/bin/git"
 export LANDING_NOTIFY="$tmp/bin/notify.sh"
@@ -153,6 +157,37 @@ grep -q 'commits parked on' "$NOTIFY_LOG" || fail "the park must alarm so a huma
 grep -q 'will NOT retry' "$NOTIFY_LOG" || fail "the alarm must say the issues will not retry"
 pass=$((pass+1))
 
+# --- 6b. #364: a rebase CONFLICT with the resolver unable to START (claude absent)
+#         must DEFER quietly through landing_stage, not park+page. The pre-#364 code
+#         misclassified the never-run resolver as a failed merge and parked on a
+#         rescue branch, reopening the closed ticket on every run. Now it is a quiet
+#         `rebase-rescue-resolver-unusable` defer: no rescue branch, no page, retried
+#         next run. (claude absence: $tmp/bin has git/notify but no claude, and
+#         /usr/bin:/bin carry none — `command -v claude` fails.) ----------------
+cat > "$tmp/bin/git" <<'SH'
+#!/usr/bin/env bash
+echo "git $*" >> "${GIT_LOG:?}"
+case "$*" in
+  "push origin HEAD:main") exit 1 ;;      # main moved under us, and stays moved
+  "rebase origin/main")    exit 1 ;;      # ...with a conflict, and no resolver to fix it
+  "merge-base --is-ancestor HEAD origin/main") exit 1 ;;  # HEAD carries commits
+esac
+exit 0
+SH
+chmod +x "$tmp/bin/git"
+: > "$GIT_LOG"; : > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
+RC=0
+PATH="$tmp/bin:/usr/bin:/bin" SWARM_POLICY_LANDING=push \
+  landing_stage Matou/matou-app '[{"number":7}]' start || RC=$?
+[ "$RC" = 1 ] || fail "a could-not-start resolver must still fail the land, got $RC"
+[ "$SWARM_EXIT_REASON" = "rebase-rescue-resolver-unusable" ] \
+  || fail "claude-absent must defer as resolver-unusable, not park: got '$SWARM_EXIT_REASON'"
+! grep -q 'push origin HEAD:refs/heads/sandcastle/rescue-' "$GIT_LOG" \
+  || fail "a quiet defer must NOT park a rescue branch: $(cat "$GIT_LOG")"
+! grep -q 'rotating_light' "$NOTIFY_LOG" || fail "a defer must not page a rotating_light alarm: $(cat "$NOTIFY_LOG")"
+grep -q 'could not START' "$NOTIFY_LOG" || fail "the defer must name the could-not-start resolver: $(cat "$NOTIFY_LOG")"
+pass=$((pass+1))
+
 # --- 7. a failed push with NOTHING to land (HEAD already on origin/main) is a
 #        transport fault, not a park: no rescue branch, no cherry-pick alarm.
 #        (Run 22240, 2026-09-12: Forgejo flapped 503 and the ladder cried that
@@ -163,10 +198,9 @@ echo "git $*" >> "${GIT_LOG:?}"
 case "$*" in
   "push origin HEAD:main") exit 1 ;;      # the forge is 5xx, not moved
   "fetch origin main")     exit 1 ;;
-  "rebase origin/main")    exit 1 ;;
   "merge-base --is-ancestor HEAD origin/main") exit 0 ;;  # nothing of ours
 esac
-exit 0
+exit 0                                    # rebase replays cleanly; the forge is just down
 SH
 chmod +x "$tmp/bin/git"
 : > "$GIT_LOG"; : > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
@@ -188,11 +222,10 @@ cat > "$tmp/bin/git" <<'SH'
 echo "git $*" >> "${GIT_LOG:?}"
 case "$*" in
   push*)                   exit 1 ;;      # nothing reaches the forge, park included
-  "rebase origin/main")    exit 1 ;;
   "merge-base --is-ancestor HEAD origin/main") exit 1 ;;  # HEAD carries commits
   "rev-parse --short HEAD") echo deadbee0 ;;
 esac
-exit 0
+exit 0                                    # rebase replays cleanly; the forge is just down
 SH
 chmod +x "$tmp/bin/git"
 : > "$GIT_LOG"; : > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
@@ -204,6 +237,62 @@ PATH="$tmp/bin:/usr/bin:/bin" SWARM_POLICY_LANDING=push \
 grep -q 'does NOT exist' "$NOTIFY_LOG" || fail "the alarm must say the rescue branch does not exist: $(cat "$NOTIFY_LOG")"
 grep -q 'deadbee0' "$NOTIFY_LOG" || fail "the alarm must name the SHA the commits sit at: $(cat "$NOTIFY_LOG")"
 grep -q 'will NOT retry' "$NOTIFY_LOG" || fail "the alarm must say the issues will not retry"
+pass=$((pass+1))
+
+# --- 9. #193: the HOST lands main only AFTER verify. Two proofs. -------------
+# (a) STATIC ordering: run-swarm.sh calls verify_protected_paths BEFORE
+#     landing_stage, so no push to main can precede the protected-path boundary.
+vp_line="$(grep -n 'verify_protected_paths ' "$sc/run-swarm.sh" | head -1 | cut -d: -f1)"
+ls_line="$(grep -n 'landing_stage "'         "$sc/run-swarm.sh" | head -1 | cut -d: -f1)"
+[ -n "$vp_line" ] && [ -n "$ls_line" ] && [ "$vp_line" -lt "$ls_line" ] \
+  || fail "run-swarm.sh must call verify_protected_paths ($vp_line) BEFORE landing_stage ($ls_line) — verify runs before any push to main (#193)"
+grep -qE 'verify_protected_paths .* \|\| (exit 1|\{)' "$sc/run-swarm.sh" \
+  || fail "a protected-path breach must red the run before landing_stage is ever reached (#193)"
+pass=$((pass+1))
+
+# (a') STATIC #283/#328: a rolled-back land — AND a red that arrives after a
+# sandbox close-report — must reconcile the stranded closes: the host reopens
+# every issue a sandbox close-report closed against the worker branch before it
+# exits. Wired on THREE exits now: the generic execute red (#328), the
+# verify-breach path, and the land-parked path (#283).
+rc_lines="$(grep -c 'landing_reopen_stranded_closes ' "$sc/run-swarm.sh")"
+[ "${rc_lines:-0}" -ge 3 ] \
+  || fail "run-swarm.sh must call landing_reopen_stranded_closes on the execute-red, verify-breach, AND land-rollback exits (#283/#328), found $rc_lines"
+grep -q 'export EXECUTE_ATTEMPTS_FILE=' "$sc/run-swarm.sh" \
+  || fail "run-swarm.sh must wire EXECUTE_ATTEMPTS_FILE so the attempt lines survive the log cleanup (#283)"
+# #328: the execute-red reconcile is the EARLIEST of the three — it sits on the
+# `execute_sandcastle_run` failure exit, strictly BEFORE verify_protected_paths
+# (where the next-earliest #283 reconcile lives). A merge-to-head SyncError under
+# LANDING=push reds that stage two stages before landing_stage, so without a
+# reconcile there the close outlived its unlanded commit (#324).
+# Anchor the seam greps to a line-start call so a comment that merely NAMES the
+# seam (e.g. this fix's explanatory block) is not mistaken for the call site.
+first_reopen_ln="$(grep -nE '(^|[[:space:]])landing_reopen_stranded_closes ' "$sc/run-swarm.sh" | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1)"
+vpp_ln="$(grep -n '^verify_protected_paths ' "$sc/run-swarm.sh" | head -1 | cut -d: -f1)"
+exec_ln="$(grep -n '^execute_sandcastle_run ' "$sc/run-swarm.sh" | head -1 | cut -d: -f1)"
+[ -n "$first_reopen_ln" ] && [ -n "$vpp_ln" ] && [ -n "$exec_ln" ] \
+  && [ "$first_reopen_ln" -gt "$exec_ln" ] && [ "$first_reopen_ln" -lt "$vpp_ln" ] \
+  || fail "#328: the execute-red reconcile must sit after execute_sandcastle_run ($exec_ln) and BEFORE verify_protected_paths ($vpp_ln), found first reopen at $first_reopen_ln"
+pass=$((pass+1))
+
+# (b) BEHAVIOURAL: when verify flagged a breach (VERIFY_PP_VIOLATION=1), the land
+#     seam refuses to push main and parks a rescue — the boundary gates the push.
+cat > "$tmp/bin/git" <<'SH'
+#!/usr/bin/env bash
+echo "git $*" >> "${GIT_LOG:?}"
+exit 0
+SH
+chmod +x "$tmp/bin/git"
+: > "$GIT_LOG"; : > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
+RC=0
+PATH="$tmp/bin:/usr/bin:/bin" SWARM_POLICY_LANDING=push VERIFY_PP_VIOLATION=1 \
+  landing_stage Matou/matou-app '[{"number":7}]' start || RC=$?
+[ "$RC" = 1 ] || fail "a verify-flagged breach must red the land, got $RC"
+[ "$SWARM_EXIT_REASON" = "protected-path-violation" ] || fail "the reason must name the breach, got '$SWARM_EXIT_REASON'"
+! grep -q 'push origin HEAD:main' "$GIT_LOG" \
+  || fail "a flagged breach must NEVER reach a push to main (verify before land): $(cat "$GIT_LOG")"
+grep -q 'push origin HEAD:refs/heads/sandcastle/rescue-' "$GIT_LOG" \
+  || fail "the breach must park the worker's commits on a rescue branch: $(cat "$GIT_LOG")"
 pass=$((pass+1))
 
 echo "run-swarm-landing: $pass scenarios passed"

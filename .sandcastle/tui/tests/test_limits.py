@@ -29,6 +29,22 @@ def test_limit_parked_false_past_ttl(tmp_path):
     assert limits.limit_parked(str(marker), ttl=3600) is False
 
 
+def test_limit_parked_true_on_fingerprinted_sibling(tmp_path):
+    """#200: the limit marker is keyed by the account fingerprint
+    (`<base>-<fp>`), so a fresh fingerprinted sibling parks the host even though
+    the bare base path does not exist."""
+    base = tmp_path / "limit"
+    _touch_with_age(tmp_path / "limit-1a7674eb4ee7", age_seconds=10)
+    assert not base.exists()
+    assert limits.limit_parked(str(base), ttl=3600) is True
+
+
+def test_limit_parked_false_when_only_stale_fingerprinted_sibling(tmp_path):
+    base = tmp_path / "limit"
+    _touch_with_age(tmp_path / "limit-1a7674eb4ee7", age_seconds=7200)
+    assert limits.limit_parked(str(base), ttl=3600) is False
+
+
 def test_active_account_defaults_to_a_when_marker_absent(tmp_path):
     assert limits.active_account(str(tmp_path / "no-such-marker")) == "A"
 

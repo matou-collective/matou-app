@@ -2,18 +2,17 @@
 # Preflight allowlist guard (#593, part 1 of #592): sandcastle forwards every
 # key .sandcastle/.env declares into the sandbox as a `docker run -e` value,
 # which lands in `docker inspect .Config.Env` — readable by anyone with Docker
-# API access (the 2026-07-11 breach vector; docs/architecture/07-secrets-
-# architecture.md). That's why .env.example holds only CLAUDE_CODE_OAUTH_TOKEN
-# (no file-based delivery option) / ANTHROPIC_API_KEY plus non-secret config —
-# every other bearer token ships as a read-only file under
-# .sandcastle/secrets/ instead (see secrets/README.md). This lib is the
-# content check that catches a stray secret-shaped key BEFORE it ships: same
-# content-not-existence spirit as preflight-swarm.sh's guard_secrets_content.
-# Unit-tested offline by tests/env-allowlist-lib-test.sh.
+# API access (the 2026-07-11 breach vector; docs/SECRETS_CHECKLIST.md). That's
+# why .env.example holds only ANTHROPIC_API_KEY (the API-key alternative) plus
+# non-secret config — every bearer token ships as a read-only file under
+# .sandcastle/secrets/ instead (see secrets/README.md), including the Claude
+# OAuth token since #198 (delivered via a `claude` shim, no longer a docker -e
+# value). This lib is the content check that catches a stray secret-shaped key
+# BEFORE it ships: same content-not-existence spirit as preflight-swarm.sh's
+# guard_secrets_content. Unit-tested offline by tests/env-allowlist-lib-test.sh.
 
 # Keys .sandcastle/.env is allowed to carry — mirrors .env.example exactly.
 ENV_ALLOWLIST_KEYS=(
-  CLAUDE_CODE_OAUTH_TOKEN
   ANTHROPIC_API_KEY
   FORGEJO_API
   MATTERMOST_URL

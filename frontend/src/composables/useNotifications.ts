@@ -4,6 +4,7 @@
  */
 import { onMounted, watch } from 'vue';
 import { useNotificationsStore, type AppNotification } from 'stores/notifications';
+import { useIdentityStore } from 'stores/identity';
 import { useBackendEvents } from './useBackendEvents';
 import { createLogger } from 'src/lib/logging';
 
@@ -19,12 +20,20 @@ const NOTIFICATION_EVENTS = [
   'contribution:approved',
   'contribution:declined',
   'contribution:evidence_edited',
+  'contribution:mentioned',
   'decision_plan:submitted',
   'decision_plan:signed_off',
 ];
 
+// Events addressed to a single recipient (their AID in `recipient_id`). Because
+// the backend broadcasts every SSE event to all connected clients, these must
+// be filtered to the current user's AID so a `@mention` only surfaces on the
+// mentioned person's client, not on everyone's.
+const RECIPIENT_SCOPED_EVENTS = new Set(['contribution:mentioned']);
+
 export function useNotifications() {
   const store = useNotificationsStore();
+  const identity = useIdentityStore();
   const { lastEvent, connect } = useBackendEvents();
 
   function requestPermission() {
@@ -37,6 +46,12 @@ export function useNotifications() {
 
   function handleEvent(event: { type: string; data: Record<string, string> }) {
     if (!NOTIFICATION_EVENTS.includes(event.type)) return;
+
+    // Drop recipient-scoped events (e.g. @mentions) not addressed to this user.
+    if (RECIPIENT_SCOPED_EVENTS.has(event.type)) {
+      const me = identity.aidPrefix;
+      if (me && event.data.recipient_id && event.data.recipient_id !== me) return;
+    }
 
     const notif: AppNotification = {
       id: `notif_${Date.now()}`,
@@ -79,6 +94,7 @@ function formatTitle(type: string): string {
     'contribution:approved': 'Contribution Approved',
     'contribution:declined': 'Contribution Declined',
     'contribution:evidence_edited': 'Submission Edited',
+    'contribution:mentioned': 'You Were Mentioned',
     'decision_plan:submitted': 'Decision Plan Submitted',
     'decision_plan:signed_off': 'Decision Plan Signed Off',
   };

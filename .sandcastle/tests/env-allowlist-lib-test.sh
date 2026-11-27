@@ -15,10 +15,10 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 pass=0
 
 # --- a clean, allowlist-only .env (mirrors .env.example) must pass with NO
-#     violations, including the two allowlisted keys that themselves LOOK
-#     secret-shaped (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY-style). ---
+#     violations, including the one allowlisted key that itself LOOKS
+#     secret-shaped (ANTHROPIC_API_KEY, the API-key alternative). ---
 cat > "$tmp/clean.env" <<'EOF'
-CLAUDE_CODE_OAUTH_TOKEN=sk-test-not-real
+ANTHROPIC_API_KEY=sk-ant-test-not-real
 FORGEJO_API=https://example.invalid/api/v1/repos/Matou/idss
 MATTERMOST_URL=https://mattermost.example
 MATTERMOST_CHANNEL_ID=abc123
@@ -33,6 +33,17 @@ out="$(env_allowlist_violations "$tmp/clean.env")"
 [ -z "$out" ] || fail "a clean allowlist-only .env was flagged: $out"
 pass=$((pass+1))
 
+# --- #198: CLAUDE_CODE_OAUTH_TOKEN was REMOVED from the allowlist — it now ships
+#     as a mounted file via the claude-fence shim, so a stray one in .env is a
+#     docker -e leak the guard must catch like any other secret-shaped key. ---
+cat > "$tmp/claude.env" <<'EOF'
+CLAUDE_CODE_OAUTH_TOKEN=sk-test-not-real
+FORGEJO_API=
+EOF
+out="$(env_allowlist_violations "$tmp/claude.env")"
+[ "$out" = "CLAUDE_CODE_OAUTH_TOKEN" ] || fail "CLAUDE_CODE_OAUTH_TOKEN must now trip the guard (#198), got: '$out'"
+pass=$((pass+1))
+
 # --- the ANTHROPIC_API_KEY alternative from .env.example's commented-out
 #     line must also be allowed once uncommented. ---
 cat > "$tmp/apikey.env" <<'EOF'
@@ -45,7 +56,7 @@ pass=$((pass+1))
 
 # --- a stray secret-shaped key must be refused (the ticket's worked example). ---
 cat > "$tmp/stray.env" <<'EOF'
-CLAUDE_CODE_OAUTH_TOKEN=sk-test-not-real
+ANTHROPIC_API_KEY=sk-ant-test-not-real
 FORGEJO_API=
 FOO_TOKEN=leaked-value
 EOF
@@ -78,7 +89,7 @@ pass=$((pass+1))
 # --- comments, blank lines, and `export KEY=` forms are handled. ---
 cat > "$tmp/formats.env" <<'EOF'
 # a comment
-export CLAUDE_CODE_OAUTH_TOKEN=sk-test
+export ANTHROPIC_API_KEY=sk-test
 
 FORGEJO_API=
 export STRAY_SECRET=leak

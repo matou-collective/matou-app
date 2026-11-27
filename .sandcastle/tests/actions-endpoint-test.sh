@@ -39,6 +39,9 @@ check "there are harness scripts to scan" '[ -n "$shells" ]'
 #    the `status=waiting` filter caps the result at the (tiny) live queue, and
 #    checks 2b/3 below still force it to be paged and curl-timed. A runs read
 #    WITHOUT one of these filters is still the forbidden unbounded read.
+#    schedule-backstop.sh reads the SAME `status=waiting` view since the
+#    2026-10-15 flood (GOTCHAS 78): a queued run has no task row, so the
+#    tasks-only guard dispatched on top of a queue it could not see.
 #    SECOND EXEMPTION (#109, GOTCHAS 37): the canary's liveness assertion reads
 #    `actions/runs?head_sha=<sha>` — server-side filtered to ONE commit's runs
 #    (the forge honours it: a bogus sha returns total_count 0), paged from the

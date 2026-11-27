@@ -133,9 +133,21 @@
         </div>
       </template>
 
+      <!-- A check failed outright: let the member try again instead of leaving
+           them with a disabled button and a force-close (#570) -->
+      <MBtn
+        v-if="canRetryFailed"
+        class="w-full retry-btn retry-failed-btn"
+        size="lg"
+        @click="onManualRetry"
+      >
+        <RefreshCw class="w-5 h-5 mr-2" />
+        Retry
+      </MBtn>
+
       <!-- Continue Button -->
       <MBtn
-        v-if="!waitingForSync"
+        v-else-if="!waitingForSync"
         class="w-full continue-btn"
         size="lg"
         :disabled="!allChecksPassed"
@@ -156,9 +168,12 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { CheckCircle2, XCircle, Circle, ArrowRight, Loader2, RefreshCw } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
 import { useOnboardingStore } from 'stores/onboarding';
+import { canRetryFailedChecks } from 'src/lib/welcomeRetry';
 import { useIdentityStore } from 'stores/identity';
 import { useAppStore } from 'stores/app';
 import { useKERIClient } from 'src/lib/keri/client';
+import { getMembershipSchemaSaid } from 'src/lib/clientConfig';
+import { hasMembershipCredential } from 'src/lib/membership';
 import { setBackendIdentity, getSyncStatus, getProfiles } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { version as appVersion } from '../../../package.json';
@@ -520,12 +535,17 @@ async function runRecoveryChecks() {
       credentialCheck.error = 'KERI client not connected';
       return;
     }
+    // Match the schema the community actually issues under (the descriptor's
+    // schemas.membership.said), not merely "any credential" — an IDSS founder
+    // holds a Membership credential of the community's OWN schema (#615).
+    const membershipSchema = await getMembershipSchemaSaid();
+    const myAid = identityStore.currentAID?.prefix ?? '';
     let found = false;
     for (let attempt = 0; attempt < 6; attempt++) {
       if (attempt > 0) await sleep(2000);
       const credentials = await client.credentials().list();
       console.log(`[WelcomeOverlay] Credential check attempt ${attempt + 1}: ${credentials.length} credentials`);
-      if (credentials.length > 0) {
+      if (hasMembershipCredential(credentials, { membershipSchema, holderAid: myAid })) {
         found = true;
         break;
       }
@@ -607,11 +627,15 @@ async function runReturningChecks() {
     }
     const credentials = await client.credentials().list();
     console.log(`[WelcomeOverlay] Returning user credential check: ${credentials.length} credentials`);
-    if (credentials.length > 0) {
+    // Match the descriptor's Membership schema, not merely "any credential" —
+    // an IDSS founder holds the community's OWN Membership schema (#615).
+    const membershipSchema = await getMembershipSchemaSaid();
+    const myAid = identityStore.currentAID?.prefix ?? '';
+    if (hasMembershipCredential(credentials, { membershipSchema, holderAid: myAid })) {
       credentialCheck.status = 'passed';
     } else {
-      // No credential — redirect to pending approval
-      console.log('[WelcomeOverlay] No credential found, redirecting to pending-approval');
+      // No membership credential — redirect to pending approval
+      console.log('[WelcomeOverlay] No membership credential found, redirecting to pending-approval');
       emit('needs-approval');
       return;
     }
@@ -672,6 +696,11 @@ async function retrySync() {
     await runReturningChecks();
   }
 }
+
+// A hard-failed check on a flow that can re-run its checks gets a Retry button.
+const canRetryFailed = computed(() =>
+  canRetryFailedChecks(onboardingStore.onboardingPath, waitingForSync.value, checks),
+);
 
 // Manual Retry button: reset the backoff so the user's explicit click restarts
 // auto-retry from a short delay, then re-run the checks.
@@ -734,12 +763,7 @@ onUnmounted(() => {
 
 <style lang="scss" scoped>
 .welcome-overlay {
-  background: linear-gradient(
-    135deg,
-    var(--matou-primary) 0%,
-    rgba(30, 95, 116, 0.9) 50%,
-    var(--matou-accent) 100%
-  );
+  background: var(--matou-brand-gradient);
   min-height: calc(100vh - var(--titlebar-height));
 }
 

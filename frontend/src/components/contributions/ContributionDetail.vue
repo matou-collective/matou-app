@@ -7,7 +7,7 @@
         <span class="type-badge">{{ contribution.contribution_type }}</span>
       </div>
       <h1 class="detail-title">
-        <span>{{ contribution.title }}</span>
+        <span><span v-if="contribution.reference" class="contribution-ref">{{ contribution.reference }}</span>{{ contribution.title }}</span>
         <slot name="title-actions" />
       </h1>
       <p class="detail-meta">
@@ -127,6 +127,9 @@ const canSeeBudgetForThis = computed(() => budgetAccess.canSeeBudget(props.contr
 </script>
 
 <style scoped lang="scss">
+@import 'src/css/contribution-status.scss';
+@include contribution-reference;
+
 .contribution-detail {
   display: flex;
   flex-direction: column;

@@ -81,7 +81,18 @@ export default configure(() => {
           // onboarding store to splash and eats the post-setup mnemonic screen
           // (deterministic in CI, where npm ci wipes node_modules/.vite).
           'marked',
-          'dompurify'
+          'dompurify',
+          // These five are only reachable once the browser executes the app
+          // (v-motion directives, QR rendering, icon components, mnemonic
+          // generation), so a static cold-cache scan misses them and the dev
+          // server re-optimizes mid-session — the same #242 full-page reload
+          // that resets the onboarding store and eats the post-setup mnemonic
+          // screen. Pin them so a warm cache holds all 15 deps up front (#601).
+          '@vueuse/motion',
+          'qrcode',
+          'lucide-vue-next',
+          '@scure/bip39',
+          '@scure/bip39/wordlists/english.js'
         );
         viteConf.optimizeDeps.esbuildOptions = {
           target: 'es2022',

@@ -18,6 +18,7 @@ export function validateKit(kit) {
   assert(typeof kit.slug === 'string' && SLUG_RE.test(kit.slug), `invalid slug ${JSON.stringify(kit.slug)}`);
   assert(kit.brand && typeof kit.brand.name === 'string' && kit.brand.name.trim(), 'brand.name required');
   assert(HEX_RE.test(kit.brand.primaryColour) && HEX_RE.test(kit.brand.secondaryColour), 'brand colours must be #rrggbb');
+  assert(kit.brand.logoBackground == null || HEX_RE.test(kit.brand.logoBackground), 'brand.logoBackground must be #rrggbb when set');
   assert(kit.logoFile === 'logo.svg' || kit.logoFile === 'logo.png', 'logoFile must be logo.svg or logo.png');
   assert(kit.onboarding && Array.isArray(kit.onboarding.infoPages) && kit.onboarding.infoPages.length <= 3, 'onboarding.infoPages ≤ 3');
   assert(kit.onboarding.profile && Array.isArray(kit.onboarding.profile.interestOptions), 'onboarding.profile.interestOptions required');
@@ -35,6 +36,12 @@ const hex = (n) => n.toString(16).padStart(2, '0');
 export function mixWithWhite(colour, weight) {
   const r = parseInt(colour.slice(1, 3), 16), g = parseInt(colour.slice(3, 5), 16), b = parseInt(colour.slice(5, 7), 16);
   const mix = (c) => Math.round(c * weight + 255 * (1 - weight));
+  return `#${hex(mix(r))}${hex(mix(g))}${hex(mix(b))}`;
+}
+// `weight` is how much of the colour survives; the rest goes to black.
+export function mixWithBlack(colour, weight) {
+  const r = parseInt(colour.slice(1, 3), 16), g = parseInt(colour.slice(3, 5), 16), b = parseInt(colour.slice(5, 7), 16);
+  const mix = (c) => Math.round(c * weight);
   return `#${hex(mix(r))}${hex(mix(g))}${hex(mix(b))}`;
 }
 
@@ -63,6 +70,10 @@ export function androidSegment(slug) {
   return /^[0-9]/.test(s) ? `_${s}` : s;
 }
 
+// Coa builds' installers are hosted at coa.matou.nz/dl/<slug>/v<build>/ and the newest
+// successful build is always reachable as /dl/<slug>/current (Matou/coa app-updates spec).
+const COA_DOWNLOADS = 'https://coa.matou.nz/dl';
+
 export function buildInfo(kit) {
   const isMatou = kit.slug === 'matou';
   return {
@@ -80,8 +91,12 @@ export function buildInfo(kit) {
     executableName: isMatou ? 'matou' : kit.slug,
     androidApplicationId: isMatou ? 'nz.matou.app' : `org.matou.coa.${androidSegment(kit.slug)}`,
     urlScheme: isMatou ? 'nz.matou.app' : `org.matou.coa.${kit.slug}`,
-    publish: isMatou ? [{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }] : null,
-    updates: isMatou,
+    publish: isMatou
+      ? [{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }]
+      // electron-builder otherwise detects the channel from the version's prerelease tag — `build`
+      // for `0.8.7-build.17` — and would write `build.yml`, not the `latest.yml` the coa server and coa-builds expect.
+      : [{ provider: 'generic', url: `${COA_DOWNLOADS}/${kit.slug}/current`, channel: 'latest' }],
+    updates: true,
     primaryColour: kit.brand.primaryColour,
     backgroundColour: kit.brand.primaryColour,
   };
@@ -90,6 +105,12 @@ export function buildInfo(kit) {
 export function tokensScss(kit) {
   const p = kit.brand.primaryColour, s = kit.brand.secondaryColour, a = mixWithWhite(p, 0.7);
   const soft = isSoftTint(s);
+  // Dark theme primary: a lightened kit primary that reads on the dark ocean
+  // surface, plus a near-black derived from the kit primary for foreground text
+  // on it. Emitting these from the kit is what stops dark mode from falling back
+  // to Matou's hardcoded teal (#7eb3b8) on the onboarding screens. See #636.
+  const primaryDark = mixWithWhite(p, 0.5);
+  const primaryDarkFg = mixWithBlack(p, 0.25);
   // Secondary/muted backgrounds and the selected-nav wash. A soft tint stays
   // solid (stock #E8F4F8 unchanged); a saturated colour becomes a pale wash.
   // The full-strength colour stays available as $kit-secondary and the
@@ -118,6 +139,8 @@ $kit-primary-foreground: #ffffff;
 }
 
 .dark {
+  --matou-primary: ${primaryDark};
+  --matou-primary-foreground: ${primaryDarkFg};
   --matou-secondary: ${secondaryDark};
   --matou-muted: ${secondaryDark};
   --matou-sidebar-accent: ${sidebarAccentDark};
@@ -172,7 +195,7 @@ export async function applyKit(kitDir, root = FRONTEND, opts = { icons: true }) 
 
   if (opts.icons !== false) {
     const { renderIcons } = await import('./icons.mjs');
-    written.push(...(await renderIcons({ logo, primary: kit.brand.primaryColour, root })));
+    written.push(...(await renderIcons({ logo, primary: kit.brand.primaryColour, root, brandBackground: kit.brand.logoBackground ?? null })));
   }
   return { written };
 }

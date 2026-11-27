@@ -47,8 +47,10 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  padding: 6px 16px;
-  background: #1a7f8a;
+  /* Sits at the very top of the window, so on Android (edge-to-edge WebView) it
+     must clear the status bar itself; env() is 0 on web/Electron. */
+  padding: calc(6px + env(safe-area-inset-top)) 16px 6px;
+  background: var(--matou-primary);
   color: #ffffff;
   font-size: 13px;
   flex-shrink: 0;

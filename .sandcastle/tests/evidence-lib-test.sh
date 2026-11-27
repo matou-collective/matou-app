@@ -7,8 +7,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../evidence-lib.sh
 . "$here/../evidence-lib.sh"
 
-pass=0 fail=0
-check() { if eval "$2"; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: $1"; fi; }
+# shellcheck source=lib.sh
+. "$here/lib.sh"
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 

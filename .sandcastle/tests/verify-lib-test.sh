@@ -24,6 +24,9 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 pass=0
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
+# Sandbox the protected-path snapshot tmproot under $tmp so the suite never
+# writes into the real /tmp tmpfs (and so the reaper group below is isolated) — #761.
+export VERIFY_PP_TMPROOT="$tmp/pp-snapshots"
 
 . "$sc/runlog-lib.sh"
 . "$sc/fence-lib.sh"
@@ -147,9 +150,9 @@ VERIFY_WATCHING=1   # restore for anything after this group
 pass=$((pass+1))
 
 # ── 4. the protected-path boundary (#445) ─────────────────────────────────
-# STAGED behind PP_ENFORCE, default OFF: today the ordinary swarm still runs
-# machinery tickets directly, so a live rollback would revert exactly that
-# legitimate work.
+# PP_ENFORCE defaults ON (#193): once the worker stopped pushing main from the
+# sandbox, the rollback genuinely keeps a machinery edit off main. A consumer
+# can still opt out with PP_ENFORCE=0 (asserted below).
 ws="$tmp/ws"; mkdir -p "$ws/.sandcastle" "$ws/src"
 printf 'harness\n' > "$ws/.sandcastle/run-swarm.sh"
 printf 'product\n' > "$ws/src/app.ts"
@@ -157,6 +160,34 @@ printf 'product\n' > "$ws/src/app.ts"
 VERIFY_PP_BEFORE=""; PP_ENFORCE=0 verify_pp_snapshot "$ws"
 [ -z "$VERIFY_PP_BEFORE" ] || fail "PP_ENFORCE off must take no snapshot at all"
 PP_ENFORCE=0 verify_protected_paths "$ws" run-1 Acme/widget || fail "PP_ENFORCE off must be a silent no-op"
+pass=$((pass+1))
+
+# the DEFAULT (#193): with PP_ENFORCE unset, the boundary is ON — a snapshot is
+# taken and an untouched-tree pass returns silent 0 (no rollback, no alarm).
+VERIFY_PP_BEFORE=""; ( unset PP_ENFORCE; verify_pp_snapshot "$ws" )
+VERIFY_PP_BEFORE=""; unset PP_ENFORCE; verify_pp_snapshot "$ws"
+[ -n "$VERIFY_PP_BEFORE" ] || fail "the DEFAULT must fingerprint the machinery (PP_ENFORCE on by default, #193)"
+PP_ENFORCE=1 verify_pp_snapshot "$ws"   # restore the explicit-on baseline for the scenarios below
+pass=$((pass+1))
+
+# the per-repo OPT-OUT (#208): with no PP_ENFORCE in the environment, the policy
+# key PROTECTED_PATH_ENFORCE=off (exported by policy_load as
+# SWARM_POLICY_PROTECTED_PATH_ENFORCE) suppresses the boundary for that repo —
+# no snapshot, a silent no-op even when a machinery file changed under it.
+VERIFY_PP_BEFORE=""
+( unset PP_ENFORCE; SWARM_POLICY_PROTECTED_PATH_ENFORCE=off verify_pp_snapshot "$ws" )
+VERIFY_PP_BEFORE=""
+unset PP_ENFORCE; SWARM_POLICY_PROTECTED_PATH_ENFORCE=off verify_pp_snapshot "$ws"
+[ -z "$VERIFY_PP_BEFORE" ] || fail "the policy opt-out must take no snapshot (PROTECTED_PATH_ENFORCE=off, #208)"
+printf 'worker edited the harness while the repo opted OUT\n' > "$ws/.sandcastle/run-swarm.sh"
+SWARM_POLICY_PROTECTED_PATH_ENFORCE=off verify_protected_paths "$ws" run-1 Acme/widget \
+  || fail "the policy opt-out must be a silent no-op (PROTECTED_PATH_ENFORCE=off, #208)"
+# an explicit PP_ENFORCE in the environment still WINS over the policy opt-out.
+VERIFY_PP_BEFORE=""
+PP_ENFORCE=1 SWARM_POLICY_PROTECTED_PATH_ENFORCE=off verify_pp_snapshot "$ws"
+[ -n "$VERIFY_PP_BEFORE" ] || fail "an explicit PP_ENFORCE=1 must override the policy opt-out (#208)"
+printf 'harness\n' > "$ws/.sandcastle/run-swarm.sh"   # restore the clean baseline
+PP_ENFORCE=1 verify_pp_snapshot "$ws"
 pass=$((pass+1))
 
 # enforce ON, machinery untouched → silent pass
@@ -173,7 +204,9 @@ export GIT_LOG="$tmp/git.log"; : > "$GIT_LOG"
 PATH="$tmp/bin:$PATH" PP_ENFORCE=1 verify_protected_paths "$ws" run-1 Acme/widget \
   || fail "an untouched machinery tree must pass the boundary"
 [ ! -s "$NOTIFY_LOG" ] || fail "a silent boundary must announce nothing: $(cat "$NOTIFY_LOG")"
-[ ! -s "$GIT_LOG" ] || fail "a clean run must not park a rescue branch: $(cat "$GIT_LOG")"
+grep -q 'push origin HEAD:refs/heads/sandcastle/rescue-' "$GIT_LOG" \
+  && fail "a clean run must not park a rescue branch: $(cat "$GIT_LOG")"
+[ -z "$VERIFY_PP_VIOLATION" ] || fail "a clean boundary must leave VERIFY_PP_VIOLATION unset (#193)"
 pass=$((pass+1))
 
 # enforce ON, a worker edited the machinery → rolled back, NOT pushed, parked
@@ -184,6 +217,7 @@ RC=0
 PATH="$tmp/bin:$PATH" PP_ENFORCE=1 verify_protected_paths "$ws" run-1 Acme/widget >"$tmp/pp.out" 2>&1 || RC=$?
 [ "$RC" = 1 ] || fail "a protected-path violation must red the run, got $RC"
 [ "$SWARM_EXIT_REASON" = "protected-path-violation" ] || fail "the reason must be named, got '$SWARM_EXIT_REASON'"
+[ "$VERIFY_PP_VIOLATION" = 1 ] || fail "a breach must raise VERIFY_PP_VIOLATION for the landing seam's last-line-of-defense (#193)"
 [ "$(cat "$ws/.sandcastle/run-swarm.sh")" = harness ] || fail "the worker's machinery change must be ROLLED BACK"
 grep -q 'protected-path violation' "$NOTIFY_LOG" || fail "the violation must alarm: $(cat "$NOTIFY_LOG")"
 grep -q 'ready-for-session' "$NOTIFY_LOG" || fail "the alarm must name the escape path (ADR 0174)"
@@ -192,5 +226,117 @@ grep -q 'push origin HEAD:refs/heads/sandcastle/rescue-' "$GIT_LOG" \
 grep -q 'push origin HEAD:main' "$GIT_LOG" && fail "a breach must NEVER reach main"
 grep -q 'protected-path-violation' "$tmp/db.log" || fail "the violation must be traced in swarm.db"
 pass=$((pass+1))
+
+# #321: a truncated before-snapshot DEGRADES the boundary to unenforced (loud),
+# never a false RED or a false rollback. A /tmp wall makes the before-snapshot's
+# blob copies fail; trusting that truncated baseline would read untouched
+# machinery as `appeared` and delete it. Instead the boundary no-ops this run.
+rm -f "$tmp/db.log" "$NOTIFY_LOG"; : > "$GIT_LOG"; SWARM_EXIT_REASON=""
+printf 'harness\n' > "$ws/.sandcastle/run-swarm.sh"   # restore the baseline
+failbin="$tmp/failbin"; mkdir -p "$failbin"
+realcp="$(command -v cp)"
+cat > "$failbin/cp" <<SH
+#!/usr/bin/env bash
+case "\$*" in *"/blobs/"*) exit 1 ;; esac
+exec "$realcp" "\$@"
+SH
+chmod +x "$failbin/cp"
+# the before-snapshot is taken under the failing cp → it is detectably truncated
+PATH="$failbin:$PATH" PP_ENFORCE=1 verify_pp_snapshot "$ws"
+[ -n "$VERIFY_PP_BEFORE_TRUNCATED" ] \
+  || fail "verify_pp_snapshot must flag a truncated before-snapshot (#321)"
+# a worker then edits the machinery; a sound run would RED + roll back, but the
+# baseline is untrustworthy, so the boundary degrades instead of false-attributing
+printf 'worker edited the harness\n' > "$ws/.sandcastle/run-swarm.sh"
+RC=0
+PATH="$tmp/bin:$PATH" PP_ENFORCE=1 verify_protected_paths "$ws" run-1 Acme/widget >"$tmp/pp.out" 2>"$tmp/pp.err" || RC=$?
+[ "$RC" = 0 ] || fail "a truncated before-snapshot must DEGRADE (return 0), not red the run (#321), got $RC"
+[ -z "$VERIFY_PP_VIOLATION" ] || fail "a degraded boundary must NOT raise VERIFY_PP_VIOLATION (#321)"
+[ "$(cat "$ws/.sandcastle/run-swarm.sh")" = "worker edited the harness" ] \
+  || fail "a degraded boundary must NOT roll back against a truncated baseline (#321)"
+grep -q 'DEGRADED' "$tmp/pp.err" || fail "the degrade must log loud to stderr (#321): $(cat "$tmp/pp.err")"
+grep -q 'DEGRADED' "$NOTIFY_LOG" || fail "the degrade must alarm (#321): $(cat "$NOTIFY_LOG")"
+grep -q 'protected-path-degraded' "$tmp/db.log" || fail "the degrade must be traced in swarm.db (#321)"
+[ ! -s "$GIT_LOG" ] || fail "a degraded boundary must not park a rescue branch (#321): $(cat "$GIT_LOG")"
+VERIFY_PP_BEFORE_TRUNCATED=""   # clear for the groups below
+printf 'harness\n' > "$ws/.sandcastle/run-swarm.sh"
+pass=$((pass+1))
+
+# ── 3. snapshot dirs are rooted in one reapable per-run tree (#761) ──────────
+# A run SIGKILLed between the before- and after-snapshot leaks its snapshot dir —
+# no EXIT trap catches SIGKILL. Two of those (2.7G + 2.4G of cp'd cache blobs)
+# survived two days and walled the /tmp tmpfs user quota, redding an unrelated
+# post-step. The snapshots now live under one tmproot in a `run-<pid>-*` dir that
+# the NEXT run's reaper removes once that owning PID is dead.
+rm -rf "$VERIFY_PP_TMPROOT"
+PP_ENFORCE=1 verify_pp_snapshot "$ws"
+case "$VERIFY_PP_BEFORE" in
+  "$VERIFY_PP_TMPROOT"/run-$$-*/before) : ;;
+  *) fail "the before-snapshot must live under the reapable per-run tree, got $VERIFY_PP_BEFORE" ;;
+esac
+[ -d "$VERIFY_PP_BEFORE" ] || fail "the before-snapshot dir must exist under the per-run tree"
+# #2104's before-dirty set shares the per-run dir, so the same teardown + reap cover it
+[ "$VERIFY_PP_BEFORE_DIRTY" = "$VERIFY_PP_RUNDIR/before-dirty" ] && [ -f "$VERIFY_PP_BEFORE_DIRTY" ] \
+  || fail "the #2104 before-dirty set must live in the per-run dir, got $VERIFY_PP_BEFORE_DIRTY"
+pass=$((pass+1))
+
+# the reaper removes an orphan left by a DEAD run while sparing a live peer.
+dead=999999; while kill -0 "$dead" 2>/dev/null; do dead=$((dead+1)); done
+mkdir -p "$VERIFY_PP_TMPROOT/run-$dead-orphan/blobs" "$VERIFY_PP_TMPROOT/run-$$-live/blobs"
+PP_ENFORCE=1 verify_pp_snapshot "$ws"   # calls the reaper on entry
+[ ! -d "$VERIFY_PP_TMPROOT/run-$dead-orphan" ] || fail "a dead run's orphaned snapshot must be reaped (#761)"
+[ -d "$VERIFY_PP_TMPROOT/run-$$-live" ] || fail "a live run's snapshot must NOT be reaped (PID still alive)"
+pass=$((pass+1))
+
+# ── 5. #2104: a peer reset mid-run is scored an upstream advance, not a breach ─
+# The boundary fingerprints the SHARED workdir before and after the worker. A
+# peer job's `reset --hard origin/main` lands a commit that arrived mid-run into
+# that tree (run 57327: #1252's ts-gate.sh), which the pure byte compare blamed
+# on the worker and ROLLED BACK — deleting a file main owns. With a real git
+# repo wired, verify-lib resolves attribution against origin/main: an upstream
+# advance is exonerated, a divergent worker edit is still caught.
+command -v git >/dev/null 2>&1 && {
+  gi() { git -C "$1" "${@:2}"; }
+  origin="$tmp/origin.git"; git init -q --bare "$origin"
+  seed="$tmp/seed"; mkdir -p "$seed/.sandcastle"
+  gi "$seed" init -q; gi "$seed" config user.email t@t; gi "$seed" config user.name t
+  printf 'harness\n' > "$seed/.sandcastle/run-swarm.sh"
+  gi "$seed" add -A; gi "$seed" commit -qm base
+  base="$(gi "$seed" rev-parse HEAD)"
+  gi "$seed" remote add origin "$origin"; gi "$seed" push -q origin HEAD:main
+  git -C "$origin" symbolic-ref HEAD refs/heads/main   # the bare default avoids a clone warning
+  # origin/main ADVANCES mid-run: a heal lands ts-gate.sh (the #1252 shape)
+  printf 'ts gate\n' > "$seed/.sandcastle/ts-gate.sh"
+  gi "$seed" add -A; gi "$seed" commit -qm add-ts-gate; gi "$seed" push -q origin HEAD:main
+
+  gws="$tmp/gws"; git clone -q "$origin" "$gws"
+  gi "$gws" config user.email t@t; gi "$gws" config user.name t
+  gi "$gws" checkout -q "$base"   # the worker started from BEFORE ts-gate.sh existed
+
+  # (a) the upstream advance is exonerated — no false red, nothing deleted
+  rm -f "$tmp/db.log" "$NOTIFY_LOG"; SWARM_EXIT_REASON=""; VERIFY_PP_VIOLATION=""
+  PP_ENFORCE=1 verify_pp_snapshot "$gws"
+  gi "$gws" reset --hard -q origin/main        # the peer reset materialises ts-gate.sh
+  [ -f "$gws/.sandcastle/ts-gate.sh" ] || fail "setup: the peer reset must land ts-gate.sh"
+  RC=0
+  PP_ENFORCE=1 verify_protected_paths "$gws" run-1 Acme/widget >"$tmp/pp5.out" 2>&1 || RC=$?
+  [ "$RC" = 0 ] || fail "#2104: an upstream advance must PASS the boundary, got $RC: $(cat "$tmp/pp5.out")"
+  [ -z "$VERIFY_PP_VIOLATION" ] || fail "#2104: an upstream advance must not raise a violation"
+  [ -f "$gws/.sandcastle/ts-gate.sh" ] || fail "#2104: the upstream file must NOT be deleted (the #2099 loss)"
+  grep -q 'protected-path violation' "$NOTIFY_LOG" 2>/dev/null && fail "#2104: an upstream advance must not alarm"
+  pass=$((pass+1))
+
+  # (b) a genuine worker edit in the same repo is STILL caught and rolled back
+  rm -f "$NOTIFY_LOG"; SWARM_EXIT_REASON=""; VERIFY_PP_VIOLATION=""
+  gi "$gws" reset --hard -q origin/main
+  PP_ENFORCE=1 verify_pp_snapshot "$gws"
+  printf 'harness HACKED by the worker\n' > "$gws/.sandcastle/run-swarm.sh"   # diverges from origin/main
+  RC=0
+  PP_ENFORCE=1 verify_protected_paths "$gws" run-1 Acme/widget >"$tmp/pp5b.out" 2>&1 || RC=$?
+  [ "$RC" = 1 ] || fail "#2104: a divergent worker edit must still FAIL the boundary, got $RC"
+  [ "$VERIFY_PP_VIOLATION" = 1 ] || fail "#2104: a real breach must raise VERIFY_PP_VIOLATION"
+  [ "$(cat "$gws/.sandcastle/run-swarm.sh")" = harness ] || fail "#2104: the worker edit must be ROLLED BACK to origin/main"
+  pass=$((pass+1))
+}
 
 echo "verify-lib: $pass groups passed"

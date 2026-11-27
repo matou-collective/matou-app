@@ -50,7 +50,12 @@ check "no forge host is hardcoded under tui/" \
 
 # Every data/ module takes its paths and URLs from the caller. identity.py is
 # the ONE place allowed to name the harness files it sources.
-readers="$(ls -1 "$tui"/data/*.py 2>/dev/null | grep -v '/identity\.py$' || true)"
+readers=""
+for _py in "$tui"/data/*.py; do
+  [ -e "$_py" ] || continue
+  case "$_py" in */identity.py) continue ;; esac
+  readers="${readers:+$readers }$_py"
+done
 check "there are data/ readers to scan" '[ -n "$readers" ]'
 reader_defaults="$(grep -n '^DEFAULT_[A-Z_]* *= *"[/h]' $readers 2>/dev/null || true)"
 check "no data/ reader defaults a host path or URL" \

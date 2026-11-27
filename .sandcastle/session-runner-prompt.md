@@ -45,9 +45,53 @@ authorized for), and nothing more.
    the runner judges you by the ticket's state, so close it ONLY when the
    work is genuinely done and proven.
 
+## Landing — how your work reaches `main`
+
+The runner resolved how THIS ticket lands and stated it in the ticket context
+below, on a line reading `Landing mode for this ticket (resolved by the
+runner): push` or `… pr`. Follow that branch. If that line is absent, treat
+it as **push** (the standing session's default).
+
+### `push` — you land on `main` directly, then close the ticket
+
+The normal standing-session path. Commit, `git pull --rebase`, push to `main`
+(rule 4), post the close-report comment, and close the ticket.
+
+### `pr` — you open a pull request and a human merges it
+
+The ticket lands ONLY through a pull request a human merges. Rule 4's push to
+`main` does NOT apply:
+
+1. NEVER push to `main` — not once, not "just the docs part", not after a
+   rebase. Do not merge the pull request yourself, and do NOT close the
+   ticket: the human's merge closes it through the PR's `closes #<N>` first
+   line.
+2. Commit your work on this checkout as usual, then land it with ONE command.
+   It pushes `agent/issue-<N>` (never force), opens the pull request with
+   `closes #<N>` as its first line, attaches any screenshots, and checks the
+   evidence rule:
+
+       bash .sandcastle/land-pr.sh <N> "<concise title> (#<N>)" <body-file> [screenshot.png ...]
+
+   If `agent/issue-<N>` already holds commits that are not yours, STOP — never
+   force-push over unmerged work; leave a comment and relabel `ready-for-human`.
+3. Evidence is mandatory. Pass at least one screenshot taken AFTER your fix,
+   or — only when the fix has no visible surface (most harness tickets do
+   not) — put this line in the body file, on its own line, with a real reason:
+
+       **Screenshots:** none — <reason>
+
+4. Post your close-report comment (what the PR lands, the commits, the proof)
+   as the audit trail, then STOP. Opening the PR is how you complete a pr-mode
+   ticket: the runner sees the open PR, drops `ready-for-session` to take the
+   ticket out of the session lane, and hands it to the human who merges.
+   Leaving the ticket open with its PR open is success here, not "no progress".
+
 ## Success criterion
 
-When you are done, the ticket is either CLOSED (work landed + close-report)
-or relabelled (`ready-for-human` with its `## Why human`, or another honest
-routing) — a ticket left `ready-for-session` and open is treated as "no
-progress" by the runner.
+When you are done, the ticket is advanced: either CLOSED (a push-mode ticket
+you landed on `main` + close-report), handed to review (a pr-mode ticket whose
+pull request you opened — the runner unqueues it), or relabelled
+(`ready-for-human` with its `## Why human`, or another honest routing). A
+ticket left `ready-for-session` and open with no pull request is treated as
+"no progress" by the runner.

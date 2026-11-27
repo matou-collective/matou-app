@@ -170,7 +170,7 @@ var capabilityActions = map[Capability][]Action{
 	CapContribute: {
 		ActionCreateContribution, ActionConfirmContribution, ActionRegisterInterest,
 		ActionShareContribution, ActionOfferContribution, ActionAcceptOffer,
-		ActionSubmitEvidence, ActionEditEvidence, ActionAssignContribution,
+		ActionSubmitEvidence, ActionSaveEvidenceDraft, ActionEditEvidence, ActionAssignContribution,
 		ActionTransitionContribution, ActionUpdateContribution,
 		ActionStoreCredential, ActionWriteProfile,
 	},
@@ -188,13 +188,14 @@ var capabilityActions = map[Capability][]Action{
 	CapReviewWork:           {ActionReviewContribution, ActionApproveSubContrib},
 	CapSignOff:              {ActionSignOffContribution, ActionSignOffPlan},
 	CapReward:               {ActionRewardContribution},
-	CapSubmitCompletion:     {ActionSubmitProjectCompletion},
+	CapSubmitCompletion:     {ActionSubmitProjectCompletion, ActionCloseParentContribution},
 	CapApproveCompletion:    {ActionApproveProjectCompletion, ActionRejectProjectCompletion},
 	// leadStewardScope: plan lifecycle (archive, unassign, milestone edits,
 	// linking a proposal to a project).
 	CapArchiveWork: {
 		ActionArchiveProject, ActionArchiveMilestone, ActionArchiveContribution,
 		ActionUnassignContribution, ActionEditMilestone, ActionLinkProposal,
+		ActionReorderContribution, ActionPromoteSubContribution,
 	},
 	// adminScope: member roles plus the role-granting bootstrap routes.
 	// save_org_config has moved OUT of manage_members into

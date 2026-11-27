@@ -6,7 +6,7 @@
 # everything a worker container needs to EXIST, in the order a run needs it:
 #
 #   .env manifest → secret files → pnpm store guard → mount dirs
-#   → pnpm install → image build → persistent nix store seed
+#   → disk guard → pnpm install → image build → persistent nix store seed
 #
 # Three separate run-swarm tests used to pin pieces of this stage as verbatim
 # COPIES of the block — tests/nix-store-test.sh (image name + seed decision),
@@ -23,7 +23,7 @@
 # matou-app did exactly that on every tick for 20 h).
 #
 # Callers must have sourced verdict-lib.sh and env-allowlist-lib.sh. No network.
-# Offline-tested by tests/provision-lib-test.sh with shimmed docker/pnpm.
+# Offline-tested by tests/provision-lib-test.sh with shimmed docker/pnpm/df.
 
 if [ -z "${__SWARM_PROVISION_LIB:-}" ]; then
 __SWARM_PROVISION_LIB=1
@@ -90,24 +90,40 @@ provision_mount_dirs() {
 }
 
 # ── the secret FILES ───────────────────────────────────────────────────────
-# FORGEJO_TOKEN/MATTERMOST_BOT_TOKEN/DIGITALOCEAN_ACCESS_TOKEN are NOT in .env —
-# Sandcastle forwards every key .env declares as a `docker run -e` value, which
-# lands in `docker inspect .Config.Env` (the 2026-07-11 breach vector). They ship
-# into the sandbox as read-only files instead (main.mts's `mounts`, consumed per
-# .sandcastle/secrets/README.md). Materialized from THIS process's own env (CI:
-# Actions secrets; host: whatever the operator exported) so every run picks up
-# the current value, including rotations. Each is optional — a task that never
-# needs one just won't find the file.
+# FORGEJO_TOKEN/MATTERMOST_BOT_TOKEN/DIGITALOCEAN_ACCESS_TOKEN — and, since #198,
+# the SELECTED Claude OAuth token — are NOT forwarded as `docker run -e` values.
+# Sandcastle forwards every key .env declares as a `-e` value, which lands in
+# `docker inspect .Config.Env` (the 2026-07-11 breach vector). They ship into
+# the sandbox as read-only files instead (main.mts's `mounts`, consumed per
+# .sandcastle/secrets/README.md — the Claude token via the claude-fence shim).
+# Materialized from THIS process's own env (CI: Actions secrets; host: whatever
+# the operator exported) so every run picks up the current value, including
+# rotations. Each is optional — a task that never needs one just won't find the
+# file.
 provision_write_secrets() {
   local dir="$1"
   _provision_write_secret "$dir" forgejo_token "${FORGEJO_TOKEN:-}"
   _provision_write_secret "$dir" mattermost_bot_token "${MATTERMOST_BOT_TOKEN:-}"
   _provision_write_secret "$dir" digitalocean_access_token "${DIGITALOCEAN_ACCESS_TOKEN:-}"
+  provision_write_claude_secret "$dir"
 }
 
 _provision_write_secret() { # _provision_write_secret <dir> <file> <value>
   [ -n "$3" ] || return 0
   printf '%s' "$3" >"$1/secrets/$2" && chmod 600 "$1/secrets/$2"
+}
+
+# provision_write_claude_secret <sandcastle-dir> — (re)write the SELECTED Claude
+# OAuth token (#198) as a 0600 secret file the worker's `claude` shim (claude-
+# fence) reads, instead of forwarding it as a `docker run -e` value that lands
+# in `docker inspect .Config.Env` (the 2026-07-11 breach vector — the same one
+# the three tokens above already avoid). The CALLER must have run
+# claude_select_token first so CLAUDE_CODE_OAUTH_TOKEN holds the active account's
+# value (run-swarm.sh selects before this stage). The #510 failover path calls
+# this AGAIN after it flips accounts, so the shim's next worker reads the standby
+# token. An unset token writes nothing — the shim then falls back to its env.
+provision_write_claude_secret() {
+  _provision_write_secret "$1" claude_oauth_token "${CLAUDE_CODE_OAUTH_TOKEN:-}"
 }
 
 # ── the cold pnpm-store guard (#489 / GOTCHAS #20) ────────────────────────
@@ -135,11 +151,62 @@ provision_pnpm_store_guard() {
   return 1
 }
 
+# ── the full-disk guard (GOTCHAS #411) ────────────────────────────────────
+# The stage after this one writes GiB: `pnpm install` into the store, then
+# `sandcastle docker build-image` into docker's data root. When the root
+# filesystem is FULL the build dies ENOSPC with exit 1 and sandcastle's own
+# message goes to the job log, not to an errlog this stage greps — so the
+# verdict carries `stage=sandcastle docker build-image`, `exit=1` and an EMPTY
+# `--- error lines ---` block, worker-logs.txt is empty (zero workers born), and
+# the healer has nothing to key on but the host.txt df line. bens-mac-04 was at
+# 100% / 174 MiB free on 2026-11-06 and every tick red that way.
+#
+# Refuse loudly BEFORE the write, in the #489 cold-store idiom: this guard's OWN
+# verdict stage with its FATAL captured as the error line (#9). A full disk is
+# not something the harness may clean (the healer charter forbids host cleanup),
+# so the guard's whole job is to make the diagnosis free.
+#
+# provision_disk_guard -> rc 1 when free space on docker's data root is under
+# the floor. Called from provision_install_and_build, ahead of both writes. SWARM_MIN_DISK_MB sets the floor (default 5120 — this repo's
+# sandcastle image is ~2.4 GiB and one changed layer rebuilds a chunk of it);
+# SWARM_MIN_DISK_MB=0 disables the guard for a deliberate tight run. An
+# unreadable `df` passes: never red a run on a measurement we could not take.
+# Like the cold-store guard it leaves SWARM_EXIT_REASON UNSET so the runlog
+# reason stays the died-in:<stage> form and the healer classifies off the
+# verdict. `docker`/`df` resolve through PATH — the offline test's seam.
+provision_disk_guard() {
+  local floor_mb root free_mb fatal
+  floor_mb="${SWARM_MIN_DISK_MB:-5120}"
+  case "$floor_mb" in ''|*[!0-9]*) floor_mb=5120 ;; esac
+  [ "$floor_mb" -gt 0 ] || return 0
+  root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" || root=""
+  [ -n "$root" ] || root=/var/lib/docker
+  # df needs a path that resolves: walk up to the nearest existing ancestor so a
+  # data root this user cannot stat still measures the right filesystem.
+  while [ ! -d "$root" ] && [ "$root" != / ]; do root="$(dirname "$root")"; done
+  free_mb="$(df -Pk "$root" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')"
+  case "${free_mb:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$free_mb" -lt "$floor_mb" ] || return 0
+  verdict_stage "docker disk space check (#411)"
+  fatal="run-swarm: FATAL — only ${free_mb} MiB free on docker's data root $root (floor ${floor_mb} MiB): pnpm install and the image build cannot write (ENOSPC)."
+  echo "$fatal" >&2
+  echo "run-swarm: free space on this host — a human with root must do it (the healer charter forbids host cleanup); or set SWARM_MIN_DISK_MB=0 for a deliberate tight run." >&2
+  verdict_error "$fatal"
+  return 1
+}
+
 # ── install + image ───────────────────────────────────────────────────────
 # pnpm-only, matching the repo standard (flake.nix: "no npm/yarn") — the repo
 # carries a single lockfile. The 2026-07-27 outage was `npm ci` here tripping
 # over a package-lock.json that #142's package.json change never updated.
 provision_install_and_build() {
+  # GOTCHAS #411: both writes below die ENOSPC on a full filesystem, and the
+  # build's own message never reaches an errlog this stage greps — measure first
+  # so the verdict names the real fault. Inside this function, not beside its
+  # call: run-swarm.sh is held under a 200-code-line ratchet by
+  # tests/run-swarm-stages-test.sh, and the stage that WRITES is the honest
+  # owner of "can I write".
+  provision_disk_guard || return 1
   verdict_stage "pnpm install (frozen lockfile)"
   pnpm install --frozen-lockfile || return 1
   verdict_stage "sandcastle docker build-image"

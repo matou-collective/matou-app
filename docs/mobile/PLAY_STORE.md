@@ -82,7 +82,7 @@ build must only ever talk to production infrastructure) and warns if the
 URL is plain `http://`.
 
 CI: release through `scripts/release.sh`, which bumps `frontend/package.json`,
-tags, and pushes to Forgejo and GitHub (GitHub is also a push-mirror).
+tags, and pushes to Forgejo only (the Forgejo push mirror carries main and the tag to GitHub).
 
 ```sh
 cd frontend && npm run release -- 0.4.0

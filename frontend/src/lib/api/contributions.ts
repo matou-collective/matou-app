@@ -31,6 +31,8 @@ export interface CreateContributionRequest {
   budget?: string;
   created_by: string;
   assigned_contributor_id?: string;
+  // Explicit sibling-order position; omit to append to the end of the list.
+  order?: number;
 }
 
 export interface Contribution {
@@ -46,6 +48,14 @@ export interface Contribution {
   deliverables: string[];
   acceptance_criteria: string[];
   skill_requirements: string[];
+  sort_order?: number;
+  // Derived "M.C.S" display reference (milestone.contribution.sub, e.g. "1.2.0"
+  // for a top-level contribution, "1.2.1" for its first sub). Computed by the
+  // backend from the contribution's position at read time; never part of the
+  // title text. See issue #753.
+  reference?: string;
+  parent_contribution?: string;
+  child_contributions?: string[];
   estimated_duration?: number;
   actual_duration?: number;
   actual_cost?: number;
@@ -53,10 +63,16 @@ export interface Contribution {
   deadline?: string;
   budget?: string;
   assigned_contributor_id?: string;
+  // Set when the contribution has been privately offered to a specific user.
+  offered_to?: string;
+  offered_at?: string;
   signed_off_by?: string;
   signed_off_at?: string;
   rewarded_by?: string;
   rewarded_at?: string;
+  closed_by?: string;
+  closed_at?: string;
+  close_reason?: string;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -234,6 +250,23 @@ export async function submitEvidence(
   return response.json();
 }
 
+export async function saveEvidenceDraft(
+  id: string,
+  req: SubmitEvidenceRequest,
+): Promise<Contribution> {
+  log.info('Saving evidence draft for contribution %s', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/save-evidence-draft`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(req),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to save evidence draft');
+  }
+  return response.json();
+}
+
 export async function editEvidence(
   id: string,
   req: SubmitEvidenceRequest,
@@ -296,6 +329,24 @@ export async function rewardContribution(id: string, proof?: ActionProof): Promi
   return response.json();
 }
 
+export async function closeParentContribution(
+  id: string,
+  reason: string,
+  proof?: ActionProof,
+): Promise<Contribution> {
+  log.info('Closing parent contribution %s at $0', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/close`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(proof ? { reason, proof } : { reason }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to close contribution');
+  }
+  return response.json();
+}
+
 export async function createChildContribution(
   parentId: string,
   req: CreateContributionRequest,
@@ -337,15 +388,53 @@ export async function approveSub(id: string): Promise<Contribution> {
   return response.json();
 }
 
-export async function archiveContribution(id: string): Promise<void> {
+/**
+ * Promote a sub-contribution to a top-level contribution in its parent chain's
+ * milestone. The backend detaches it from its parent, stamps it with the
+ * milestone, and appends it to the milestone's top-level list. Lead/steward only
+ * (project-scoped RBAC). See #778.
+ */
+export async function promoteSubContribution(id: string): Promise<Contribution> {
+  log.info('Promoting sub-contribution %s to top-level', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/promote`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to promote sub-contribution');
+  }
+  return response.json();
+}
+
+export type SubContributionChoice = 'archive' | 'promote';
+
+// subContributions is required by the backend when the contribution has
+// non-archived sub-contributions: 'archive' cascades (rewarded ones are kept),
+// 'promote' makes them top-level contributions in the same milestone.
+export async function archiveContribution(id: string, subContributions?: SubContributionChoice): Promise<void> {
   log.info('Archiving contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/archive`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(subContributions ? { sub_contributions: subContributions } : {}),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to archive contribution');
+  }
+}
+
+export async function restoreContribution(id: string): Promise<void> {
+  log.info('Restoring contribution %s', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/restore`, {
     method: 'POST',
     headers: authHeaders(),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(err.error || 'Failed to archive contribution');
+    throw new Error(err.error || 'Failed to restore contribution');
   }
 }
 
@@ -362,12 +451,57 @@ export async function unassignContribution(id: string): Promise<Contribution> {
   return response.json();
 }
 
+/**
+ * Reorder a sibling group of contributions. orderedIds must be the full new
+ * order of one group's non-archived siblings — either a milestone's top-level
+ * contributions or one parent's children — as a permutation (no adds/drops).
+ * The first id is used as the path representative; the backend validates the
+ * rest belong to the same group. Lead/steward only (project-scoped RBAC).
+ */
+export async function reorderContributions(orderedIds: string[]): Promise<{ contributions: Contribution[]; total: number }> {
+  if (orderedIds.length === 0) throw new Error('reorderContributions requires at least one id');
+  log.info('Reordering %d contributions', orderedIds.length);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${orderedIds[0]}/reorder`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ ordered_ids: orderedIds }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to reorder contributions');
+  }
+  return response.json();
+}
+
+/**
+ * Move a top-level contribution to a different milestone within the same
+ * implementation plan. The backend keeps milestone membership consistent across
+ * its three stores, appends the contribution to the end of the target
+ * milestone, invalidates plan sign-off, and records a move change-log entry.
+ * Sub-contributions are rejected. Lead/steward only (project-scoped RBAC).
+ */
+export async function moveContribution(id: string, milestoneId: string): Promise<Contribution> {
+  log.info('Moving contribution %s to milestone %s', id, milestoneId);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/move`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ milestone_id: milestoneId }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to move contribution');
+  }
+  return response.json();
+}
+
 export interface ContributionComment {
   id: string;
   contribution_id: string;
   user_id: string;
   user_name: string;
   text: string;
+  /** AIDs of people @-mentioned in `text`, resolved client-side from the tokens. */
+  mentioned_aids?: string[];
   created_at: string;
 }
 
@@ -376,11 +510,12 @@ export async function addContributionComment(
   userId: string,
   userName: string,
   text: string,
+  mentionedAids: string[] = [],
 ): Promise<ContributionComment> {
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${contributionId}/comments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ user_id: userId, user_name: userName, text }),
+    body: JSON.stringify({ user_id: userId, user_name: userName, text, mentioned_aids: mentionedAids }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));

@@ -393,10 +393,15 @@ pass=$((pass+1))
 pd_fn="$tmp/parse_diagnosis.sh"
 awk '/^parse_diagnosis\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$here/../rehearsal-report.sh" > "$pd_fn"
 grep -q '^parse_diagnosis() {' "$pd_fn" || fail "could not extract parse_diagnosis() from rehearsal-report.sh"
+# $pd_fn is an awk-extracted copy of parse_diagnosis() generated above — shellcheck cannot follow a runtime-generated source.
+# shellcheck source=/dev/null
 ( . "$pd_fn"; parse_diagnosis "" ) && fail "parse_diagnosis \"\" must return non-zero (empty is never an object; #140 jq 1.6)"
+# shellcheck source=/dev/null
 ( . "$pd_fn"; parse_diagnosis "   " ) && fail "parse_diagnosis on blank input must return non-zero (#140)"
+# shellcheck source=/dev/null
 ( . "$pd_fn"; parse_diagnosis '```json
 ```' ) && fail "parse_diagnosis on a fence-only blob must return non-zero (strips to empty; #140)"
+# shellcheck source=/dev/null
 ( . "$pd_fn"; out="$(parse_diagnosis '{"title":"t"}')" ) || fail "parse_diagnosis must still accept a clean JSON object"
 pass=$((pass+1))
 
@@ -511,6 +516,10 @@ out21="$(bash "$here/../rehearsal-report.sh" "$tmp/run")" || fail "reporter exit
 grep -q 'WARN labels fetch failed' <<<"$out21" || fail "transient labels failure was silent (#495's exact hole)"
 grep -q 'labels re-fetch succeeded' <<<"$out21" || fail "retry success not announced"
 grep -Eq '^[[:space:]]*97,?[[:space:]]*$' "$CURL_LOG" || fail "retry did not restore label ops — issue filed without rehearsal-183"
+# The blip must reach the reporter: forgejo_get's own retry (#2048) is held to
+# ONE attempt on this fetch, so the wire sees exactly the failed fetch + the
+# reporter's paced re-fetch — not a silent lib retry that hides the WARN.
+[ "$(cat "$LABELS_COUNT" 2>/dev/null)" = 2 ] || fail "labels fetch must be single-attempt + one loud re-fetch (got $(cat "$LABELS_COUNT" 2>/dev/null) fetches)"
 unset LABELS_FAIL_FIRST
 pass=$((pass+1))
 
@@ -656,7 +665,15 @@ echo "Failed to authenticate: OAuth session expired and could not be refreshed"
 SH
 chmod +x "$tmp/bin/claude"
 red_run "pairing timeout after 900000ms"
-REHEARSAL_HEALER=0 bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (auth refusal)"
+fake_tok="sk-ant-oat01-FAKEtokenBODYthatMUSTneverBEprinted0123456789"
+REHEARSAL_HEALER=0 CLAUDE_CODE_OAUTH_TOKEN="$fake_tok" bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (auth refusal)"
+# The alert names the token by its 14-char prefix ONLY. It once printed the prefix and
+# then the whole token (`${tok:-EMPTY}` is the token when one is set) — to the drive
+# ticket and Mattermost (#1672 fire 1).
+grep -q 'FAKEtokenBODY' "$CURL_LOG" \
+  && fail "the auth alert leaked the token body — it may carry the 14-char prefix, never the token"
+grep -q 'sk-ant-oat01-F…' "$CURL_LOG" \
+  || fail "the auth alert must still name the token by its 14-char prefix"
 grep -q 'CLAUDE AUTH FAILED' "$CURL_LOG" \
   || fail "no auth-refusal alert posted to the drive issue -- an auth-dead token must never be silent"
 grep -q 'NO DIAGNOSIS' "$CURL_LOG" \
@@ -713,7 +730,7 @@ pass=$((pass+1))
 #     (this is such a worker), the a76e7e0 inherited-env lesson.
 echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
 red_run "pairing timeout after 900000ms"
-SWARM_HOST= RUNNER_HOST=probe-declared-host REHEARSAL_HEALER=0 \
+SWARM_HOST='' RUNNER_HOST=probe-declared-host REHEARSAL_HEALER=0 \
   bash "$here/../rehearsal-report.sh" "$tmp/run" >/dev/null \
   || fail "reporter exited non-zero (evidence host, RUNNER_HOST)"
 grep -q 'on probe-declared-host' "$CURL_LOG" \

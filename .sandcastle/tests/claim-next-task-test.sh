@@ -23,6 +23,10 @@ setup() {
   jq -n '[{"id":36,"name":"ready-for-agent"},{"id":50,"name":"agent-working"}]' >"$FAKE_DIR/labels.json"
   jq -n '{"workflow_runs":[{"name":"swarm","status":"running","run_number":513}]}' >"$FAKE_DIR/tasks.json"
   echo 1000 >"$FAKE_DIR/comment-counter"
+  # #350: the claim sink — pinned per scenario so a suite run INSIDE a sandbox
+  # (where /run/host-attempts is the live mount) never writes a fake claim
+  # into the host's real sink.
+  export SANDCASTLE_CLAIM_SINK="$FAKE_DIR/sink/claimed.log"; mkdir -p "$FAKE_DIR/sink"
 }
 
 # T1: empty queue -> []
@@ -36,10 +40,24 @@ check "emits exactly one ticket" '[ "$(jq length <<<"$out")" = "1" ]'
 check "emits the head" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
 check "claim comment posted" 'grep -q "swarm-claim host=eb03 run=513" "$FAKE_DIR/comments-431.json"'
 check "agent-working added" 'grep -q "POST .*issues/431/labels" "$FAKE_DIR/calls.log"'
-# #13: the landing instruction line — default (no policy file) is push-to-main,
-# on stderr so the JSON stdout contract stays clean.
+# #350: the won ticket's number reaches the host sink at claim time, once
+check "#350: claimed number appended to the host claim sink" '[ "$(cat "$SANDCASTLE_CLAIM_SINK")" = "431" ]'
+# #350: no sink dir (the sandbox mount absent) is a silent no-op — same JSON out
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
-bash "$script" >"$FAKE_DIR/lstdout" 2>"$FAKE_DIR/lstderr"
+export SANDCASTLE_CLAIM_SINK="$FAKE_DIR/no-such-dir/claimed.log"
+out="$(bash "$script" 2>"$FAKE_DIR/nosink-err")"
+check "#350: missing sink dir still claims and emits the ticket" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
+check "#350: missing sink dir creates nothing" '[ ! -e "$FAKE_DIR/no-such-dir" ]'
+# #13: the landing instruction line — a PUSH policy prints push-to-main, on
+# stderr so the JSON stdout contract stays clean. #186: pin SWARM_POLICY_FILE to
+# a test-controlled push policy here too — leaving the seam unset made this
+# scenario source the HOST repo's real swarm-policy.sh, so a vendored test run
+# from a LANDING=pr consumer read the PR-branch line and RED'd (pass=43 fail=1).
+# An empty file or an explicit LANDING=push both resolve to "landing: push to
+# main"; use the explicit form for legibility.
+setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
+printf '%s\n' 'LANDING=push' > "$FAKE_DIR/swarm-policy.sh"
+SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" bash "$script" >"$FAKE_DIR/lstdout" 2>"$FAKE_DIR/lstderr"
 check "push-mode landing line printed on stderr" 'grep -q "landing: push to main" "$FAKE_DIR/lstderr"'
 check "landing line does NOT pollute the JSON stdout" \
   '[ "$(jq -r ".[0].number" < "$FAKE_DIR/lstdout")" = "431" ]'
@@ -58,6 +76,7 @@ jq -n '[{id:900, body:"swarm-claim host=ws run=512\nx"}]' >"$FAKE_DIR/comments-4
 out="$(bash "$script")"
 check "loser takes the next ticket" '[ "$(jq -r ".[0].number" <<<"$out")" = "433" ]'
 check "loser deleted its own claim" 'grep -q "DELETE .*issues/comments/1001" "$FAKE_DIR/calls.log"'
+check "#350: a lost candidate is never written to the claim sink" '[ "$(cat "$SANDCASTLE_CLAIM_SINK")" = "433" ]'
 
 # T4: every ticket contested -> []
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
@@ -76,7 +95,10 @@ check "all contested emits []" '[ "$(bash "$script")" = "[]" ]'
 # completion candidate — fail-closed at the script, fail-OPEN at the surface
 # (idss#1425). A required read that faulted fails LOUD (non-zero exit, no []),
 # exactly like the failing-lister path below (T-idss#1195e / #52 / GOTCHAS 7), so
-# run-swarm re-keys it and the backstop re-fires instead of the lane stopping.
+# the backstop re-fires instead of the lane stopping. #325: this in-sandbox fault
+# surfaces under the host's "sandcastle run (workers)" verdict stage
+# (execute-lib.sh), NOT a re-keyed claim stage — the loud non-zero exit is what
+# the healer and backstop see.
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
 touch "$FAKE_DIR/tasks-fail"
 aout="$(bash "$script" 2>"$FAKE_DIR/aerr")"; arc=$?
@@ -96,7 +118,7 @@ check "run-0 refuses: warns on stderr" 'SWARM_RUN_ID= bash "$script" 2>&1 >/dev/
 
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
 jq -n '{"workflow_runs":[{"name":"swarm","status":"running","run_number":0}]}' >"$FAKE_DIR/tasks.json"
-out="$(SWARM_RUN_ID= SWARM_CLAIM_FORCE=1 bash "$script" 2>/dev/null)"
+out="$(SWARM_RUN_ID='' SWARM_CLAIM_FORCE=1 bash "$script" 2>/dev/null)"
 check "forced run-0 claim goes through" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
 check "forced claim posted at run 0" 'grep -q "swarm-claim host=eb03 run=0" "$FAKE_DIR/comments-431.json"'
 
@@ -149,8 +171,15 @@ check "deadline too tight says so on stderr" 'grep -q "deadline" "$FAKE_DIR/derr
 # the outer 30s again. Assert the arithmetic on the real argv, not the intent.
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
 CLAIM_NEXT_DEADLINE=20 CLAIM_CANDIDATE_CALLS=5 bash "$script" >/dev/null 2>&1
-check "walk cap is deadline-derived (20/5 = 4s), not the old flat 10s" \
-  'grep -q -- "--max-time 4 " "$FAKE_DIR/argv.log" || grep -q -- "--max-time 4$" "$FAKE_DIR/argv.log"'
+# The derived per-call cap is the SMALLEST --max-time on the real argv (the
+# candidate walk; the prefetch leg is larger). Assert the invariant, not the
+# literal: pinning `--max-time 4` flaked ~1-in-8 because the derivation subtracts
+# elapsed SECONDS, so a run that crossed a one-second boundary derives a MORE
+# conservative cap 3 (from 19/5) and reds a green code path (#166). `cap < 10`
+# still catches a regression to the old flat 10s cap.
+cap="$(sed -n "s/.*--max-time \([0-9]*\).*/\1/p" "$FAKE_DIR/argv.log" | sort -n | head -1)"
+check "walk cap is deadline-derived (>= floor, calls x cap fits deadline, < old flat 10s)" \
+  '[ -n "$cap" ] && [ "$cap" -ge 2 ] && [ "$((cap * 5))" -le 20 ] && [ "$cap" -lt 10 ]'
 check "worst-case candidate (calls x cap) fits inside the deadline" \
   '[ "$(sed -n "s/.*issues\/431\/comments.*//;s/.*--max-time \([0-9]*\).*/\1/p" "$FAKE_DIR/argv.log" | sort -n | tail -1)" -le 20 ]'
 # The explicit override stays absolute — an operator/probe retune is eyes-open
@@ -171,10 +200,19 @@ bash "$script" >/dev/null 2>&1
 check "alive-runs prefetch is capped over the measured 12.2s tail" \
   '[ "$(sed -n "/actions\/tasks/s/.*--max-time \([0-9]*\).*/\1/p" "$FAKE_DIR/argv.log")" -gt 12 ]'
 
-# T-idss#1195d: the lister leg is bounded by WALL CLOCK from the outside.
-# list-ready-tasks.sh retries each read with backoff at LIST_READY_MAX_TIME (30s)
-# apiece — a worst case around 96s, unbounded relative to a 30s expansion. A
-# lister that hangs must cost the tick a graceful [], not the whole run.
+# T-idss#1195d (idss#2145): the lister leg is bounded by WALL CLOCK from the
+# outside. list-ready-tasks.sh retries each read with backoff at
+# LIST_READY_MAX_TIME (30s) apiece — a worst case ~96s, unbounded relative to a
+# 30s expansion, so it is cut off at CLAIM_LISTER_MAX_TIME. The lister here WOULD
+# have returned a NON-EMPTY queue (the forge is slow, not empty) — this is the
+# idss#2145 shape, where a forge answering its open-issues page in 8-22s blew the
+# bound every tick while 8 tickets were ready, and the old code laundered rc 124
+# into a [] the worker read as "nothing to do" (the idss#1425 hazard on the leg
+# #1425 left open). So a timed-out lister now fails LOUD — non-zero, NO [] —
+# exactly like the alive-runs and failing-lister arms: run-swarm re-keys it to
+# the "list ready tasks" stage and the healer sees a NAMED fault instead of a
+# silently idle lane. (In production the #2145 single-issue fast path keeps the
+# lister well under the bound, so this loud arm is the genuine-fault backstop.)
 setup
 cat >"$FAKE_DIR/lister" <<'EOF'
 #!/usr/bin/env bash
@@ -183,13 +221,14 @@ printf '%s' '[{"number":431,"title":"a","body":"b","url":"u"}]'
 EOF
 chmod +x "$FAKE_DIR/lister"; export CLAIM_LISTER="$FAKE_DIR/lister"
 lstart="$(date +%s)"
-out="$(CLAIM_LISTER_MAX_TIME=2 bash "$script" 2>"$FAKE_DIR/lterr")"
+out="$(CLAIM_LISTER_MAX_TIME=2 bash "$script" 2>"$FAKE_DIR/lterr")"; drc=$?
 lelapsed=$(( $(date +%s) - lstart ))
 unset CLAIM_LISTER
-check "a hanging lister emits [] instead of running past the outer budget" '[ "$out" = "[]" ]'
-check "a hanging lister is cut off at its wall-clock bound, not left to run" '[ "$lelapsed" -lt 10 ]'
-check "a hanging lister posts NO claim comment" '! grep -q "POST .*issues/431/comments" "$FAKE_DIR/calls.log"'
-check "a hanging lister says so on stderr" 'grep -q "wall-clock" "$FAKE_DIR/lterr"'
+check "a slow lister (non-empty queue) fails LOUD, non-zero (idss#1425/idss#2145)" '[ "$drc" -ne 0 ]'
+check "a slow lister does NOT emit a laundered []" '[ "$out" != "[]" ]'
+check "a slow lister is cut off at its wall-clock bound, not left to run" '[ "$lelapsed" -lt 10 ]'
+check "a slow lister posts NO claim comment" '! grep -q "POST .*issues/431/comments" "$FAKE_DIR/calls.log"'
+check "a slow lister says so on stderr" 'grep -q "wall-clock" "$FAKE_DIR/lterr"'
 
 # T-idss#1195e: a lister that FAILS (not hangs) must still fail LOUD. #52 gave the
 # lister a retry schedule and let a persistent outage propagate under set -e, so
@@ -230,6 +269,31 @@ unset CLAIM_LISTER
 check "concurrent alive-runs still claims the head" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
 check "alive-runs fetched before the slow lister finished (concurrent, not serial)" \
   '[ "$(cat "$FAKE_DIR/tasks-hit.stamp")" -lt "$(cat "$FAKE_DIR/lister-done.stamp")" ]'
+
+# T-#381: the NO-PICK fleet-pick-task path end-to-end through the REAL lister.
+# A host with no fleet view mirrors its FULL verified ready-set as
+# fleet-pick-task (MANY tickets, no fleet-pick NUMBER file). The in-sandbox
+# lister must emit the whole set with ZERO forge reads — the 12s
+# CLAIM_LISTER_MAX_TIME bound is only safe because the host mirrors its verdict;
+# a no-pick full-page re-fetch RED'd this leg with rc 124 on a slow forge (#327
+# finished only the WITH-pick half). Pin every host-signal seam so an in-sandbox
+# run cannot read the live /run/host-signals mount instead of the fixture.
+setup; unset CLAIM_LISTER
+printf '[{"number":811,"title":"a","body":"b","url":"u/811","landing":"push"},{"number":822,"title":"c","body":"d","url":"u/822","landing":"push"}]\n' \
+  >"$FAKE_DIR/fleet-pick-task"
+: >"$FAKE_DIR/calls.log"
+out="$(SWARM_FLEET_PICK_TASK_SIGNAL="$FAKE_DIR/fleet-pick-task" \
+  SWARM_FLEET_PICK_SIGNAL="$FAKE_DIR/no-such-pick" \
+  SWARM_DRIVE_YIELD_SIGNAL="$FAKE_DIR/no-such-drive" \
+  SWARM_REPO_WANTED_DIR="$FAKE_DIR/no-such-wanted" \
+  bash "$script")"; ltrc=$?
+check "#381: a no-pick task signal claims the head of the mirrored ready-set" \
+  '[ "$(jq -r ".[0].number" <<<"$out")" = "811" ]'
+check "#381: the no-pick real-lister leg exits 0 (never rc 124)" '[ "$ltrc" -eq 0 ]'
+check "#381: the lister re-fetched NO ready-for-agent page (zero forge reads)" \
+  '! grep -q "ready-for-agent" "$FAKE_DIR/calls.log"'
+check "#381: the lister ran NO dependency fan-out" \
+  '! grep -q "/dependencies" "$FAKE_DIR/calls.log"'
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

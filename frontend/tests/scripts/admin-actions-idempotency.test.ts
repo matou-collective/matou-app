@@ -70,7 +70,7 @@ const keriClientMock = {
 
 vi.mock('src/lib/keri/client', () => ({ useKERIClient: () => keriClientMock }));
 vi.mock('src/lib/keri/registry', () => ({
-  getOrCreateOrgRegistry: vi.fn(async () => 'REGID'),
+  resolveIssuingRegistry: vi.fn(async () => 'REGID'),
 }));
 vi.mock('src/api/config', () => ({
   fetchOrgConfig: vi.fn(async () => ({
@@ -178,6 +178,17 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
         message: expect.stringContaining('already issued a membership credential on another device'),
       }),
     );
+  });
+
+  it('issues the unchanged Mātou body on a legacy backend (no IDSS descriptor)', async () => {
+    const ok = await useAdminActions().approveRegistration(registration);
+    expect(ok).toBe(true);
+    const calls = issueCredential.mock.calls as unknown as unknown[][];
+    expect(calls[0]![4]).toEqual({
+      communityName: 'MATOU',
+      role: 'Member',
+      joinedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    });
   });
 
   it('still issues when a DIFFERENT applicant already holds a credential', async () => {

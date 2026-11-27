@@ -22,6 +22,16 @@ func (e *BlockingChildrenError) Error() string {
 	return fmt.Sprintf("child contributions not signed off: %v", e.IDs)
 }
 
+// OpenChildrenError is returned when a parent cannot be closed because some of
+// its sub-contributions are not rewarded.
+type OpenChildrenError struct {
+	IDs []string
+}
+
+func (e *OpenChildrenError) Error() string {
+	return fmt.Sprintf("cannot close: sub-contributions not rewarded: %v", e.IDs)
+}
+
 // --- Proposal transitions ---
 
 var proposalTransitions = map[ProposalStatus][]ProposalStatus{
@@ -68,6 +78,15 @@ var contributionTransitions = map[ContributionStatus][]ContributionStatus{
 	ContribSignedOff: {ContribRewarded},
 	ContribRewarded:  {ContribArchived},
 	ContribDeclined:  {ContribArchived},
+	// archived → <previous status> is only reachable through
+	// Service.RestoreContribution, which restores the status recorded at
+	// archive time (TransitionContribution rejects archived sources so the
+	// generic POST /transition cannot bypass the cascade and re-sign rules).
+	ContribArchived: {
+		ContribCreated, ContribConfirmed, ContribShared, ContribOffered, ContribAssigned,
+		ContribChanged, ContribNeedsReview, ContribApproved, ContribIncomplete,
+		ContribDeclined, ContribSignedOff, ContribRewarded,
+	},
 }
 
 // ValidateContributionTransition reports an error if moving a contribution

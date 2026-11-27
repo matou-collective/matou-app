@@ -4,9 +4,11 @@
 #
 # Surfaces ONLY issues that are all of:
 #   1. open and labelled `ready-for-agent`,
-#   2. unblocked — every Forgejo issue-dependency ("blocked by") is closed —
-#      so the swarm honours the slice-map DAG (docs/slices/*.yaml) across
-#      features, and
+#   2. unblocked — every Forgejo issue-dependency ("blocked by") is closed AND
+#      (#359) not still `landing-pending` (a push-mode close lands on `main` only
+#      after the host verifies it, so a closed-but-not-landed dependency does not
+#      yet count as met) — so the swarm honours the slice-map DAG
+#      (docs/slices/*.yaml) across features, and
 #   3. NOT labelled `agent-working` — claimed by a live run on another host
 #      under the multi-host pool (claim-next-task.sh, spec D4); a claimed
 #      ticket must vanish from every other host's queue immediately, not
@@ -18,7 +20,9 @@
 # in a consumer's checkout; #47).
 #
 # Output: a JSON array of {number, title, body, url} — the shape Sandcastle's
-# built-in trackers emit. An empty array means done.
+# built-in trackers emit. An empty array means done. Order IS the scheduler
+# (prompt.md says "pick the first task"): drive blockers, then `priority`,
+# then the rest — and within each group the oldest ticket first.
 #
 # Auth: FORGEJO_TOKEN from the environment, from .sandcastle/.env (host runs),
 # or from the read-only file .sandcastle/secrets/forgejo_token that Sandcastle
@@ -60,6 +64,52 @@ fi
 : "${FORGEJO_TOKEN:?set in .sandcastle/.env, the environment, or /run/secrets/forgejo_token}"
 # shellcheck source=swarm-identity.sh
 . "$here/swarm-identity.sh"   # FORGEJO_API default — this repo's identity (ADR 0180 / #571)
+
+# #213: swarm fairness — a PEER repo's swarm has starved past its yield
+# threshold and declared a want-file (swarm-yield-signal.sh). main.mts mirrors
+# every live `repo-wanted-<slug>` into the host-signals dir this run sees (the
+# generalisation of the #111 drive-wanted mirror). A want-file for a DIFFERENT
+# repo than this run's means a starved peer is waiting behind this drain on a
+# shared host slot — answer [] BEFORE any API call so claim-next-task.sh claims
+# nothing more and the slot frees after the current ticket. This run's OWN
+# want-file (this repo starving) must NOT make it yield to itself, so the own
+# slug is excluded. Absent any peer want-file, everything below holds unchanged.
+repo_wanted_dir="${SWARM_REPO_WANTED_DIR:-/run/host-signals}"
+if [ -d "$repo_wanted_dir" ]; then
+  own_slug="${REPO_SLUG:-${FORGEJO_API##*/repos/}}"; own_tag="${own_slug//\//-}"
+  for w in "$repo_wanted_dir"/repo-wanted-*; do
+    [ -e "$w" ] || continue                      # no match -> literal glob, skip
+    [ "${w##*/}" = "repo-wanted-$own_tag" ] && continue   # our own want-file is not a peer's
+    echo "list-ready-tasks: a peer repo's swarm has starved past its yield threshold and wants host capacity (#213: ${w##*/repo-wanted-}) — answering [] so this run claims nothing more and frees the slot after its current task" >&2
+    echo '[]'
+    exit 0
+  done
+fi
+# #327: even the #2145 single-issue fast path pays TWO forge reads (GET
+# /issues/<n> + the candidate's /dependencies, measured ~10s on this forge),
+# and a slow-forge tick overran claim-next-task.sh's CLAIM_LISTER_MAX_TIME and
+# RED'd the claim leg (rc 124) — WITH or WITHOUT a fleet pick. But the host has
+# already LISTED and verified this run's one pick OUTSIDE the 30s
+# prompt-expansion budget (open, ready-for-agent, dependencies closed, not
+# agent-working / standing-drive / rehearsal, open-PR drop + run-parity
+# applied) and narrowed to it — so run-swarm.sh now mirrors the FULL task
+# OBJECT beside the pick number, at /run/host-signals/fleet-pick-task. When it
+# is present, emit the host's verdict with ZERO forge reads: the host verified
+# it seconds ago and the claim walk (claim-next-task.sh) is the real
+# race-resolver, so no re-fetch adds safety. Absent/garbled → fall through to
+# the #2145 single-issue fast path (or the full page), byte-identical to
+# before. This sits AFTER the drive-yield / peer-want gates so a yield still
+# wins over a pick, exactly as the single-issue fast path did.
+fleet_pick_task_signal="${SWARM_FLEET_PICK_TASK_SIGNAL:-/run/host-signals/fleet-pick-task}"
+if [ -f "$fleet_pick_task_signal" ]; then
+  if task_json="$(jq -ec 'select(type == "array" and length > 0)' "$fleet_pick_task_signal" 2>/dev/null)" \
+     && [ -n "$task_json" ]; then
+    echo "list-ready-tasks: emitting the host's already-verified fleet pick from the task signal — zero forge reads (#327)" >&2
+    printf '%s\n' "$task_json"
+    exit 0
+  fi
+  echo "list-ready-tasks: the fleet-pick-task signal is present but unreadable/empty — falling through to a forge read (#327)" >&2
+fi
 # A standing rehearsal DRIVE issue is executed HOST-MODE by the workstation
 # cron (scripts/rehearsal-executor.sh), never by the swarm — Ben's ruling on
 # Matou/idss#380 (DO/broker secrets stay off the swarm containers; #377 proved
@@ -109,6 +159,12 @@ export LIST_READY_MAX_TIME LIST_READY_RETRIES LIST_READY_BACKOFF
 # shellcheck source=policy-lib.sh
 . "$here/policy-lib.sh"
 policy_load "${SWARM_POLICY_FILE:-}"
+# #375: claim_alive_runs — the live-claim liveness primitive (the janitor's own
+# actions-API read). Sourcing it defines functions + CLAIM_* defaults only, no
+# side effects, so the queue is byte-identical until the full-page claim filter
+# below actually runs.
+# shellcheck source=claim-lib.sh
+. "$here/claim-lib.sh"
 
 # #142: a bare `curl -sf` threw the HTTP status away and returned 22 for ANY
 # failure, so schedule-lib's verdict guessed "transient Forgejo 5xx" for every
@@ -156,6 +212,29 @@ bg_files=""
 cleanup_bg() { [ -n "$bg_files" ] && rm -f $bg_files; return 0; }
 trap cleanup_bg EXIT
 
+# #2145: the host runs this lister OUTSIDE the sandbox's 30s prompt-expansion
+# budget and, under the #301 fleet queue, has already chosen THIS run's ONE
+# ticket — mirrored read-only beside the drive-yield signal as
+# /run/host-signals/fleet-pick. The IN-SANDBOX lister (run inside
+# claim-next-task.sh, under that hard-coded 30s budget) then needs only that one
+# issue, yet it used to re-fetch the WHOLE ready-for-agent page and narrow to the
+# pick at the very foot. That page is this forge's dominant cost — 8-22s to
+# serialise ~20 full-body issues (measured idss#2145) — and page + claim walk
+# must BOTH fit the 30s budget, so a slow-forge tick fetched the page, blew
+# claim-next-task.sh's CLAIM_LISTER_MAX_TIME, and the swarm claimed nothing for
+# hours (idss#2145). When the pick is known, fetch just that issue
+# (GET /issues/<n>, ~2s): the dependency check, the agent-working /
+# standing-drive / rehearsal-marker filters, the open-PR drop, the run-landing
+# parity and the fleet-pick narrowing at the foot all run UNCHANGED on the
+# 1-element batch, so the OUTPUT is identical to the full-page path (which
+# already narrowed to exactly this pick) — only the fetch cost changes. No pick
+# (a host with no fleet view) → the full page, byte-identical to before.
+fleet_pick_signal="${SWARM_FLEET_PICK_SIGNAL:-/run/host-signals/fleet-pick}"
+fleet_pick_early=""
+if [ -f "$fleet_pick_signal" ]; then
+  fleet_pick_early="$(head -1 "$fleet_pick_signal" 2>/dev/null | tr -cd '0-9')"
+fi
+
 pulls_pid=""
 if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
   pulls_file="$(mktemp)"; bg_files="$bg_files $pulls_file"
@@ -169,17 +248,67 @@ fi
 # rather than "skip it after paying for it"). SECONDS is ~0 here, so this gate
 # fires only for a <=0 budget.
 drives_pid=""
-if [ "$SECONDS" -lt "${LIST_READY_DRIVE_BUDGET:-8}" ]; then
+# #2145: drive-blocker ORDERING is meaningless for the single-issue fast path (a
+# 1-element queue has no order), so skip the standing-drive listing entirely when
+# the host has already picked this run's one ticket — one fewer forge call on the
+# budget-bound path.
+if [ -z "$fleet_pick_early" ] && [ "$SECONDS" -lt "${LIST_READY_DRIVE_BUDGET:-8}" ]; then
   drives_file="$(mktemp)"; bg_files="$bg_files $drives_file"
   api "$FORGEJO_API/issues?state=open&type=issues&labels=standing-drive&limit=50" >"$drives_file" & drives_pid=$!
 fi
 
 ready='[]'
 page=1
+claim_liveness_primed=""   # #375: the alive-runs snapshot is read once, lazily (below)
 while :; do
-  batch="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=ready-for-agent&limit=50&page=$page")"
+  if [ -n "$fleet_pick_early" ]; then
+    # #2145: single-issue fast path — fetch ONLY the pick, as a 1-element batch.
+    # A single GET returns the issue whatever its state, so keep it only when it
+    # is an OPEN, ready-for-agent issue (the server-side filter the page query
+    # would have applied). Anything else — closed, label dropped, or a 404/error
+    # body for a pick that is gone — yields an empty batch, and the fleet-pick
+    # block at the foot names it on stderr, exactly as the full-page narrowing did.
+    one="$(api "$FORGEJO_API/issues/$fleet_pick_early")" || one=""
+    if [ -n "$one" ] && jq -e 'type == "object" and (.state == "open")
+          and (((.labels // []) | map(.name) | index("ready-for-agent")) != null)' \
+          >/dev/null 2>&1 <<<"$one"; then
+      batch="[$one]"
+    else
+      batch='[]'
+    fi
+  else
+    batch="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=ready-for-agent&limit=50&page=$page")"
+  fi
   count="$(jq 'length' <<<"$batch")"
   [ "$count" -eq 0 ] && break
+
+  # #375: a ticket a LIVE run holds must leave the ready list even when its
+  # agent-working LABEL is missing. The label (claim_mark_working) is a SEPARATE,
+  # non-atomic tracker write from the authoritative `swarm-claim` COMMENT (claim-lib.sh
+  # header: "the LOWEST claim whose run is still in progress wins"): a label write that
+  # 403s/times out is swallowed (claim-next-task.sh `claim_mark_working || true`), a
+  # refused close leaves the ticket's labels untouched, and a reopened stranded close
+  # can drop it (#366) — any of which re-exposes a ticket a run is still working, and
+  # every scheduler then re-dispatches it once per marker TTL (the #375 storm: four live
+  # dispatches + wasted backstop sandbox starts while run 760 held it). So the full-page
+  # path — the HOST-side fleet collect (fleet-queue-lib.sh), where re-dispatch originates
+  # — ALSO hides a candidate carrying a LIVE claim: a session claim younger than its
+  # embedded session-ttl (#348), or a swarm claim whose run is in the alive-runs snapshot
+  # (the janitor's own liveness read). Read that snapshot ONCE, lazily, only when a
+  # non-empty batch actually needs filtering — an idle repo's collect pays nothing. The
+  # per-candidate comments read + liveness test run inside the dependency xargs worker
+  # below. Fail-OPEN: a faulted alive poll leaves the set EMPTY (no swarm claim dropped)
+  # and a faulted comments read SURFACES the ticket, so a tracker blip can only surface
+  # work, never starve the queue — the claim walk (claim-next-task.sh) stays the real
+  # race-resolver. The single-issue fast path skips this entirely (that run's one
+  # host-picked ticket is settled by the walk; the extra reads would only spend budget).
+  if [ -z "$fleet_pick_early" ] && [ -z "$claim_liveness_primed" ]; then
+    alive_runs="$(claim_alive_runs 2>/dev/null)" || alive_runs=""
+    jq -e 'type == "array"' >/dev/null 2>&1 <<<"$alive_runs" || alive_runs="[]"
+    CLAIM_NOW="$(date -u +%s)"
+    export CLAIM_LIVENESS_CHECK=1 CLAIM_ALIVE_RUNS="$alive_runs" CLAIM_NOW
+    claim_liveness_primed=1
+  fi
 
   # Dependency checks run 10-wide: with the whole DAG labelled ready-for-agent
   # (70+ issues), serial curls take ~90s — past Sandcastle's 30s shell-expression
@@ -204,11 +333,14 @@ while :; do
   # a per-ticket fact that travels WITH the ticket, so ALL swarm hosts skip it
   # regardless of their own drive-issue env. The regex mirrors the lib's parser,
   # requiring a real value after the key so a prose mention doesn't match.
-  unblocked="$(jq -r --arg drive "$REHEARSAL_DRIVE_ISSUE" \
-      '.[]
+  # The marker is read outside fenced blocks only — a fence can hold outside
+  # input (body-marker.jq).
+  unblocked="$(jq -r -L "$here" --arg drive "$REHEARSAL_DRIVE_ISSUE" \
+      'include "body-marker";
+       .[]
        | select((((.labels // []) | map(.name) | index("standing-drive")) == null)
                 and ((.number | tostring) != $drive)
-                and (((.body // "") | test("<!--[[:space:]]*rehearsal-target:[[:space:]]*[^[:space:]]+[[:space:]]*-->")) | not))
+                and (((.body // "") | outside_fences | test("<!--[[:space:]]*rehearsal-target:[[:space:]]*[^[:space:]]+[[:space:]]*-->")) | not))
        | .number' <<<"$batch" | xargs -r -P 10 -n 1 bash -c '
     set -euo pipefail
     # Same transient-5xx posture as api() above (#52): the dependency GET is a
@@ -235,11 +367,46 @@ while :; do
       fi
       sleep "$delay"; delay=$((delay * 2)); attempt=$((attempt + 1))
     done
-    open="$(jq "[.[] | select(.state == \"open\")] | length" <<<"$raw")"
+    # #359 gap A: a blocker counts as STILL blocking when it is open OR closed but
+    # still carrying `landing-pending` — a push-mode close lands on `main` only
+    # after the host verifies it (#193), so a closed-but-not-landed dependency is
+    # briefly untrue of `main`. Treating it as met handed a dependent out in that
+    # window; it then found the dependency not on `main`, refused to rebuild it,
+    # and stranded `agent-blocked`. close-report.sh sets the mark on the pre-land
+    # close; the host clears it on the verified land (landing_promote_landed). A
+    # repo that never mints the label is byte-identical to before (the label is on
+    # nothing, so this reduces to the old state-only check).
+    open="$(jq "[.[] | select(.state == \"open\" or (((.labels // []) | map(.name) | index(\"landing-pending\")) != null))] | length" <<<"$raw")"
     case "$open" in
-      0) echo "$0" ;;
+      0) ;;                        # unblocked — fall through to the #375 live-claim check
       "" | *[!0-9]*) exit 1 ;;
+      *) exit 0 ;;                  # a blocker is still open — drop silently (as before)
     esac
+    # #375: a candidate a LIVE run still holds leaves the ready list even if its
+    # agent-working LABEL is missing — the label is not atomic with the authoritative
+    # swarm-claim comment (see list-ready-tasks.sh). Read the issue comments and drop
+    # it when any claim is live: a session claim within its embedded session-ttl (#348),
+    # or a swarm claim whose run is in the alive-runs snapshot (CLAIM_ALIVE_RUNS, empty
+    # on a faulted poll so swarm claims then surface). Fail-OPEN: an empty/failed
+    # comments read SURFACES the ticket (echo) — the claim walk still guards the claim.
+    if [ -n "${CLAIM_LIVENESS_CHECK:-}" ]; then
+      craw="$(curl -s --max-time "${LIST_READY_MAX_TIME:-30}" \
+          -H "Authorization: token $FORGEJO_TOKEN" \
+          "$FORGEJO_API/issues/$0/comments?limit=50" 2>/dev/null || true)"
+      if [ -n "$craw" ] && jq -e --argjson alive "${CLAIM_ALIVE_RUNS:-[]}" --argjson now "${CLAIM_NOW:-0}" '"'"'
+            any(.[]?;
+              (.body // "" | test("^swarm-claim host=\\S+ run=[0-9]+"))
+              and ((.body | split("\n")[0]) as $first
+                   | (.body | capture("run=(?<r>[0-9]+)").r | tonumber) as $run
+                   | if ($first | test(" session-ttl=[0-9]+( |$)"))
+                     then (($first | capture(" session-ttl=(?<t>[0-9]+)").t | tonumber) as $ttl
+                           | (try (.created_at | fromdateiso8601) catch null) as $c
+                           | ($c == null) or (($now - $c) <= $ttl))
+                     else ($alive | index($run) != null) end))'"'"' >/dev/null 2>&1 <<<"$craw"; then
+        exit 0   # a live run holds it — drop from the ready list (#375)
+      fi
+    fi
+    echo "$0"
   ')"
 
   # $batch goes in via --slurpfile, not --argjson: spec issues carry ~40KB
@@ -249,25 +416,37 @@ while :; do
   # model-<name> override (#448) that run-swarm.sh resolves for the run's model,
   # surfaced here (null when the ticket carries no model-* label). The tracker
   # contract stays {number, title, body, url} plus the informational `model`.
+  # `landing_label` / `landing` (idss ADR 0267) are the additive per-ticket
+  # LANDING override, surfaced the same way: the raw `landing-<suffix>` label (or
+  # null) and the mode it resolves to (the repo default when unlabelled). An
+  # unknown suffix is surfaced RAW so the host-side gate can name the ticket.
   nums="$(printf '%s\n' "$unblocked" | jq -Rn '[inputs | select(length > 0) | tonumber]')"
   ready="$(jq --slurpfile batch <(printf '%s' "$batch") --argjson nums "$nums" \
+      --arg landing_default "${SWARM_POLICY_LANDING:-push}" \
     '. + [$batch[0][] | select(.number as $n | $nums | index($n) != null)
       | select(((.labels // []) | map(.name) | index("agent-working")) == null)
-      | {number, title, body, url: .html_url,
+      | ((.labels // []) | map(.name) | map(select(startswith("landing-")))
+         | if length == 0 then null else (.[0] | ltrimstr("landing-")) end) as $ll
+      | {number, title, body, url: .html_url, created_at,
          priority: ((.labels // []) | map(.name) | index("priority") != null),
          model: ((.labels // []) | map(.name) | map(select(startswith("model-")))
-                 | if length == 0 then null else (.[0] | ltrimstr("model-")) end)}]' \
+                 | if length == 0 then null else (.[0] | ltrimstr("model-")) end),
+         landing_label: $ll,
+         landing: ($ll // $landing_default)}]' \
     <<<"$ready")"
 
-  [ "$count" -lt 50 ] && break
+  # #2145: the single-issue fast path is one ticket — never paginate it.
+  { [ -n "$fleet_pick_early" ] || [ "$count" -lt 50 ]; } && break
   page=$((page + 1))
 done
 
-# LANDING=pr (#13): an issue with an OPEN agent PR (agent/issue-<N>) is already
-# being landed and awaiting merge — drop it so the swarm neither re-claims nor
-# re-works it while a human reviews (matou-app's filter, promoted into the core).
-# In push mode (default) this whole block is skipped: no /pulls call is made and
-# the queue is byte-identical.
+# An issue with an OPEN agent PR (agent/issue-<N>) is already being landed and
+# awaiting a human's merge — drop it so the swarm neither re-claims nor re-works
+# it (#13). Two ways a ticket lands by PR: the repo default is `pr`, or the
+# ticket carries `landing-pr` in a push repo (idss ADR 0267). The second case
+# pays for the /pulls read ONLY when such a ticket is actually ready, so a repo
+# with no landing-* label is byte-identical to before (no /pulls call at all).
+open_pr_nums=""
 if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
   # #128: reap the /pulls fetch kicked off at the top. fail-OPEN preserved — a
   # non-zero fetch (rc captured off `wait`, never tripping set -e) yields an
@@ -276,9 +455,56 @@ if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
   if [ "$pulls_rc" -eq 0 ]; then
     open_pr_nums="$(jq -r '.[]? | (.head.ref // "") | select(test("^agent/issue-[0-9]+$")) | sub("^agent/issue-";"")' \
       <"$pulls_file" 2>/dev/null || true)"
-  else
-    open_pr_nums=""
   fi
+elif jq -e 'any(.[]; .landing == "pr")' <<<"$ready" >/dev/null 2>&1; then
+  # Raw-capture then filter (never curl|jq). fail-OPEN, like the pr-repo leg: a
+  # failed read drops nothing, and the worst case is a re-claimed ticket whose
+  # land-pr.sh finds its PR already open and refreshes it.
+  pulls_json="$(api "$FORGEJO_API/pulls?state=open&limit=50" 2>/dev/null)" || pulls_json='[]'
+  open_pr_nums="$(jq -r '.[]? | (.head.ref // "") | select(test("^agent/issue-[0-9]+$")) | sub("^agent/issue-";"")' \
+    <<<"$pulls_json" 2>/dev/null || true)"
+fi
+if [ -n "$open_pr_nums" ]; then
+  drop="$(printf '%s\n' $open_pr_nums | jq -Rn '[inputs | select(length > 0) | tonumber]')"
+  if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
+    ready="$(jq --argjson drop "$drop" \
+      'map(select(.number as $n | ($drop | index($n)) == null))' <<<"$ready")"
+  else
+    # push repo: only a ticket that itself lands by PR is "being landed" by an
+    # open agent/issue-<N> branch.
+    ready="$(jq --argjson drop "$drop" \
+      'map(select((.landing != "pr") or (.number as $n | ($drop | index($n)) == null)))' <<<"$ready")"
+  fi
+fi
+
+# Run parity (idss ADR 0267). One Sandcastle run shares ONE worktree across its
+# iterations, so a push-ticket iteration that follows a PR-ticket iteration
+# would carry the PR ticket's commit onto main underneath its own. The run's
+# landing is therefore fixed HOST-side from the head ticket (preflight-lib.sh,
+# the per-run-model precedent) and mirrored into every sandbox as a read-only
+# file beside the drive-yield signal:
+#   `pr <N>`  this run works ticket N and nothing else;
+#   `push`    this run never sees a ticket that lands by PR.
+# The signal DIRECTORY tells host from sandbox: absent = a host-side listing (or
+# a manual run), which must see every ticket to choose the parity at all.
+# Present with no/garbled file = a sandbox nobody gated — fail SAFE to `push`.
+# Only a push-default repo needs any of this: in a LANDING=pr repo every ticket
+# already lands on its own branch.
+if [ "${SWARM_POLICY_LANDING:-push}" = push ]; then
+  run_landing_signal="${SWARM_RUN_LANDING_SIGNAL:-/run/host-signals/run-landing}"
+  if [ -d "$(dirname "$run_landing_signal")" ]; then
+    run_landing="$(head -1 "$run_landing_signal" 2>/dev/null || true)"
+    case "$run_landing" in
+      "pr "[0-9]*)
+        ready="$(jq --arg n "${run_landing#pr }" 'map(select((.number | tostring) == $n))' <<<"$ready")" ;;
+      *)
+        hidden="$(jq -r '[.[] | select(.landing != "push") | "#\(.number)"] | join(" ")' <<<"$ready")"
+        [ -z "$hidden" ] || echo "list-ready-tasks: push-parity run — hiding ticket(s) that land by PR (or carry an unknown landing-* label): $hidden" >&2
+        ready="$(jq 'map(select(.landing == "push"))' <<<"$ready")" ;;
+    esac
+  fi
+fi
+
 # Forgejo IGNORES an unknown `labels=` filter instead of matching nothing: in a
 # repo with no `standing-drive` label the query above returns EVERY open issue
 # (probed live 2026-08-27 on matou-app — 23 of 23, none carrying the label).
@@ -293,13 +519,7 @@ if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
 # blocker_nums stays [] (the emit order below is then byte-identical to before —
 # the same fallback this block already documents). A repo that DOES carry the
 # label is unaffected: server filter and client filter agree.
-  if [ -n "$open_pr_nums" ]; then
-    drop="$(printf '%s\n' $open_pr_nums | jq -Rn '[inputs | select(length > 0) | tonumber]')"
-    ready="$(jq --argjson drop "$drop" \
-      'map(select(.number as $n | ($drop | index($n)) == null))' <<<"$ready")"
-  fi
-fi
-
+#
 # Drive-blocker ordering (#24): a ready ticket that is a native Forgejo
 # dependency ("blocked by") of an OPEN `standing-drive` issue is exactly what a
 # standing drive is waiting on — surface it AHEAD of ordinary backlog so a
@@ -345,13 +565,44 @@ fi
 # may hand-apply it to anything else), tracker order preserved within a group.
 # Concatenation, never sort_by, so within-group order is provably the tracker's.
 # prompt.md's "pick the first task" makes this list order the scheduler. The
-# `priority`/`blocker` helper flags are stripped before emit; the contract stays
-# {number, title, body, url} plus the additive `.model` (#448) — which survives
-# the del below, the per-ticket override run-swarm.sh reads from .[0].model.
-jq --argjson blockers "$blocker_nums" '
+# contract stays {number, title, body, url} plus ADDITIVE fields: `.model`
+# (#448), `.landing_label` and `.landing` (idss ADR 0267), and since #301 the
+# ordering keys themselves — `.created_at`, `.priority`, `.blocker` — so the
+# fleet queue (fleet-queue-lib.sh) can merge every repo's list into ONE order
+# without re-deriving them; `.model` is the per-ticket override run-swarm.sh
+# reads from .[0].model.
+# Within each group the OLDEST ticket comes first: the tracker answers
+# newest-first, so a ticket filed an hour ago jumped every older one in its
+# group and the queue was last-in-first-out (Ben, 2026-10-22). The filing date
+# is the line; a ticket with no created_at (older fixtures) keeps tracker order
+# (the index tie-break), and `priority` still jumps the whole line.
+ordered="$(jq --argjson blockers "$blocker_nums" '
+  def oldest_first: to_entries | sort_by(.value.created_at // "", .key) | map(.value);
   map(. + {blocker: ((.number) as $n | ($blockers | index($n)) != null)})
-  | ( [.[] | select(.blocker and .priority)]
-    + [.[] | select(.blocker and (.priority | not))]
-    + [.[] | select((.blocker | not) and .priority)]
-    + [.[] | select((.blocker | not) and (.priority | not))] )
-  | map(del(.priority, .blocker))' <<<"$ready"
+  | ( ([.[] | select(.blocker and .priority)] | oldest_first)
+    + ([.[] | select(.blocker and (.priority | not))] | oldest_first)
+    + ([.[] | select((.blocker | not) and .priority)] | oldest_first)
+    + ([.[] | select((.blocker | not) and (.priority | not))] | oldest_first) )' <<<"$ready")"
+
+# #301: the FLEET PICK. A run is one ticket, chosen fleet-wide (the host's
+# fleet-queue tick, or the watcher's workflow_dispatch input) and mirrored by
+# run-swarm.sh into the sandbox as /run/host-signals/fleet-pick, the same
+# read-only channel as the drive-yield and run-landing signals. When it is
+# there this lister answers EXACTLY that ticket — or [] when it is no longer
+# ready (claimed by another host, closed, handed off) — so claim-next-task.sh
+# claims it or nothing and the prompt's "Done" re-check completes the run
+# instead of letting it drift onto this repo's next ticket ahead of an older
+# one elsewhere. Host-side callers never see the mount, so nothing changes there.
+# #2145: fleet_pick_early was read ONCE at the top (the fast path fetched exactly
+# this pick, or an empty batch when it is gone). For a fleet-pick run this
+# narrowing is a confirming no-op that still names a gone pick on stderr; for a
+# full-page run (no fast path) fleet_pick_early is empty and this is skipped,
+# byte-identical to the pre-#2145 "no signal file" behaviour.
+if [ -n "$fleet_pick_early" ]; then
+  picked="$(jq --arg n "$fleet_pick_early" 'map(select((.number | tostring) == $n))' <<<"$ordered")"
+  if [ "$(jq length <<<"$picked")" -eq 0 ]; then
+    echo "list-ready-tasks: the fleet pick #$fleet_pick_early is no longer ready here (claimed elsewhere, closed or handed off) — answering [] so this one-ticket run completes (#301)" >&2
+  fi
+  ordered="$picked"
+fi
+printf '%s\n' "$ordered"

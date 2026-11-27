@@ -25,6 +25,15 @@
 # guard first lived as a stopgap in the host's backstop-tick.sh wrapper; this is
 # its upstream home (the wrapper stopgap can be removed once this is installed).
 #
+# Queue-aware (GOTCHAS 78, 2026-10-15): the #238 guard reads `actions/tasks`,
+# and a task row exists only once a runner has PICKED the job — a run still
+# queued behind a stalled or saturated runner is not in that view at all. So the
+# tasks-only guard read "idle" precisely when the queue was deepest and
+# re-dispatched every tick (~4x the run rate, a 1h45m lag on the forge's global
+# oldest-first queue). A second read of `runs?status=waiting` — the only view a
+# queued run appears in — now suppresses the dispatch when a run of THIS
+# workflow file is queued.
+#
 # This file is CANONICAL in Matou/dev-factory (ADR 0180 / #571: the factory
 # core moved out of any one product repo) and vendored byte-identical here —
 # edit it there, bump FACTORY_REF, re-vendor; never in this copy directly
@@ -46,15 +55,16 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # host backstop-tick.sh dispatches in, so a quiet repo whose clock-aligned probes
 # always land inside a busy window is not perpetually outrun by a loud repo's
 # event-driven ones. A repo's staleness is the mtime of its swarm lastready stamp
-# (/tmp/matou-swarm-lastready-<owner>-<repo> — the SAME stamp run-swarm.sh's
-# debounce coalescer writes on every evaluated run, schedule_stamp_path); a
-# MISSING stamp is the stalest of ALL (a repo never evaluated on this host must
-# not be outrun). Pure: reads only stamp mtimes — no token, no network — so any
-# repo's byte-identical copy computes the same order. Ties keep input order
-# (stable sort). SWARM_LASTREADY_PREFIX overrides the stamp-path root (tests).
+# (<home>/state/matou-swarm-lastready-<owner>-<repo> — the SAME stamp
+# run-swarm.sh's debounce coalescer writes on every evaluated run,
+# schedule_stamp_path; off /tmp since #205/#218); a MISSING stamp is the stalest
+# of ALL (a repo never evaluated on this host must not be outrun). Pure: reads
+# only stamp mtimes — no token, no network — so any repo's byte-identical copy
+# computes the same order. Ties keep input order (stable sort).
+# SWARM_LASTREADY_PREFIX overrides the stamp-path root (tests).
 if [ "${1:-}" = order-repos ]; then
   shift
-  prefix="${SWARM_LASTREADY_PREFIX:-/tmp/matou-swarm-lastready-}"
+  prefix="${SWARM_LASTREADY_PREFIX:-${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}/matou-swarm-lastready-}"
   for slug in "$@"; do
     stamp="$prefix${slug//\//-}"
     if [ -e "$stamp" ]; then
@@ -81,9 +91,18 @@ fi
 api() { curl -sf --max-time 30 -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
 # The workflow's job name as it appears in the runs list ("healer" runs a job
-# called "watchdog"), since that listing reports job names, not file names.
+# called "watchdog", "resume-asks" a job called "resume"), since that listing
+# reports job names, not file names. Each line is one workflow whose job name
+# diverges from its file stem — the same drift as #107 (scheduler-canary) and
+# heal-lib.sh's watchdog_detect. The drift-proof `.workflow_id == $wf` match
+# can't replace these: every per-host swarm leg shares one workflow_id
+# ("swarm.yml"), so keying the in-flight guard on it would make another host's
+# running leg suppress THIS host's dispatch — the exact starvation the per-host
+# name discrimination below (GOTCHAS 62) exists to end. The in-flight guard must
+# stay keyed on the job name so the host suffix remains legible.
 name="${wf%.yml}"
 [ "$name" = "healer" ] && name="watchdog"
+[ "$name" = "resume-asks" ] && name="resume"
 
 cutoff="$(date -u -d "-${window_min} minutes" +%Y-%m-%dT%H:%M:%SZ)"
 # page=1 is load-bearing: Forgejo ignores limit without page and dumps the
@@ -99,14 +118,25 @@ fi
 # (`waiting` = queued behind the busy host, or `running`), OR one that STARTED
 # within the window (Forgejo's own scheduler is doing its job). The in-flight
 # clause is #238 AC3 — without it a queued dispatch is re-dispatched every tick.
-# Name match is `$name` OR `$name (N)` (#588, same drift as #541's
-# claim_alive_runs): swarm.yml's 2-wide worker matrix (44fe333) makes Forgejo
-# name each matrix job "swarm (1)"/"swarm (2)", never bare "swarm" — an
-# exact-match filter never sees a real swarm run as in-flight and can pile on
-# redundant dispatches while matrix workers are already running.
-inflight="$(printf '%s' "$runs" | jq -r --arg n "$name" --arg c "$cutoff" \
+# Name match is `$name` OR `$name (<suffix>)` (#588, same drift as #541's
+# claim_alive_runs): a matrix makes Forgejo suffix each job's name, never bare
+# "swarm" — an exact-match filter never sees a real swarm run as in-flight and
+# can pile on redundant dispatches while matrix workers are already running.
+#
+# Per-HOST when the tick knows its host (GOTCHAS 62): swarm.yml renders one leg
+# per pool host, named "swarm (<host label>)". Another host's leg being mid-
+# ticket for two hours says nothing about THIS host's capacity — under the old
+# any-leg guard an idle host's backstop sat silent for the whole ticket, which
+# is exactly the starvation the per-host legs exist to end. So with HOST_NAME
+# set (the generated backstop-tick.sh exports the registry name), only this
+# host's own leg, a bare "$name", or a legacy numeric leg "$name (N)" (a consumer
+# not yet re-rendered) counts. Unset HOST_NAME keeps the any-suffix guard.
+inflight="$(printf '%s' "$runs" | jq -r --arg n "$name" --arg c "$cutoff" --arg h "${HOST_NAME:-}" \
   '[.workflow_runs[]?
-     | select(.name == $n or (.name | test("^" + $n + " \\(")))
+     | select(.name == $n
+              or (.name | test("^" + $n + " \\([0-9]+\\)$"))
+              or (($h == "") and (.name | test("^" + $n + " \\(")))
+              or (($h != "") and (.name == ($n + " (" + $h + ")"))))
      | select((.status == "waiting") or (.status == "running") or ((.run_started_at // "") >= $c))
    ] | length')"
 
@@ -115,7 +145,35 @@ if [ "${inflight:-0}" -gt 0 ]; then
   exit 0
 fi
 
-echo "backstop: no $name run since $cutoff and none waiting/running — dispatching"
+# A QUEUED run is invisible above. `actions/tasks` lists ActionTask rows, and
+# the forge mints one only when a runner PICKS the job (CreateTaskForRunner) —
+# a run whose job is still queued behind a stalled or saturated runner has NO
+# task row, so the tasks view reads "idle" exactly when the queue is deepest.
+# That is the 2026-10-15 flood (GOTCHAS 78): one pool runner silently stopped
+# fetching for two hours, the tasks view went quiet, and every tick of this
+# guard re-dispatched — 101 dispatches/15 skips in one hour against the normal
+# 24/92 — ~4x the run rate across every repo the tick serves, and a 1h45m
+# oldest-first lag on the forge's GLOBAL job queue that buried unrelated
+# workflows (a product release build waited in it). The only view a queued run
+# appears in is `runs?status=waiting` — the canary's saturation read (#105,
+# GOTCHAS 34): bounded by the live queue, paged, curl-timed, and the one runs
+# read the ratchet (tests/actions-endpoint-test.sh) admits. Keyed on the
+# workflow FILE (`.workflow_id`), not the job name: a run queues as a whole,
+# and a per-host leg of it that is still unpicked says the pool cannot take
+# more right now — adding a run would only queue another leg. Fail CLOSED on
+# API trouble, same reasoning as the tasks read.
+if ! queued_runs="$(api "$FORGEJO_API/actions/runs?status=waiting&limit=50&page=1")"; then
+  echo "backstop: queued-runs listing unavailable — cannot tell if a $wf run is queued; skipping this tick" >&2
+  exit 0
+fi
+queued="$(printf '%s' "$queued_runs" | jq -r --arg wf "$wf" \
+  '[.workflow_runs[]? | select(.workflow_id == $wf and .status == "waiting")] | length')"
+if [ "${queued:-0}" -gt 0 ]; then
+  echo "backstop: $wf already QUEUED ($queued run(s) waiting for a runner, no task yet) — not piling on, skipping"
+  exit 0
+fi
+
+echo "backstop: no $name run since $cutoff, none waiting/running and no $wf run queued — dispatching"
 api -X POST -H "Content-Type: application/json" -d '{"ref":"main"}' \
   "$FORGEJO_API/actions/workflows/$wf/dispatches" >/dev/null
 echo "backstop: dispatched $wf"

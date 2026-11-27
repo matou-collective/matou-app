@@ -35,7 +35,10 @@ export function useProjectPermissions(
 
   const canDeleteProject = computed(() => isAdmin.value);
 
-  const canAssignRoles = computed(() => isAdmin.value);
+  // assign_project_role maps to the backend's stewardScope: a community admin
+  // (Operations Steward / Founding Member) on any project, or the project's own
+  // assigned steward. A bare project lead cannot assign roles (#749).
+  const canAssignRoles = computed(() => isAdmin.value || isSteward.value);
 
   const canAddMilestones = computed(
     () => (isAdmin.value || isLead.value) && project.value?.status !== 'archived',
@@ -54,6 +57,13 @@ export function useProjectPermissions(
   const canArchiveContribution = computed(() => isAdmin.value || isLead.value || isSteward.value);
   const canUnassignContributor = computed(() => isAdmin.value || isLead.value || isSteward.value);
   const canEditMilestone = computed(() => isAdmin.value || isLead.value || isSteward.value);
+  // Re-ordering contributions is a structural plan change, gated like the
+  // other lead/steward structural mutations (and disabled on archived
+  // projects, matching canAddMilestones). Mirrors the backend
+  // ActionReorderContribution (leadStewardScope, project-scoped) for #754.
+  const canReorderContributions = computed(
+    () => (isAdmin.value || isLead.value || isSteward.value) && project.value?.status !== 'archived',
+  );
   const canSubmitProjectCompletion = computed(() => isAdmin.value || isLead.value);
   const canApproveProjectCompletion = computed(() => isAdmin.value || isSteward.value);
   const canRejectProjectCompletion = computed(() => isAdmin.value || isSteward.value);
@@ -93,6 +103,7 @@ export function useProjectPermissions(
     canArchiveContribution,
     canUnassignContributor,
     canEditMilestone,
+    canReorderContributions,
     canSubmitProjectCompletion,
     canApproveProjectCompletion,
     canRejectProjectCompletion,

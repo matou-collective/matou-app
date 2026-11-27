@@ -15,6 +15,15 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 pass=0
 
+# Hermetic token env (#227): this suite drives the REAL run-triage.sh/heal.sh,
+# which source limit-lib and fingerprint the active token. A standing session /
+# the matou-workstation CI runner carries a real CLAUDE_CODE_OAUTH_TOKEN(_B) in
+# its process env, which would fp-key the limit marker these ACs write and read
+# on the bare, fingerprint-less path — reddening the suite only on a host that
+# happens to have a token. Neutralise any ambient credential so the offline
+# suite is byte-identical everywhere.
+unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_B CLAUDE_TOKEN_PRIMARY CLAUDE_ACCOUNT_FP 2>/dev/null || true
+
 # The rendered heal prompt lives at the harness root. Factory-side the suite runs
 # from <factory>/tests and the rendered copy is the self-pin under .sandcastle/;
 # consumer-side the suite is vendored into <repo>/.sandcastle/tests/ and the

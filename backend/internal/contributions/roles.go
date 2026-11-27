@@ -16,11 +16,21 @@ const (
 	RoleFoundingMember    Role = "founding_member"
 )
 
+// KERIRoleAdministrator is the fixed slug of the built-in Administrator
+// credential on an IDSS community (idss#1948/#1949, ADR 0286 d.13). Holding it
+// IS being matou-app's Founding Member — one super user across both apps — so it
+// resolves to the same role bundle the legacy "operator"/"Founding Member" role
+// string yields. IDSS is deleting that role string; the credential keys on this
+// slug (never a display name, never the deleted string), so role resolution
+// reads the credential rather than the string. See MapKERIRole.
+const KERIRoleAdministrator = "administrator"
+
 // MapKERIRole maps a KERI credential role string (Title Case) to contribution roles.
 // A single KERI role may grant multiple contribution roles (e.g. stewards also get project_steward).
 func MapKERIRole(keriRole string) []Role {
 	switch keriRole {
-	case "Member":
+	case "Member", "member":
+		// "member" is the IDSS member's Membership role (keri.IDSSRoleMember).
 		return []Role{RoleMember}
 	case "Contributor":
 		return []Role{RoleMember, RoleContributor}
@@ -28,7 +38,14 @@ func MapKERIRole(keriRole string) []Role {
 		return []Role{RoleMember, RoleContributor, RoleCommunitySteward, RoleProjectSteward}
 	case "Operations Steward":
 		return []Role{RoleMember, RoleContributor, RoleOperationsSteward, RoleProjectSteward, RoleProjectLead}
-	case "Founding Member":
+	case "Founding Member", "operator", KERIRoleAdministrator:
+		// "operator" is the IDSS steward's legacy Membership role
+		// (keri.IDSSRoleOperator); "administrator" (KERIRoleAdministrator) is the
+		// built-in Administrator credential's fixed slug that replaces it on an
+		// IDSS backend (idss#1948, ADR 0286 d.13) — holding it resolves the
+		// founding-member bundle from the credential, not the role string IDSS is
+		// deleting. A Coa-hosted community has no such credential, so its
+		// "Founding Member" string still resolves exactly as before.
 		return []Role{RoleMember, RoleContributor, RoleFoundingMember, RoleOperationsSteward, RoleProjectSteward, RoleProjectLead}
 	case "Financial Steward":
 		return []Role{RoleMember, RoleContributor}
@@ -90,6 +107,7 @@ const (
 	ActionOfferContribution  Action = "offer_contribution"
 	ActionAcceptOffer        Action = "accept_offer"
 	ActionSubmitEvidence     Action = "submit_evidence"
+	ActionSaveEvidenceDraft  Action = "save_evidence_draft"
 	ActionEditEvidence       Action = "edit_evidence"
 	ActionReviewContribution Action = "review_contribution"
 	ActionSignOffPlan        Action = "sign_off_plan"
@@ -114,6 +132,21 @@ const (
 	ActionArchiveContribution  Action = "archive_contribution"
 	ActionUnassignContribution Action = "unassign_contribution"
 	ActionEditMilestone        Action = "edit_milestone"
+	// ActionReorderContribution gates re-ordering contributions within a
+	// milestone or a parent contribution's sub-list. Like the other structural
+	// plan mutations it is lead/steward-scoped (not the permissive
+	// update_contribution gate) and project-scoped.
+	ActionReorderContribution Action = "reorder_contribution"
+
+	// ActionPromoteSubContribution gates promoting a sub-contribution to a
+	// top-level contribution in its parent chain's milestone. Like the other
+	// structural plan mutations it is lead/steward-scoped and project-scoped.
+	ActionPromoteSubContribution Action = "promote_sub_contribution"
+
+	// ActionCloseParentContribution gates a project lead closing a parent
+	// contribution at $0 once every sub-contribution is rewarded (#844). It is
+	// project-scoped and, like submit_project_completion, lead + admin tier.
+	ActionCloseParentContribution Action = "close_parent_contribution"
 
 	// ActionSubmitProjectCompletion and the following are project completion
 	// workflow actions.
@@ -224,6 +257,7 @@ var actionPermissions = map[Action][]Role{
 	ActionOfferContribution:      allRoles,
 	ActionAcceptOffer:            allRoles,
 	ActionSubmitEvidence:         allRoles,
+	ActionSaveEvidenceDraft:      allRoles,
 	ActionEditEvidence:           allRoles,
 	ActionReviewContribution:     allRoles,
 	ActionSignOffPlan:            {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
@@ -244,7 +278,10 @@ var actionPermissions = map[Action][]Role{
 	ActionArchiveContribution:      leadStewardScope,
 	ActionUnassignContribution:     leadStewardScope,
 	ActionEditMilestone:            leadStewardScope,
+	ActionReorderContribution:      leadStewardScope,
+	ActionPromoteSubContribution:   leadStewardScope,
 	ActionSubmitProjectCompletion:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
+	ActionCloseParentContribution:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
 	ActionApproveProjectCompletion: stewardScope,
 	ActionRejectProjectCompletion:  stewardScope,
 

@@ -22,7 +22,7 @@ func TestIsProjectScopedAction(t *testing.T) {
 		ActionSignOffContribution, ActionSignOffPlan, ActionSubmitProjectCompletion,
 		ActionApproveProjectCompletion, ActionRejectProjectCompletion, ActionArchiveProject,
 		ActionArchiveMilestone, ActionArchiveContribution, ActionUnassignContribution,
-		ActionEditMilestone, ActionLinkProposal, ActionAssignProjectRole,
+		ActionEditMilestone, ActionReorderContribution, ActionLinkProposal, ActionAssignProjectRole,
 		ActionAssignProjectSteward, ActionAssignProjectLead,
 	}
 	for _, a := range scoped {

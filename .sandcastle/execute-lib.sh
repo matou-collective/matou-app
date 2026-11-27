@@ -39,12 +39,21 @@ EXECUTE_NOTIFY="${EXECUTE_NOTIFY:-$_EXECUTE_HERE/notify-mattermost.sh}"
 # The auth-dead hourly notice-dedupe marker. Repo-agnostic on purpose, matching
 # the limit marker (#238): the Claude auth session is one host-global thing, so
 # one repo's outage correctly suppresses the other's redundant first notice.
-EXECUTE_AUTH_MARKER="${EXECUTE_AUTH_MARKER:-/tmp/matou-swarm-claude-auth-dead}"
+# Under the host-global state dir (#205), a sibling of the limit/active markers,
+# so a reboot no longer silently resets the auth-dead notice-dedupe window.
+EXECUTE_AUTH_MARKER="${EXECUTE_AUTH_MARKER:-${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}/matou-swarm-claude-auth-dead}"
 EXECUTE_AUTH_TTL="${EXECUTE_AUTH_TTL:-3600}"
 
 # The rc that means "stop the run CLEANLY" — the caller exits 0. Distinct from
 # rc 1 (the generic red) so run-swarm's three-way exit is a case, not a guess.
 EXECUTE_RC_STOP=100
+
+# The .sandcastle dir whose secrets/ main.mts mounts into every worker (#198).
+# run-swarm.sh sets it; a failover rewrites secrets/claude_oauth_token here so
+# the retry's worker (its claude-fence shim reads the file) uses the account we
+# just flipped to. Empty in a bare offline execute-lib test — the rewrite then
+# no-ops, keeping the file write optional.
+EXECUTE_SECRETS_DIR="${EXECUTE_SECRETS_DIR:-}"
 
 # #111: main.mts prints this marker line when the run ended while a rehearsal
 # drive's reservation stood — its 2 s poller mirrored the reservation into the
@@ -65,6 +74,7 @@ _execute_notify() { bash "$EXECUTE_NOTIFY" "$1" || true; }
 _execute_notice_due() {
   local marker="$1" ttl="$2"
   if [ ! -f "$marker" ] || [ $(( $(date +%s) - $(stat -c %Y "$marker") )) -gt "$ttl" ]; then
+    mkdir -p "$(dirname "$marker")" 2>/dev/null || true   # marker moved off /tmp (#205)
     touch "$marker"
     return 0
   fi
@@ -79,6 +89,33 @@ execute_classify() {
   elif claude_limit_hit "$1"; then echo limit
   else echo failed
   fi
+}
+
+# _execute_capture_attempts <log> — preserve this run's SANDCASTLE_ATTEMPT
+# protocol lines into EXECUTE_ATTEMPTS_FILE so the host's false-green reconcile
+# (landing_reopen_stranded_closes) can read them AFTER execute_sandcastle_run
+# returns (#283). A no-op when the caller wired no capture file; NEVER touches
+# the log itself (the caller owns whether to clean or keep it). Reads BOTH the
+# stdout log AND the host-mounted sink (EXECUTE_ATTEMPTS_SINK) and `sort -u`s
+# them: the log grep alone was swallowed when a worker piped close-report
+# through `| tail`/`| head` (run 57327 stranded #2099, #2106), while a line on
+# both channels dedupes to one row. Called on BOTH exits a worker can leave a
+# stranded close on — the clean success AND the generic red (#328): a worker can
+# push its branch and close its issue against it, then this stage reds for an
+# unrelated reason, two stages before run-swarm reaches a #283 reconcile seam;
+# without the capture here that reconcile sees an empty file and the close outlives
+# an unlanded commit. (Before #329 the archetype was LANDING=push's own post-run
+# merge-to-head SyncError; #329 moved that merge out of the Sandcastle lifecycle
+# into the land seam's rescue ladder, so it now parks rather than reds here.)
+_execute_capture_attempts() {
+  local log="$1"
+  [ -n "${EXECUTE_ATTEMPTS_FILE:-}" ] || return 0
+  {
+    grep -hE '^SANDCASTLE_ATTEMPT ' "$log" 2>/dev/null || true
+    if [ -n "${EXECUTE_ATTEMPTS_SINK:-}" ] && [ -r "$EXECUTE_ATTEMPTS_SINK" ]; then
+      grep -hE '^SANDCASTLE_ATTEMPT ' "$EXECUTE_ATTEMPTS_SINK" 2>/dev/null || true
+    fi
+  } | sort -u > "$EXECUTE_ATTEMPTS_FILE" 2>/dev/null || true
 }
 
 # execute_sandcastle_run <log> <run-db-id> <repo-slug> <repo-tag>
@@ -99,6 +136,12 @@ execute_sandcastle_run() {
   # land under a different run_id than the `runs` row swarmdb_run_start opened
   # and never join up with everything else run-swarm writes.
   export SWARM_DB_RUN_ID="$run_db_id"
+  # #329: the per-run worker branch name. Generated + exported HERE — on the HOST,
+  # before `pnpm run sandcastle` — so main.mts hands it to Sandcastle's branch
+  # strategy AND the host knows the ref it must adopt after the run
+  # (execute_adopt_worker_branch). Per-run-unique; `:=` lets a caller/test inject.
+  : "${SWARM_WORKER_BRANCH:=sandcastle/worker/$(date -u +%Y%m%d%H%M%S)-$$}"
+  export SWARM_WORKER_BRANCH
   # Exit observer for a prior limit-park (#100): if the host marker is present but
   # STALE (the window ended), close its window with a paired unpark event before
   # this run — every swarm worker tick is a chance to stamp the exit exactly once.
@@ -128,7 +171,12 @@ execute_sandcastle_run() {
         _execute_limit_park "$log" "$run_db_id" "$repo_slug"
         return "$EXECUTE_RC_STOP" ;;
       *)
-        # Leave $log in place — the EXIT trap's verdict_write reads it.
+        # Leave $log in place — the EXIT trap's verdict_write reads it. But FIRST
+        # preserve any close-report attempt lines (#328): a worker may already
+        # have closed its issue against the pushed worker branch before the red
+        # (e.g. LANDING=push's post-run merge-to-head SyncError), and the host's
+        # #283 reconcile on this red path needs them to reopen the stranded close.
+        _execute_capture_attempts "$log"
         SWARM_EXIT_REASON="sandcastle-run-failed"
         return 1 ;;
     esac
@@ -137,7 +185,51 @@ execute_sandcastle_run() {
     EXECUTE_YIELDED_TO_DRIVE=1
     echo "run-swarm: a rehearsal drive reserved host capacity mid-run — this run finished its current task and claimed nothing more (#111); the drive fires next, the swarm resumes on its next trigger"
   fi
+  # #283: preserve this run's SANDCASTLE_ATTEMPT protocol lines before the log is
+  # cleaned. The host's false-green reconcile (landing_reopen_stranded_closes)
+  # needs them AFTER this function returns — if the post-run verify rolls the land
+  # back, every issue a sandbox close-report closed against the worker branch is
+  # stranded and must be reopened. (The same capture rides the generic-red path —
+  # #328 — where the log is instead LEFT for the verdict.)
+  _execute_capture_attempts "$log"
   rm -f "$log"
+  # #329: under LANDING=push the worker ran on the per-run NAMED branch above, so
+  # Sandcastle performed NO merge onto `main`. Adopt its commits onto HEAD now — a
+  # conflict-free local move — so verify_protected_paths fingerprints the worker's
+  # tree and landing owns the only rebase (the GOTCHAS 66 ladder, where a stale-base
+  # conflict parks). Fail-loud: a branch that exists but cannot be adopted returns
+  # the generic red, so run-swarm's #283 reconcile reopens any stranded close rather
+  # than verify/land a tree that is not the worker's.
+  if [ "${SWARM_POLICY_LANDING:-}" = push ]; then
+    execute_adopt_worker_branch "$SWARM_WORKER_BRANCH" || return 1
+  fi
+  return 0
+}
+
+# execute_adopt_worker_branch <branch> — push mode's post-run host adoption of the
+# worker's per-run named branch (#329). branch-strategy.mts pins a NAMED branch for
+# LANDING=push too, so Sandcastle performs NO post-run merge onto `main` (the
+# conflict-prone step that ran INSIDE withSandboxLifecycle, two stages before
+# run-swarm's GOTCHAS 66 ladder, turning a stale-base STATUS.md collision into a
+# hard red + a mid-merge workdir — GOTCHAS 72's push-side recurrence). The worker's
+# commits sit on refs/heads/<branch>; move HEAD onto them with a `git reset` (NOT a
+# merge/ff — all that matters is that $PWD now carries the worker's tree) so
+# verify_protected_paths fingerprints that tree and landing_push_main_with_rescue
+# rebases it onto the LIVE origin/main inside the ladder, where the conflict PARKS.
+#   rc 0  adopted — or nothing to adopt (no branch name, or the worker committed
+#         nothing so the ref was never created: HEAD stays at the run's base,
+#         exactly as a zero-commit merge-to-head left it; landing finds nothing)
+#   rc 1  the branch EXISTS but the reset failed — fail LOUD (the caller reds and
+#         reopens any stranded close), never silently verify/land a foreign tree
+execute_adopt_worker_branch() {
+  local branch="${1:-}"
+  [ -n "$branch" ] || return 0
+  git rev-parse --verify --quiet "refs/heads/$branch" >/dev/null 2>&1 || return 0
+  if ! git reset --hard "refs/heads/$branch" >/dev/null 2>&1; then
+    SWARM_EXIT_REASON="worker-branch-adopt-failed"
+    echo "run-swarm: #329 could not adopt worker branch refs/heads/$branch onto HEAD — refusing to verify/land a tree that is not the worker's" >&2
+    return 1
+  fi
   return 0
 }
 
@@ -163,6 +255,14 @@ _execute_failover() {
   local kind="$1" log="$2" run_db_id="$3" repo_slug="$4" from hint
   from="$(claude_active_account)"
   claude_failover || return 1
+  # Rewrite the mounted Claude secret so the retry's worker reads the account we
+  # just flipped to (#198) — claude_failover re-exported CLAUDE_CODE_OAUTH_TOKEN,
+  # but the sandbox sees the token only through the file its shim reads, not the
+  # host env. provision-lib owns the 0600 write; a no-op when neither a secrets
+  # dir nor provisioning is wired in (a bare offline test).
+  if [ -n "${EXECUTE_SECRETS_DIR:-}" ] && declare -F provision_write_claude_secret >/dev/null 2>&1; then
+    provision_write_claude_secret "$EXECUTE_SECRETS_DIR"
+  fi
   if [ "$kind" = auth ]; then
     hint="$(_execute_auth_line "$log")"
     _execute_notify ":arrows_counterclockwise: **Swarm failover — Claude account $from auth-dead** in \`$repo_slug\` (${hint:-not logged in}) — retrying once on account $(claude_active_account)."
@@ -176,7 +276,7 @@ _execute_failover() {
 
 # _execute_auth_line <log> — the CLI's own refusal wording, for the notice.
 _execute_auth_line() {
-  grep -ihoE "$CLAUDE_AUTH_RE[^\"]*" "$1" | head -1
+  grep -ihoE "${CLAUDE_AUTH_RE}[^\"]*" "$1" | head -1
 }
 
 # _execute_auth_halt — BOTH accounts (or the only account) are auth-dead. A

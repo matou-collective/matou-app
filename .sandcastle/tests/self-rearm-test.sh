@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# rearm_dispatch posts a workflow_dispatch for swarm.yml.
+# rearm_dispatch posts a workflow_dispatch for swarm.yml — the pre-#301 own-repo
+# successor, still what a host WITHOUT the fleet-queue tick does
+# (report_self_rearm's legacy branch; tests/report-lib-test.sh pins the switch).
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$here/fakebin:$PATH"

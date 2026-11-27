@@ -6,7 +6,12 @@ on:
   push:
     branches: [main]
   pull_request: {}
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit to check (ci-sweep passes the sha it is re-running; empty = this ref's head)"
+        required: false
+        default: ""
 
 # Workflow-level concurrency group keyed on the ref (#361). Without this, a
 # release train that lands several commits on main in a short window (four
@@ -50,7 +55,7 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
           SERVER_URL: ${{ github.server_url }}
           REPO_SLUG: ${{ github.repository }}
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SHA: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           host="${SERVER_URL#https://}"
@@ -74,9 +79,68 @@ jobs:
         # (swarm run 13413). This step spawns no agent and cannot park; the
         # park-capable step is the healer one below, which carries the standby
         # token. Same rule for the other entry points in that guard's list.
+        id: checks
         env:
           REPO_SLUG: ${{ github.repository }}
-        run: bash .sandcastle/run-ci-checks.sh
+        # Exit 75 (EX_TEMPFAIL) means a heavy stage never STARTED: host-slot-wait
+        # camped its whole budget and the pooled slot never came free, because an
+        # exclusive drive held the host (#548). That is contention, not a fault —
+        # failing here red main, woke the healer on a non-fault, and told a
+        # reviewer nothing about the code. Record it as deferred and let the step
+        # succeed; the ci-sweep re-runs the sha. Every other non-zero exit is a
+        # real failure and still reds, healer and all.
+        run: |
+          set -uo pipefail
+          rc=0
+          bash .sandcastle/run-ci-checks.sh || rc=$?
+          if [ "$rc" = 75 ]; then
+            echo "deferred=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit "$rc"
+      - name: Mark the sha deferred, not passed (capacity, #548)
+        if: steps.checks.outputs.deferred == '1'
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          SHA: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        # PENDING, never success: the job itself exits green so main is not red,
+        # but the sha's COMBINED status stays unresolved, so a deferred run can
+        # never be mistaken for a passing seam. ci-sweep.sh keys on exactly this
+        # context, and a later real run resolves it.
+        run: |
+          set -euo pipefail
+          curl -sf -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n --arg url "$RUN_URL" \
+                  '{state:"pending", context:"ci / capacity-deferred", target_url:$url,
+                    description:"host capacity held by another job for the whole camp — the ci sweep will re-run this sha"}')" \
+            "$FORGEJO_API/statuses/$SHA" >/dev/null
+          echo "ci: ${SHA:0:12} marked 'ci / capacity-deferred' pending — the sweep re-runs it"
+      - name: Clear a previous capacity deferral on this sha
+        # always(): a sha that was deferred earlier and now genuinely FAILS must
+        # still have its marker resolved, or the sweep would re-dispatch it every
+        # tick forever. The job's own red carries the verdict; this context only
+        # ever answers "did the checks get to run".
+        if: always() && steps.checks.outputs.deferred != '1'
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          SHA: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        # The checks actually RAN this time (pass or fail — the job's own status
+        # carries that verdict). Resolve the pending marker so the sha stops
+        # being owed a run and the sweep retires it; best-effort, a failure here
+        # must never turn a real result into a red.
+        run: |
+          set -uo pipefail
+          curl -sf -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n --arg url "$RUN_URL" \
+                  '{state:"success", context:"ci / capacity-deferred", target_url:$url,
+                    description:"checks ran on this sha"}')" \
+            "$FORGEJO_API/statuses/$SHA" >/dev/null || true
       - name: Investigate failure (healer)
         if: failure()
         env:

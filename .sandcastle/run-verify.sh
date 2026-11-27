@@ -22,6 +22,8 @@ set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=verdict-lib.sh
 . "$here/verdict-lib.sh"
+# shellcheck source=git-cred-lib.sh
+. "$here/git-cred-lib.sh"
 : "${FORGEJO_TOKEN:?}"
 : "${FORGEJO_API:?}"
 repo_slug="${REPO_SLUG:-${FORGEJO_API##*/repos/}}"
@@ -34,14 +36,41 @@ repo_tag="${repo_slug//\//-}"
 verdict_begin "${VERIFY_VERDICT_PATH:-/tmp/matou-$repo_tag-verify-verdict.txt}"
 trap 'verdict_write $?' EXIT
 
-# --- git sync -----------------------------------------------------------------
+# --- git sync (under the per-repo workdir lock) -------------------------------
+# A verify tick and a swarm/triage tick can win DIFFERENT host-capacity slots in
+# the same second (the slot-1 flock only excludes slot 1) and then both mutate
+# this ONE shared clone's working tree — one loses .git/index.lock and dies at
+# `git checkout`/`git reset` with exit 128 (#817). swarm.yml/triage.yml already
+# wrap their git-setup in a non-blocking per-repo workdir flock (#638); the verify
+# poller is the last consumer of this shared workdir that did not, so it raced
+# them. Take the SAME lock (same /tmp path, same non-blocking posture): never camp
+# — a workdir mid-checkout just means this poll loses, and the next */10 cron tick
+# retries. Scoped to ONLY the git mutation; released before check-verifications,
+# which does not touch git. A clean yield exits 0, so verdict_write leaves no
+# verdict (its contract) — a lost race is not a fault.
+workdir_lock="${VERIFY_WORKDIR_LOCK:-/tmp/matou-workdir-${repo_tag}.lock}"
+exec 8>"$workdir_lock"
+if ! flock -n 8; then
+  echo "run-verify: workdir busy with another job for $repo_slug — yielding this tick; the cron re-fires"
+  exec 8>&-
+  exit 0
+fi
+
 git_log="$(mktemp)"
 verdict_stage "git sync (fetch/checkout/reset)" "$git_log"
 # Derive the remote host from SERVER_URL (onboarding/README.md's
 # no-hardcoded-remote fix, as in triage.yml's fallback) rather than baking in
 # git.matou.nz; the test seam points at a local fixture repo offline.
 host="${SERVER_URL#https://}"; host="${host:-git.matou.nz}"
-url="${GIT_VERIFY_REMOTE_URL:-https://swarm:${FORGEJO_TOKEN}@${host}/${repo_slug}.git}"
+# The remote is CREDENTIAL-FREE (#195/#222): the org-wide FORGEJO_TOKEN never
+# rides in the URL (where it would persist in the workdir's .git/config and in
+# argv). git_cred_export hands git the token per invocation via a token-free
+# credential helper, covering the fetch/clone in the subshell below (which
+# inherits the exported GIT_CONFIG_*). git_cred_strip_url normalises an
+# explicitly-passed credentialed override; the test seam (GIT_VERIFY_REMOTE_URL,
+# a local fixture path with no userinfo) passes through unchanged.
+url="$(git_cred_strip_url "${GIT_VERIFY_REMOTE_URL:-https://${host}/${repo_slug}.git}")"
+git_cred_export
 # A real subshell with its OWN `set -e`, so the first failing git command aborts
 # the sequence immediately — mirrors git-setup.sh: without it, a failed `git
 # fetch` would leave `git checkout -f`/`git reset --hard` to run against stale
@@ -65,6 +94,10 @@ cat "$git_log"
 # empty `--- error lines ---` block. Only the success path prunes it.
 [ "$ec" -eq 0 ] || exit "$ec"
 rm -f "$git_log"
+# Release the workdir lock before check-verifications: it polls Mattermost and
+# never touches git, so holding the shared-clone lock across it would needlessly
+# block a swarm/triage tick that wants to refresh the workdir.
+exec 8>&-
 
 # --- check verifications ------------------------------------------------------
 # Capture combined output so a check-verifications failure feeds real error

@@ -72,6 +72,14 @@ if [ -z "${FORGEJO_TOKEN:-}" ] && [ -f "$here/.env" ]; then . "$here/.env"; fi
 . "$here/identity-lib.sh"     # identity_require — the contract seam (#31)
 # shellcheck source=swarm-identity.sh
 . "${SWARM_IDENTITY_FILE:-$here/swarm-identity.sh}"   # FORGEJO_API / REPO_SLUG — this repo's identity (ADR 0180 / #571)
+# shellcheck source=landing-lib.sh
+. "$here/landing-lib.sh"      # landing_mode_for (#164) — how a ticket lands: push or pr. Sources forgejo-lib.sh + policy-lib.sh (both guarded, safe beside the model-lib.sh source above). No side effects beyond defining functions.
+# Load the repo's LANDING policy so landing_mode_for below honours a pr-DEFAULT
+# repo, not just the per-ticket `landing-pr` label (idss ADR 0267). SWARM_POLICY_FILE
+# is the same TEST-only seam list-ready-tasks.sh uses; unset in production, so this
+# reads the consumer's real swarm-policy.sh and defaults LANDING=push (byte-identical
+# to before in a push repo, where only a labelled ticket resolves to pr).
+policy_load "${SWARM_POLICY_FILE:-}"
 # Host state is REPO-SCOPED (#35, ADR 0004 point 6). Two enrolled repos on one
 # host must not share a lock (a host-global lock let one repo's in-flight
 # session absorb every OTHER repo's tick for a whole SESSION_RUNNER_TIMEOUT with
@@ -198,6 +206,63 @@ if ! flock -n "$sr_owner_fd"; then
   exit 0
 fi
 
+# ── self-refresh BEFORE the pick (#319) ──────────────────────────────────────
+# The dedicated checkout's fetch/reset used to run only AFTER a ticket was picked
+# (the clone+reset block was down by the session). A script version that SKIPS
+# every queued ticket therefore never picked, never reset, and so never replaced
+# itself: a behaviour change to the pick/skip rules could not reach a host whose
+# queue was all skip-tickets — exactly the case #302 was built for, and hosts ran
+# a week-old runner because of it. Refresh the checkout to origin/main HERE, on
+# EVERY tick that holds the owner lock, not only a picking one. If THIS entrypoint
+# changed, re-exec the fresh copy so the new rules apply THIS tick, not next cron.
+#
+# Held under the per-checkout owner lock taken just above, so no live session's
+# tree is reset mid-flight (GOTCHAS 25 / #78 — an owned-checkout tick absorbed
+# above and never reaches here). The whole refresh is a FUNCTION so bash parses
+# its body — the reset and the re-exec decision — into memory BEFORE `git reset
+# --hard` can rewrite this very file on disk: were these lines read from the file
+# after the reset, a changed entrypoint would corrupt what bash reads next. If
+# the file is unchanged the reset leaves its bytes identical and the rest of the
+# script reads safely; if it changed we exec the fresh copy and never read more
+# of the rewritten file. (A ROOT change still reaches the factory's own vendored
+# self-copy only on a human re-vendor — GOTCHAS 4 — but a dedicated SESSION
+# checkout tracking origin/main is meant to refresh, which is the whole point.)
+sr_entry="${BASH_SOURCE[0]}"
+sr_entry_hash="$( { sha1sum "$sr_entry" 2>/dev/null || true; } | awk '{print $1}')"
+sr_self_refresh() { # "$@" — forwarded to the re-exec'd fresh runner
+  if [ ! -d "$SESSION_RUNNER_CHECKOUT/.git" ]; then
+    git clone -q "$SESSION_RUNNER_REPO" "$SESSION_RUNNER_CHECKOUT" \
+      || { echo "session-runner: clone failed — quiet tick"; return 0; }
+  fi
+  git -C "$SESSION_RUNNER_CHECKOUT" fetch -q origin || true
+  git -C "$SESSION_RUNNER_CHECKOUT" reset -q --hard origin/main || true
+  git -C "$SESSION_RUNNER_CHECKOUT" clean -qfd || true
+  # Wire the factory pre-push drift gate into this real (non-sandbox) checkout so
+  # a session that edits a factory-vendored file (FACTORY_MANIFEST, ADR 0180) is
+  # blocked BEFORE the push, not by a red seam on main (idss #932, GOTCHAS 79).
+  # Same knob the sandbox sets in main.mts. Best-effort: a config hiccup must not
+  # fail the tick.
+  git -C "$SESSION_RUNNER_CHECKOUT" config core.hooksPath .sandcastle/git-hooks || true
+  [ -z "${SESSION_RUNNER_REEXECED:-}" ] || return 0   # already a re-exec — never loop
+  local canon="$SESSION_RUNNER_CHECKOUT/.sandcastle/session-runner.sh" fresh
+  [ -f "$canon" ] || return 0                         # no vendored copy to re-exec (test/odd layout)
+  fresh="$( { sha1sum "$canon" 2>/dev/null || true; } | awk '{print $1}')"
+  [ -n "$fresh" ] && [ "$fresh" != "$sr_entry_hash" ] || return 0   # unchanged → keep running this process
+  echo "session-runner: the entrypoint changed on refresh — re-execing the fresh runner before the pick (#319)"
+  export SESSION_RUNNER_REEXECED=1
+  # Drop the locks THIS process holds so the fresh exec re-acquires them cleanly.
+  # exec inherits these fds AND their flocks; the fresh runner opens a NEW fd for
+  # the owner lock, and flock conflicts across two open descriptions of one file
+  # in the same process — so without closing them first the re-exec would
+  # self-block on its own inherited owner lock and absorb the tick. The locks are
+  # non-blocking, so the microsecond gap is harmless (a racing peer just absorbs
+  # its own tick).
+  exec 9>&- || true
+  eval "exec ${sr_owner_fd}>&-" || true
+  exec bash "$canon" "$@"
+}
+sr_self_refresh "$@"
+
 # ── join the host capacity pool: a live session-runner session runs a
 #    headless claude call exactly like a swarm/triage worker, so it now
 #    counts against the SAME 2-slot host-wide pool instead of being
@@ -244,6 +309,12 @@ label_id() {
 }
 aw_id="$(label_id agent-working)"
 ab_id="$(label_id agent-blocked)"
+# ready-for-session's id — the runner drops it from a pr-mode ticket once its PR is
+# open (#302), so a drained-by-PR ticket leaves the session lane (the Floor/Board
+# Session column) instead of being re-picked every tick. Present by construction
+# (the queue read below filters on this very label), so label_id resolves it; a
+# repo somehow missing it fails loud here exactly like the two above.
+rfs_id="$(label_id ready-for-session)"
 
 # This host's name (pure, no network) — needed by the stale-claim sweep below to
 # attribute and clean THIS host's own cross-host claim markers (#125), and reused
@@ -376,6 +447,32 @@ for n in $candidates; do
   if [ -f "$SESSION_RUNNER_STATE/fail-$n" ] && [ "$(cat "$SESSION_RUNNER_STATE/fail-$n")" -ge 2 ]; then
     echo "session-runner: #$n failed twice — escalated, skipped"; continue
   fi
+  # how the ticket lands (#164): push or pr. #302 lets the session WORK a pr-mode
+  # ticket — the prompt branches on the mode resolved here, opening the ticket's PR
+  # through the rail (land-pr.sh) instead of pushing main, so pr-default repos drain
+  # without a human opening each PR by hand. landing_mode_for resolves BOTH the
+  # per-ticket `landing-pr` label and a pr-DEFAULT repo. Only the UNRESOLVABLE case
+  # stays a skip: #165's fail-CLOSED posture (an unreadable ticket, or an
+  # off-allowlist landing-* label) must never risk landing a ticket the wrong way,
+  # so it is skipped — not this runner's ticket, NOT a failed attempt (no claim/
+  # attempt marker/fail-$n) — rather than guessed.
+  if ! sr_landing="$(landing_mode_for "$n" 2>/dev/null)"; then
+    echo "session-runner: #$n — cannot resolve how it lands; skipped rather than risk landing it the wrong way (#165/#302, not an attempt)"
+    continue
+  fi
+  if [ "$sr_landing" = pr ]; then
+    # Already handed to review? A pr-mode ticket with an OPEN agent PR is past the
+    # session's job (a human merges it), so it does not belong in the session
+    # queue. Drop ready-for-session — it leaves the Session lane and is never
+    # re-picked — and skip it, not an attempt. This also self-heals a session
+    # SIGKILLed after it opened the PR but before the outcome path could unqueue
+    # it, so no second full session is ever spent reopening the same PR.
+    if sr_existing_pr="$(landing_open_pr_for "$n" 2>/dev/null)" && [ -n "$sr_existing_pr" ]; then
+      echo "session-runner: #$n already has an open PR (#$sr_existing_pr) — handed to review; dropping ready-for-session, skipped (#302, not an attempt)"
+      api -X DELETE "$FORGEJO_API/issues/$n/labels/$rfs_id" >/dev/null 2>&1 || true
+      continue
+    fi
+  fi
   open_deps="$(api "$FORGEJO_API/issues/$n/dependencies?limit=50" \
     | jq '[.[] | select(.state == "open")] | length')" \
     || { echo "session-runner: #$n dependency check failed — skipped (never run on an unverified frontier)"; continue; }
@@ -467,7 +564,11 @@ claimed=1
 # the swarm run population. This shrinks the race to one round-trip; it is not a
 # distributed CAS (unavailable over Forgejo labels — the swarm's own protocol
 # carries the same residual non-atomicity), matching the swarm's bound.
-sr_claim_id="$(claim_post "$pick" "$sr_host" "$$" 2>/dev/null || true)"
+# The 4th argument marks this as a SESSION claim with its own ttl (#348): run=
+# here is a pid, so the swarm janitor must age the claim, never look the pid up
+# among swarm runs — it used to sweep a live session's claim on its second pass,
+# and a second host then started a full session on the same ticket.
+sr_claim_id="$(claim_post "$pick" "$sr_host" "$$" "$SESSION_RUNNER_CLAIM_TTL" 2>/dev/null || true)"
 if [ -n "$sr_claim_id" ] && [ "$sr_claim_id" != null ]; then
   # Alive-set = every run whose claim comment is YOUNGER than the claim TTL
   # (#1412). Counting EVERY present claim as live — as this did — let one dead
@@ -487,6 +588,13 @@ if [ -n "$sr_claim_id" ] && [ "$sr_claim_id" != null ]; then
     exit 0
   fi
   echo "session-runner: #$pick — won the cross-host claim ($sr_claim_id); proceeding (#125)"
+  # Re-assert agent-working now the claim comment exists (#348). The label went
+  # on a few seconds BEFORE the claim was posted, and in that gap a swarm
+  # janitor pass sees a label with no claim behind it and removes it as an
+  # orphan. The POST is additive and idempotent; best-effort, never a wedge.
+  jq -n --argjson l "$aw_id" '{labels: [$l]}' \
+    | api -X POST -H 'Content-Type: application/json' -d @- \
+        "$FORGEJO_API/issues/$pick/labels" >/dev/null 2>&1 || true
 else
   # claim_post failed (a forge blip): can't arbitrate, so fall back to today's
   # behaviour and run — the rare unarbitrated race is the pre-#125 status quo,
@@ -497,18 +605,11 @@ else
 fi
 
 # ── dedicated checkout (NEVER the shared swarm checkout — peers work there) ──
-if [ ! -d "$SESSION_RUNNER_CHECKOUT/.git" ]; then
-  git clone -q "$SESSION_RUNNER_REPO" "$SESSION_RUNNER_CHECKOUT" \
-    || { echo "session-runner: clone failed — releasing claim, quiet tick"; exit 0; }
-fi
-git -C "$SESSION_RUNNER_CHECKOUT" fetch -q origin || true
-git -C "$SESSION_RUNNER_CHECKOUT" reset -q --hard origin/main || true
-git -C "$SESSION_RUNNER_CHECKOUT" clean -qfd || true
-# Wire the factory pre-push drift gate into this real (non-sandbox) checkout so a
-# session that edits a factory-vendored file (FACTORY_MANIFEST, ADR 0180) is
-# blocked BEFORE the push, not by a red seam on main (idss #932). Same knob the
-# sandbox sets in main.mts. Best-effort: a config hiccup must not fail the tick.
-git -C "$SESSION_RUNNER_CHECKOUT" config core.hooksPath .sandcastle/git-hooks || true
+# The clone + fetch + reset --hard origin/main + clean + core.hooksPath wiring now
+# runs in sr_self_refresh at the TOP of the tick (#319), under the same per-
+# checkout owner lock, so the checkout is already at origin/main here — whether or
+# not this tick picked a ticket. A tick that reaches this point won the claim and
+# is about to run the session against that already-refreshed tree.
 
 # ── the session: one headless claude, riding the #510 failover ───────────────
 # Stamp the factory git identity (#19) so the session's commits carry
@@ -531,6 +632,8 @@ prompt="$(cat "$SESSION_RUNNER_PROMPT_FILE")
 
 Ticket #$pick: $title
 
+Landing mode for this ticket (resolved by the runner): $sr_landing
+
 $body"
 claude_select_token
 
@@ -546,7 +649,11 @@ claude_select_token
 # #81 gap where a session's real account budget was invisible to the Usage tab.
 sr_run_db_id="session-$sr_slug-$(date +%s)-$$"
 sr_started="$(date +%s)"
-swarmdb_run_start "$sr_run_db_id" "$REPO_SLUG" session "$sr_started"
+# The executing host (#202), stamped on the run row so spend groups per-device
+# (`spend-by --group …,host`). SWARM_HOST is the pool-claim name; `hostname` the
+# bare-host fallback — the same formula run-swarm.sh uses.
+sr_host="${SWARM_HOST:-$(hostname 2>/dev/null || echo unknown)}"
+swarmdb_run_start "$sr_run_db_id" "$REPO_SLUG" session "$sr_started" "$sr_host"
 swarmdb proc-open --run "$sr_run_db_id" --kind session --ref "$$" \
   --command "session-runner #$pick — $title" --started "$sr_started"
 swarmdb attempt --run "$sr_run_db_id" --issue "$pick" --started "$sr_started"
@@ -604,6 +711,20 @@ session_runner_nudge
 after="$(api "$FORGEJO_API/issues/$pick")" || after=""
 state_after="$(jq -r '.state // "unknown"' <<<"$after")"
 still_session="$(jq -r '[.labels[].name] | index("ready-for-session") != null' <<<"$after" 2>/dev/null || echo true)"
+# pr-mode (#302): the session lands through a pull request a HUMAN merges — it does
+# NOT close the ticket (close-report leaves it open) and need not relabel. An OPEN
+# agent PR for this ticket IS the advance: the work is handed to review. Recognise
+# it, drop ready-for-session so the drained ticket leaves the session lane (never
+# re-picked), and fall into the advanced path below. A push-mode ticket is judged
+# exactly as before (closed, or ready-for-session already gone). Guarded on the
+# push outcomes so a pr ticket the session DID close/relabel is not double-handled.
+if [ "$sr_landing" = pr ] && [ "$state_after" != closed ] && [ "$still_session" != false ]; then
+  if sr_opened_pr="$(landing_open_pr_for "$pick" 2>/dev/null)" && [ -n "$sr_opened_pr" ]; then
+    echo "session-runner: #$pick — opened PR #$sr_opened_pr; dropping ready-for-session (handed to review, #302)"
+    api -X DELETE "$FORGEJO_API/issues/$pick/labels/$rfs_id" >/dev/null 2>&1 || true
+    still_session=false
+  fi
+fi
 if [ "$state_after" = "closed" ] || [ "$still_session" = "false" ]; then
   echo "session-runner: #$pick outcome: advanced (state=$state_after, ready-for-session=$still_session)"
   rm -f "$SESSION_RUNNER_STATE/fail-$pick"

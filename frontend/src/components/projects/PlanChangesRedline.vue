@@ -136,11 +136,13 @@ function changedByLabel(aid: string): string {
 function contributionTagLabel(kind: ContributionChangeItem['kind']): string {
   if (kind === 'contribution_added') return 'Added';
   if (kind === 'contribution_removed') return 'Removed';
+  if (kind === 'contribution_restored') return 'Restored';
+  if (kind === 'contribution_moved') return 'Moved';
   return 'Edited';
 }
 
 function contributionTagClass(kind: ContributionChangeItem['kind']): string {
-  if (kind === 'contribution_added') return 'tag-added';
+  if (kind === 'contribution_added' || kind === 'contribution_restored') return 'tag-added';
   if (kind === 'contribution_removed') return 'tag-removed';
   return 'tag-edited';
 }
@@ -162,7 +164,7 @@ function contributionTagClass(kind: ContributionChangeItem['kind']): string {
 
   &.is-added {
     border-color: var(--matou-accent);
-    background: rgba(74, 157, 156, 0.06);
+    background: color-mix(in srgb, var(--matou-accent) 6%, transparent);
   }
 
   &.is-archived {
@@ -249,7 +251,7 @@ function contributionTagClass(kind: ContributionChangeItem['kind']): string {
   background: var(--matou-secondary);
 
   &.is-added {
-    background: rgba(74, 157, 156, 0.1);
+    background: color-mix(in srgb, var(--matou-accent) 10%, transparent);
   }
 
   &.is-removed {
@@ -314,7 +316,7 @@ function contributionTagClass(kind: ContributionChangeItem['kind']): string {
 }
 
 .tag-added {
-  background: rgba(74, 157, 156, 0.18);
+  background: color-mix(in srgb, var(--matou-accent) 18%, transparent);
   color: var(--matou-accent);
 }
 

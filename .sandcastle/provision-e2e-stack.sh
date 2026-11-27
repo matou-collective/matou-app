@@ -90,6 +90,10 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # (workflows set them explicitly, which always wins). Safe to source twice.
 # shellcheck source=swarm-identity.sh
 [ -f "$here/swarm-identity.sh" ] && . "$here/swarm-identity.sh"
+# git-cred-lib supplies the token-free credential helper (#195/#222) so the
+# workdir clone below never bakes FORGEJO_TOKEN into a git remote URL.
+# shellcheck source=git-cred-lib.sh
+. "$here/git-cred-lib.sh"
 
 REPO_SLUG="${REPO_SLUG:-Matou/matou-app}"
 INFRA="${MATOU_INFRA_DIR:-$HOME/matou/matou-infrastructure}"
@@ -305,6 +309,62 @@ ensure_anysync_config() {
   ok anysync "test network config generated ($ANYSYNC_ENV)"
 }
 
+# ── clause 3b: the minio images any-sync's compose boots (matou-app#527) ────
+# Docker Hub went anonymous-denied for the minio org (#527), so a host that has
+# not ALREADY cached these images cannot bootstrap the any-sync test network —
+# `make setup-test` dies pulling them. Clause 3's comment claims .env.test's
+# presence implies the any-sync images; bens-mac-04 disproved that on
+# 2026-09-22 (.env.test present, minio/mc cached, minio/minio NOT), and this
+# script's --check reported it READY — the false OK that would have sent pr-e2e
+# runs to a host that could not stand the stack up. So minio is probed on its
+# own, by name.
+#
+# The required images come from the infra's own compose + .env.test, never a
+# hardcoded tag, so an infra bump moves the probe with it. A compose that names
+# no minio image (infra dropped or moved off it) requires nothing here.
+#
+# Converge tries Docker Hub, then the quay.io mirror retagged to the name the
+# compose asks for. When both are refused the only source left is a host that
+# has it cached, so the failure prints that exact save|load recipe.
+MINIO_MIRROR="${MATOU_MINIO_MIRROR:-quay.io}"
+_minio_images() {
+  local compose="$ANYSYNC/docker-compose.yml" ver=""
+  [ -f "$compose" ] || return 0
+  ver="$(sed -n 's/^MINIO_VERSION=//p' "$ANYSYNC_ENV" 2>/dev/null | tail -1)"
+  [ -n "$ver" ] || ver="$(sed -n 's/^MINIO_VERSION=//p' "$ANYSYNC/.env.default" 2>/dev/null | tail -1)"
+  sed -nE 's/^[[:space:]]*image:[[:space:]]*([^[:space:]]*minio[^[:space:]]*).*/\1/p' "$compose" \
+    | sed "s/\${MINIO_VERSION}/$ver/g" | sort -u
+}
+ensure_minio_images() {
+  local imgs img seed
+  imgs="$(_minio_images)"
+  [ -n "$imgs" ] || return 0
+  for img in $imgs; do
+    case "$img" in
+      *'${'*|*:) fail minio "could not resolve the tag in '$img' — MINIO_VERSION is missing from $ANYSYNC_ENV (and .env.default)" ;;
+    esac
+    seed="seed it from a host that already has it cached: \`docker save $img | ssh <this-host> docker load\`"
+    if docker image inspect "$img" >/dev/null 2>&1; then
+      ok minio "$img present"
+      continue
+    fi
+    if [ "$CHECK_ONLY" = 1 ]; then
+      fail minio "$img is not cached here, and Docker Hub denies the minio org anonymously (#527), so any-sync's \`make setup-test\` cannot pull it. Run without --check to try the $MINIO_MIRROR mirror, or $seed."
+    fi
+    converged
+    if docker pull "$img" >/dev/null 2>&1; then
+      ok minio "$img pulled"
+      continue
+    fi
+    note "docker pull $img refused (#527) — trying the $MINIO_MIRROR mirror"
+    if docker pull "$MINIO_MIRROR/$img" >/dev/null 2>&1 && docker tag "$MINIO_MIRROR/$img" "$img"; then
+      ok minio "$img pulled via $MINIO_MIRROR and retagged"
+      continue
+    fi
+    fail minio "$img is unobtainable: Docker Hub denies the minio org (#527) and $MINIO_MIRROR/$img failed too. The only source left is a cached copy — $seed."
+  done
+}
+
 # ── clause 4: the ~/swarm-e2e/<slug> checkout the drives run from ───────────
 ensure_workdir() {
   if [ -d "$WORKDIR/.git" ]; then
@@ -317,9 +377,14 @@ ensure_workdir() {
   [ -n "${FORGEJO_TOKEN:-}" ] || fail workdir "FORGEJO_TOKEN is unset — cannot clone $REPO_SLUG into $WORKDIR (the workflows export it as \$FORGEJO_TOKEN)"
   local host url
   host="${FORGEJO_API#*://}"; host="${host%%/*}"; host="${host:-git.matou.nz}"
-  url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+  # Credential-free remote (#195/#222): the FORGEJO_TOKEN never rides in the URL
+  # (where it would persist in $WORKDIR/.git/config and in argv). git_cred_export
+  # injects the token per invocation via a token-free credential helper, read at
+  # git-call time from FORGEJO_TOKEN (asserted present above).
+  url="https://${host}/${REPO_SLUG}.git"
   converged; note "cloning $REPO_SLUG into $WORKDIR"
   mkdir -p "$WORKDIR"
+  git_cred_export
   git clone "$url" "$WORKDIR" || fail workdir "clone of $REPO_SLUG into $WORKDIR failed"
   ok workdir "cloned at $WORKDIR"
 }
@@ -536,6 +601,7 @@ verify_witness() {
 ensure_infra
 ensure_docker_images
 ensure_anysync_config
+ensure_minio_images
 ensure_workdir
 ensure_playwright
 ensure_go

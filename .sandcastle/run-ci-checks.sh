@@ -49,6 +49,23 @@ run_stage() {
   "$@" 2>&1 | tee -a "$log"
   rc="${PIPESTATUS[0]}"
   set -e
+  if [ "$rc" -eq 75 ]; then
+    # EX_TEMPFAIL from host-slot-wait.sh: the pooled slot never came free inside
+    # the camp, so this stage NEVER RAN. That is contention, not a fault (#548) —
+    # an idss rehearsal drive holds every slot on this host for as long as it
+    # needs, and a push landing inside one used to red main, wake the healer on a
+    # non-fault, and leave a verdict naming a stage that never started.
+    #
+    # Drop the verdict (nothing to investigate — this also keeps the healer's
+    # no-fresh-verdict branch out of it), print the marker ci.yml keys on, and
+    # exit 75 so the caller can tell a starved run from a broken one. pr-e2e
+    # solved the same contention the same way in #278: a loud deferral plus a
+    # scheduled sweep that re-dispatches.
+    echo "CI_DEFERRED: ${stage} could not start — host capacity held by another job for the whole camp; the ci sweep will re-run this sha" >&2
+    rm -f "${VERDICT_PATH:-/nonexistent}" "${VERDICT_BREADCRUMB:-/nonexistent}" 2>/dev/null || true
+    VERDICT_PATH=""
+    exit 75
+  fi
   if [ "$rc" -ne 0 ]; then
     local inner; inner="$(sed -n 's/^==> stage: //p' "$log" | tail -1)"
     [ -n "$inner" ] && verdict_stage "$stage :: $inner" "$log"

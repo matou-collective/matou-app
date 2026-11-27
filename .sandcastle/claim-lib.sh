@@ -2,7 +2,8 @@
 # Claim primitives for the multi-host swarm (spec:
 # docs/superpowers/specs/2026-08-11-multihost-swarm-design.md, D4).
 # Sourced by claim-next-task.sh (in-sandbox) and run-swarm.sh (host).
-# A claim is a comment whose first line is `swarm-claim host=<h> run=<n>`,
+# A claim is a comment whose first line is `swarm-claim host=<h> run=<n>`
+# (a session-runner's claim adds ` session-ttl=<seconds>`, #348),
 # arbitrated by Forgejo's strictly-increasing comment ids: the LOWEST claim
 # whose run is still in progress wins. The agent-working label hides claimed
 # tickets from every other host's queue.
@@ -73,10 +74,16 @@ CLAIM_VERDICT_LOG="${CLAIM_VERDICT_LOG:-${SWARM_RUNLOG:-$HOME/swarm/logs/run-swa
 # terminal verdict is proof, not a guess, and sweeps on the first pass.
 CLAIM_ABSENCE_THRESHOLD="${CLAIM_ABSENCE_THRESHOLD:-2}"
 CLAIM_ABSENCE_STATE_DIR="${CLAIM_ABSENCE_STATE_DIR:-$HOME/swarm/state/claim-absence}"
-# Optional per-read latency sink so the p95 the budgets are sized to (#1279 ask
-# 3) can be MEASURED off disk rather than guessed. Default unset = no-op; when
-# set, claim_alive_runs appends `<epoch> dur=<n>s rc=<n>` per read.
-CLAIM_LATENCY_LOG="${CLAIM_LATENCY_LOG:-}"
+# Per-read latency sink so the p95 CLAIM_ALIVE_MAX_TIME is sized to (#1279 ask 3)
+# is MEASURED off disk rather than guessed — claim_alive_runs appends
+# `<epoch> dur=<n>s rc=<n>` per read. #325: wired ON by default at a HOST sibling
+# of the verdict log, because the seam sat unset in production and nobody could
+# tell a one-off spike from a creeping regression in the 20 s cap. The host
+# janitor's reads persist there (its $HOME/swarm/logs is the real on-disk series);
+# the in-sandbox prefetch's $HOME is ephemeral and its append is guarded, so a
+# missing dir is a silent no-op. Set CLAIM_LATENCY_LOG= (empty) to disable.
+# Retuning the 20 s cap from this series is a later ticket, once there is data.
+CLAIM_LATENCY_LOG="${CLAIM_LATENCY_LOG-${CLAIM_VERDICT_LOG%/*}/claim-latency.log}"
 
 _claim_api() { curl -sf --max-time "$CLAIM_API_MAX_TIME" -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
@@ -100,10 +107,11 @@ claim_label_id() { # claim_label_id <name> -> id | rc 1 (LOUD on miss)
 claim_alive_runs() { # -> JSON array of in-progress swarm run numbers | rc 1 on API failure
   # &page=1 is mandatory: without it Forgejo ignores `limit` and dumps every
   # task ever (O(n), ~30s and growing — the 2026-07-30 healer blindness).
-  # Name match is `swarm` OR `swarm (N)` (#541): swarm.yml's 2-wide worker
-  # matrix (44fe333) makes Forgejo suffix each matrix job's name with its
-  # index — live-probed 2026-08-15, every real task is "swarm (1)"/"swarm
-  # (2)", never bare "swarm". An exact-match filter (the pre-matrix original)
+  # Name match is `swarm` OR `swarm (<suffix>)` (#541): swarm.yml's matrix
+  # makes Forgejo suffix each matrix job's name — the worker index under the
+  # 2-wide pool matrix (44fe333, live-probed 2026-08-15: "swarm (1)"/"swarm
+  # (2)"), the host label under the per-host matrix (GOTCHAS 62: "swarm
+  # (<host>)") — never bare "swarm". An exact-match filter (the pre-matrix original)
   # silently always returned [], so claim_won's arbitration only ever saw a
   # caller's OWN claim as alive and every racing host "won" — two hosts fully
   # implemented #536 before either noticed the other.
@@ -122,7 +130,13 @@ claim_alive_runs() { # -> JSON array of in-progress swarm run numbers | rc 1 on 
     rc=0; raw="$(_claim_api "$FORGEJO_API/actions/tasks?limit=100&page=1")" || rc=$?
     if [ -n "$CLAIM_LATENCY_LOG" ]; then
       dur=$(( $(date +%s) - t0 ))
-      printf '%s dur=%ss rc=%s\n' "$t0" "$dur" "$rc" >>"$CLAIM_LATENCY_LOG" 2>/dev/null || true
+      # mkdir -p the parent FIRST (the runlog_append pattern): on the host its
+      # $HOME/swarm/logs exists, but the in-sandbox prefetch's does not, and a
+      # bare `>>missing/dir/file` leaks a redirection error to stderr BEFORE the
+      # `2>/dev/null` on the command applies — stderr the claim prefetch feeds the
+      # verdict. Guarded so a read-only/absent path is a truly silent no-op (#325).
+      mkdir -p "$(dirname "$CLAIM_LATENCY_LOG")" 2>/dev/null \
+        && printf '%s dur=%ss rc=%s\n' "$t0" "$dur" "$rc" >>"$CLAIM_LATENCY_LOG" 2>/dev/null || true
     fi
     if [ "$rc" -eq 0 ]; then
       jq -c '[.workflow_runs[]? | select((.name == "swarm" or (.name | test("^swarm \\("))) and (.status == "running" or .status == "waiting")) | .run_number]' <<<"$raw"
@@ -165,10 +179,17 @@ _claim_absence_reset() { # _claim_absence_reset <run> — clears a run's absence
   rm -f "$CLAIM_ABSENCE_STATE_DIR/$(_claim_absence_key "$1")" 2>/dev/null || true
 }
 
-claim_post() { # claim_post <issue> <host> <run> -> comment id | rc 1 on API failure
-  local raw
-  raw="$(jq -n --arg h "$2" --arg r "$3" \
-    '{body: ("swarm-claim host=" + $h + " run=" + $r + "\n(automated multi-host claim — lowest live claim id works this ticket)")}' |
+claim_post() { # claim_post <issue> <host> <run> [<session_ttl_seconds>] -> comment id | rc 1 on API failure
+  # The optional 4th argument marks a SESSION claim (#348). The session-runner's
+  # run= is its own pid, not a swarm Actions run number, so the janitor cannot
+  # judge it against the alive swarm runs — it would "prove" every live session
+  # dead and strip its claim. A session claim therefore says what it is and how
+  # long it can possibly live: ` session-ttl=<n>` on the first line, after run=.
+  # Every reader's `^swarm-claim host=\S+ run=[0-9]+` shape still matches it.
+  local raw ttl=""
+  case "${4:-}" in ''|*[!0-9]*) ;; *) ttl=" session-ttl=$4" ;; esac
+  raw="$(jq -n --arg h "$2" --arg r "$3" --arg t "$ttl" \
+    '{body: ("swarm-claim host=" + $h + " run=" + $r + $t + "\n(automated multi-host claim — lowest live claim id works this ticket)")}' |
     _claim_api -X POST -H 'Content-Type: application/json' -d @- \
       "$FORGEJO_API/issues/$1/comments")" || return 1
   jq -r .id <<<"$raw"
@@ -184,6 +205,30 @@ _claim_comments() { # _claim_comments <issue> -> "id run" lines, ascending id | 
   # not a claim; skip it.
   jq -r '.[] | select(.body | test("^swarm-claim host=\\S+ run=[0-9]+")) |
     "\(.id) \(.body | capture("run=(?<r>[0-9]+)").r)"' <<<"$raw" | sort -n
+}
+
+_claim_comments_kinded() { # _claim_comments_kinded <issue> [<now_epoch>] -> "id run kind" lines, ascending id | rc 1 on API failure
+  # The janitor's reader (#348). kind is:
+  #   swarm           — an ordinary claim; run is a swarm Actions run number.
+  #   session-live    — a session claim (` session-ttl=<n>`) younger than its ttl.
+  #   session-expired — a session claim that has outlived its ttl.
+  # A session claim whose created_at is missing or unparseable is session-live
+  # (fail-closed: an un-ageable claim is never swept — claim_fresh_runs's rule).
+  # now is injectable for hermetic tests. Same raw-capture-then-filter and
+  # test()-before-capture() discipline as _claim_comments.
+  local raw now="${2:-}"
+  [ -n "$now" ] || now="$(date -u +%s)"
+  raw="$(_claim_api "$FORGEJO_API/issues/$1/comments")" || return 1
+  jq -r --argjson now "$now" '.[]
+    | select(.body | test("^swarm-claim host=\\S+ run=[0-9]+"))
+    | (.body | split("\n")[0]) as $first
+    | (.body | capture("run=(?<r>[0-9]+)").r) as $run
+    | (if ($first | test(" session-ttl=[0-9]+( |$)"))
+       then (($first | capture(" session-ttl=(?<t>[0-9]+)").t | tonumber) as $ttl
+             | (try (.created_at | fromdateiso8601) catch null) as $c
+             | if ($c == null) or (($now - $c) <= $ttl) then "session-live" else "session-expired" end)
+       else "swarm" end) as $kind
+    | "\(.id) \($run) \($kind)"' <<<"$raw" | sort -n
 }
 
 claim_fresh_runs() { # claim_fresh_runs <issue> <max_age_seconds> [<now_epoch>] -> JSON array of runs whose claim comment is YOUNGER than max_age | rc 1 on API failure
@@ -233,6 +278,33 @@ claim_won() { # claim_won <issue> <my_comment_id> <alive_runs_json> -> rc 0 if m
     fi
   done <<<"$comments"
   [ "$lowest" = "$2" ]
+}
+
+claim_owned_by_run() { # claim_owned_by_run <issue> <run> -> 0 owned; 1 reachable but NO claim for this run; 3 tracker unreachable
+  # The COMMIT-time counterpart to claim_won (git-hooks/commit-msg, #1717).
+  # claim_won answers "did I win the race for a claim I posted?"; this answers
+  # the blunter question a mechanical gate needs before any work lands: does a
+  # `swarm-claim host=... run=<run>` for THIS run exist on the issue at all? Its
+  # absence is exactly what let run 29782's elitebook worker implement #1713
+  # with no claim of its own — duplicate work whose orphan commit poisoned the
+  # shared workdir's local main and RED the merge-to-main sync, and which
+  # NOTHING mechanical refused (close-report's gates only run at CLOSE, and a
+  # lost push race never reaches them).
+  #
+  # The three return codes are the whole contract, so the caller picks its fail
+  # posture: rc 0 owned (allow); rc 1 the tracker was READ and holds no such
+  # claim (the real refusal — fail CLOSED); rc 3 the tracker could not be reached
+  # (_claim_comments's own curl failure — the caller FAILS OPEN, because a forge
+  # blip must never wedge an honestly-claimed worker mid-iteration, the same
+  # fail-open the pre-push drift gate takes on an unreachable factory).
+  local issue="$1" run="$2" comments cid r
+  [ -n "$run" ] && [ "$run" != 0 ] || return 1
+  comments="$(_claim_comments "$issue")" || return 3
+  while read -r cid r; do
+    [ -n "$cid" ] || continue
+    [ "$r" = "$run" ] && return 0
+  done <<<"$comments"
+  return 1
 }
 
 claim_mark_working() { # claim_mark_working <issue> -> rc 0 on a 2xx label write; LOUD + rc 1 on refusal (#20)
@@ -286,12 +358,21 @@ janitor_sweep() { # re-arm agent-working tickets whose claiming run died
       # Fetch once per issue; a fetch failure here means "can't verify this
       # ticket's claims" — skip it rather than treat silence as "no live
       # claim" (the same finding-1 trap, scoped to a single issue).
-      comments="$(_claim_comments "$num")" || continue
+      comments="$(_claim_comments_kinded "$num")" || continue
       any_live=""       # a claim on this issue we could NOT prove dead
       claim_count=0
-      while read -r cid run; do
+      while read -r cid run kind; do
         [ -n "$cid" ] || continue
         claim_count=$((claim_count + 1))
+        # 0. A SESSION claim (#348): its run= is the session-runner's pid, never
+        #    a swarm run number, so neither the verdict log nor the alive-runs
+        #    list can say anything about it (a pid is always "absent", and can
+        #    collide with a real run number in the log). Its own ttl is the only
+        #    evidence: live until it has outlived the longest a session can run.
+        case "$kind" in
+          session-live) any_live=1; continue ;;
+          session-expired) continue ;;
+        esac
         # 1. A recorded terminal verdict is proof of death — no tracker needed.
         if claim_run_terminal "$run"; then
           continue
@@ -319,10 +400,10 @@ janitor_sweep() { # re-arm agent-working tickets whose claiming run died
       # reachable), never on a failed one (fail-closed).
       if { [ "$claim_count" -gt 0 ] && [ -z "$any_live" ]; } ||
          { [ "$claim_count" -eq 0 ] && [ "$alive_rc" -eq 0 ]; }; then
-        while read -r cid run; do
+        while read -r cid run kind; do
           [ -n "$cid" ] || continue
           _claim_api -X DELETE "$FORGEJO_API/issues/comments/$cid" >/dev/null || true
-          _claim_absence_reset "$run"
+          if [ "$kind" = swarm ]; then _claim_absence_reset "$run"; fi
         done <<<"$comments"
         _claim_api -X DELETE "$FORGEJO_API/issues/$num/labels/$lid" >/dev/null || true
         printf '%s\n' "$num"

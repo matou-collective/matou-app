@@ -10,23 +10,33 @@ on:
 
 jobs:
   feature-e2e:
-    # TEMPORARY PIN (healer, 2026-09-15) — revert to `swarm` once #527 lands.
-    # #297 flipped this to the pooled `swarm` label so any enrolled host could
-    # take the drive. That is correct in principle, but right now only ONE of
-    # the two `swarm` runners can actually bootstrap the stack: #527 (the minio
-    # org went anonymous-denied on Docker Hub) hard-downs `make setup-test` on
-    # any host that does not already have minio/mc + minio/minio cached, and
-    # matou-workstation does not. elitebook-03 does (its test stack is up and
-    # `make start` never re-pulls a cached image), and provision-e2e-stack.sh
-    # --check reports the full stack ready there.
-    # Evidence: every pr-e2e task since 04:21Z landed on matou-workstation and
-    # died — 19299 at the any-sync infra stage (#527), then 7 runs in a row that
-    # died in ~40 s before writing a verdict — while the last green pr-e2e
-    # (task 86673) ran on elitebook-03. Pinning restores PR e2e evidence; it
-    # does NOT fix #527, and it makes elitebook-03 a single point of failure
-    # for this workflow until the pin comes off.
-    runs-on: elitebook-03
-    # Up to 30 min camped on host capacity (#268) + the drive itself.
+    # The pooled `swarm` label (#297): any enrolled host can take the drive.
+    #
+    # This was pinned to elitebook-03 from 2026-09-15 as a stopgap for #527 —
+    # Docker Hub went anonymous-denied for the minio org, so only a host that
+    # already had the minio images CACHED could run `make setup-test`, and the
+    # pin made elitebook-03 a single point of failure for every PR's e2e.
+    # #527 was closed but never fixed at the source: Docker Hub still refuses
+    # both images (`docker manifest inspect`, 2026-09-22). What changed is that
+    # every pool host now holds them, verified rather than assumed:
+    #
+    #   host                cores  RAM    minio/minio  minio/mc  --check
+    #   matou-workstation     4    7 GB   cached       cached    OK
+    #   bens-mac-04           8   15 GB   cached*      cached    OK
+    #   elitebook-03          8   14 GB   cached       cached    OK
+    #   (* seeded 2026-09-22 by `docker save | docker load` from the workstation;
+    #      image id 5db7e40b… identical on all three)
+    #
+    # provision-e2e-stack.sh --check USED TO report bens-mac-04 ready while it
+    # was missing minio/minio — it never probed minio, and assumed .env.test
+    # implied the any-sync images. It now has a [minio] clause (resolved from
+    # the infra's own compose + .env.test) that fails loudly on exactly that
+    # state and converges via the quay.io mirror. Enrolling a new pool host:
+    # run it first. The durable #527 fix — the infra compose pulling from a
+    # registry that serves minio — belongs in matou-infrastructure.
+    runs-on: swarm
+    # Camp for host capacity (#268/#572: up to 5 min on a `slot` host, 30 on an
+    # `all` host) + the drive itself.
     timeout-minutes: 75
     # Every PR: run-pr-e2e.sh resolves the spec from the branch name
     # (agent/issue-<N>) or the PR body's '**Feature e2e:**' marker, and posts a
@@ -45,36 +55,86 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
         run: |
           set -euo pipefail
-          # Full-host exclusivity (#268): the drive's bootstrap is timing-
-          # sensitive (keri + any-sync + backend + playwright on the 7 GB
-          # workstation) and was starved by heavy co-runners — CI tasks 40576/
-          # 41257/41484 each failed while an unlocked checks/build-apk job ran
-          # beside it. Holding ONLY slot 1 was never enough: swarm/triage ride
-          # slot 2, and checks/android took no slot at all (they now do, via
-          # .sandcastle/host-slot-wait.sh). So: declare the drive-wanted
-          # reservation (slot claimers stand down, idss #663/#664), then take
-          # EVERY pooled slot all-or-nothing. Bounded camp — this job is
-          # event-driven; nothing re-fires it. Inline (not host-slot-wait.sh)
-          # because it runs before the checkout exists, and the checkout is the
-          # PR head, which may predate the helper. Keep the TTL story in step
-          # with HOST_CAPACITY_DRIVE_WANTED_TTL (900 s): the reservation is
-          # re-touched every poll and removed on every exit path below; a
-          # SIGKILL leaves it to age out within 15 min.
-          drive_res=/tmp/matou-drive-wanted
-          deadline=$(( $(date +%s) + 1800 ))
+          # Host capacity (#268, #572): the drive's bootstrap is timing-sensitive
+          # (keri + any-sync + backend + playwright) and must not be starved by
+          # heavy co-runners — CI tasks 40576/41257/41484 each failed while an
+          # unlocked checks/build-apk job ran beside it. How much of the host it
+          # claims now depends on the host's declared drive-exclusivity mode
+          # (#572): a `slot` host (elitebook-03, dev-factory ADR 0003) takes ONE
+          # pooled slot and runs beside the rest of the host; an `all`/unset host
+          # (matou-workstation, 7 GB, also the dev server) declares the drive-
+          # wanted reservation and takes EVERY pooled slot all-or-nothing (byte-
+          # for-byte the pre-#572 behaviour). Bounded camp either way — this job
+          # is event-driven; nothing re-fires it beyond the pr-e2e-sweep, which
+          # re-dispatches on the pending comment (#278). Inline (not host-slot-
+          # wait.sh) because it runs before the checkout exists, and the checkout
+          # is the PR head, which may predate the helper — so the mode read below
+          # mirrors host_capacity_drive_mode by hand.
+          #
+          # Slot + reservation paths come from the host's generated
+          # host-capacity.env so this guard flocks the SAME inodes swarm.yml/
+          # triage.yml and the harness libs do — the state-dir paths (#205/#218),
+          # not the stale /tmp names the cutover left behind. A guard left on /tmp
+          # no longer shares an inode with them, so it stopped excluding
+          # swarm/triage and stopped deferring to a declared drive reservation at
+          # all, silently doubling the two-slot host semaphore (#817). Fall back
+          # to the harness-default state dir if a host predates the file.
+          cap_env="$HOME/factory-cron/host-capacity.env"
+          [ -f "$cap_env" ] && . "$cap_env"
+          state_dir="${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}"
+          mkdir -p "$state_dir"
+          set -- ${HOST_CAPACITY_SLOTS:-$state_dir/matou-swarm.lock $state_dir/matou-host-slot-2.lock}
+          slot1="$1"; slot2="${2:-$1}"
+          drive_res="${HOST_CAPACITY_DRIVE_WANTED:-$state_dir/matou-drive-wanted}"
+          drive_exclusive="${DRIVE_EXCLUSIVE:-}"
+          if [ -z "$drive_exclusive" ] && [ -r /home/swarm/swarm/host-registry.conf ]; then
+            drive_exclusive="$(awk -F'[ \t=]+' '$1=="drive-exclusive"{print $2; exit}' /home/swarm/swarm/host-registry.conf 2>/dev/null || true)"
+          fi
           acquired=0
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            touch "$drive_res"
-            exec 9>/tmp/matou-swarm.lock
-            if flock -n 9; then
-              exec 8>/tmp/matou-host-slot-2.lock
+          if [ "$drive_exclusive" = slot ]; then
+            # One pooled slot, first-fit (slot 1 else slot 2): on elitebook-03 the
+            # idss rehearsal drive holds slot 1, so first-fit lands on the free
+            # slot 2 within one poll. Do NOT declare the host-wide drive-wanted
+            # reservation and do NOT honour another drive's — a one-slot job must
+            # not make every other repo's tick stand aside (that host-wide
+            # standdown is exactly the #572 starvation). Short camp: with one slot
+            # the wait is bounded by a single in-flight job, and the pending
+            # comment + pr-e2e-sweep own the give-up path (#278).
+            deadline=$(( $(date +%s) + 300 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              exec 9>"$slot1"
+              if flock -n 9; then acquired=1; break; fi
+              exec 9>&-
+              exec 8>"$slot2"
               if flock -n 8; then acquired=1; break; fi
               exec 8>&-
-            fi
-            exec 9>&-
-            sleep 20
-          done
-          rm -f "$drive_res"
+              sleep 20
+            done
+          else
+            # all / unset (matou-workstation): the drive's bootstrap needs the
+            # host to itself, so declare the drive-wanted reservation (slot
+            # claimers stand down, idss #663/#664) and take EVERY pooled slot all-
+            # or-nothing. rm the reservation the moment the acquire succeeds (and
+            # on every give-up path below) so it is up only while genuinely
+            # waiting; a SIGKILL leaves it to age out within the TTL
+            # (HOST_CAPACITY_DRIVE_WANTED_TTL, 900 s).
+            deadline=$(( $(date +%s) + 1800 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              touch "$drive_res"
+              exec 9>"$slot1"
+              if flock -n 9; then
+                exec 8>"$slot2"
+                if flock -n 8; then acquired=1; rm -f "$drive_res"; break; fi
+                exec 8>&-
+              fi
+              exec 9>&-
+              sleep 20
+            done
+            # Give-up path: the loop may exit still holding a fresh touch — drop
+            # it. (The slot branch never touches drive_res, so it must NOT rm it:
+            # the file may be a CONCURRENT idss drive's reservation, not ours.)
+            rm -f "$drive_res"
+          fi
           if [ "$acquired" != 1 ]; then
             echo "pr-e2e: host capacity busy for 30min — giving up; re-run via workflow_dispatch or push again"
             # Loud (#278): say it ON THE PR, not only in the run log + Mattermost,
@@ -102,7 +162,30 @@ jobs:
             # Expected contention, not a harness fault: marker tells the healer
             # step below to stand down instead of spending a claude call (d925814).
             touch "/tmp/matou-pr-e2e-lockbusy.${{ github.run_number }}" || true
-            exit 1
+            # #566: mark the head PENDING, then exit 0. The run used to `exit 1`,
+            # which suppressed only the in-run healer — the HOURLY WATCHDOG reads
+            # the run list, saw two failed pr-e2e runs in its window and minted an
+            # always-red incident, spending a claude call on the designed give-up
+            # path. A deferral is not a failure, so the run no longer claims to be
+            # one. Pending, never green: the head's COMBINED status stays
+            # unresolved, so "no evidence yet" cannot read as "e2e passed", and
+            # the <!-- pr-e2e --> comment above remains the sweep's source of
+            # truth. run-pr-e2e.sh resolves this context on the real run.
+            if [ -n "$sha" ]; then
+              curl -sf --max-time 30 -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+                -H 'Content-Type: application/json' \
+                -d "$(jq -n --arg url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}" \
+                      '{state:"pending", context:"pr-e2e / capacity-deferred", target_url:$url,
+                        description:"host busy for 30 min — the pr-e2e sweep will re-run this head"}')" \
+                "$FORGEJO_API/statuses/$sha" >/dev/null || true
+            fi
+            if [ -n "${MATTERMOST_BOT_TOKEN:-}" ]; then
+              jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" \
+                --arg message ":hourglass: pr-e2e deferred for \`${{ github.repository }}\` — the host capacity pool was busy for 30min, so the feature spec never ran. The sweep re-runs it; push again or re-run via workflow_dispatch to force it sooner. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}" \
+                '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |
+                curl -sf -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" >/dev/null || true
+            fi
+            exit 0
           fi
           workdir="$HOME/swarm-e2e/$REPO_SLUG"
           mkdir -p "$workdir"
@@ -116,6 +199,32 @@ jobs:
           git fetch origin "refs/pull/${PR_NUMBER}/head"
           git checkout -f FETCH_HEAD
           bash .sandcastle/run-pr-e2e.sh
+      - name: Resolve the capacity-deferred marker when the spec actually ran (#566)
+        # always(): a head that was deferred earlier and whose spec now RUNS —
+        # pass or fail — must stop carrying the pending marker, or its combined
+        # status would sit unresolved forever. The give-up path leaves the
+        # lockbusy marker for this run number; its presence means the spec never
+        # ran, so the pending status stays and the sweep re-dispatches. The e2e
+        # verdict itself lives in the <!-- pr-e2e --> comment, never here.
+        if: always()
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        run: |
+          set -uo pipefail
+          # Consume the marker here: on the deferral path the job SUCCEEDS, so the
+          # healer step below (if: failure()) never runs and never cleans it up.
+          marker="/tmp/matou-pr-e2e-lockbusy.${{ github.run_number }}"
+          if [ -f "$marker" ]; then rm -f "$marker"; exit 0; fi
+          [ -n "${HEAD_SHA:-}" ] || exit 0
+          curl -sf --max-time 30 -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n --arg url "$RUN_URL" \
+                  '{state:"success", context:"pr-e2e / capacity-deferred", target_url:$url,
+                    description:"the feature spec ran on this head"}')" \
+            "$FORGEJO_API/statuses/$HEAD_SHA" >/dev/null || true
       - name: Investigate failure (healer)
         if: failure()
         env:
@@ -140,7 +249,7 @@ jobs:
           marker="/tmp/matou-pr-e2e-lockbusy.${{ github.run_number }}"
           if [ -f "$marker" ]; then
             rm -f "$marker"
-            echo "pr-e2e: lost /tmp/matou-swarm.lock to a concurrent swarm worker — expected contention, not a fault; healer stands down."
+            echo "pr-e2e: lost a host-capacity slot to a concurrent swarm worker — expected contention, not a fault; healer stands down."
             if [ -n "$MATTERMOST_BOT_TOKEN" ]; then
               jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" \
                 --arg message ":hourglass: pr-e2e skipped for \`${{ github.repository }}\` — the host swarm lock was busy for 30min, so the feature spec never ran. Re-run via workflow_dispatch or push again. $RUN_URL" \

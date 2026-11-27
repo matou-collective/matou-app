@@ -7,6 +7,15 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
+# Hermetic token env (#227): the runner this suite drives sources limit-lib and
+# fingerprints the active token. A standing session / the matou-workstation CI
+# runner carries a real CLAUDE_CODE_OAUTH_TOKEN(_B) in its process env, which
+# would fp-key the park marker the "no standby must park the host" case asserts
+# on the bare path — reddening the suite only on a token-bearing host. The one
+# case that needs two accounts sets CLAUDE_CODE_OAUTH_TOKEN(_B) on its own
+# invocation; neutralise any ambient credential so the default is clean.
+unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_B CLAUDE_TOKEN_PRIMARY CLAUDE_ACCOUNT_FP 2>/dev/null || true
+
 # The rendered session-runner prompt lives at the harness root. Factory-side the
 # suite runs from <factory>/tests and the rendered copy is the self-pin under
 # .sandcastle/; consumer-side the suite is vendored into <repo>/.sandcastle/tests/
@@ -27,8 +36,19 @@ git init -q "$tmp/checkout"   # the runner only fetch/resets a REAL clone; stub 
 # test-owned prefix — SESSION_RUNNER_TMP — not real /tmp.
 # shellcheck source=test-env.sh
 . "$here/test-env.sh"; test_env_hermetic "$tmp"
+# #186: a test-controlled PUSH policy run_runner pins by default — an unset
+# SWARM_POLICY_FILE sources the HOST repo's real swarm-policy.sh, so a vendored
+# run from a LANDING=pr consumer flipped the pick loop into the #165 landing-pr
+# skip and RED'd the "picked #25" pick-order assertion. Group 25c passes its own
+# pr policy via "$@", which env applies over this default.
+printf 'LANDING=push\n' > "$tmp/push-policy.sh"
+export SWARM_POLICY_FILE="$tmp/push-policy.sh"
 
 # ── fake curl: routes on the URL, logs every call ────────────────────────────
+# Wrapped in a function so a group that swaps in its own minimal curl (24c) can
+# restore the full stub afterwards for the groups that follow it (#302: group 25
+# needs the /pulls route the 24c stub lacks).
+write_main_curl() {
 cat > "$tmp/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 # Understand just enough: last arg is the URL; -X sets the method.
@@ -59,6 +79,10 @@ case "$method $url" in
   "GET "*"/issues/"*"/dependencies"*)
       n="$(sed -E 's|.*/issues/([0-9]+)/dependencies.*|\1|' <<<"$url")"
       if [ -f "${FIXTURES_DIR:?}/deps-$n.json" ]; then cat "$FIXTURES_DIR/deps-$n.json"; else echo '[]'; fi ;;
+  "GET "*"/pulls?state=open"*)
+      # #302: landing_open_pr_for reads the open PR list. Serve PRS_FIXTURE (the
+      # set of open agent PRs a pr-mode session has opened), or [] when none yet.
+      if [ -f "${PRS_FIXTURE:-/nonexistent}" ]; then cat "$PRS_FIXTURE"; else echo '[]'; fi ;;
   "DELETE "*"/issues/"*"/labels/"*)
       # Mirror Forgejo: dropping a label id removes it from the issue AND the
       # queue fixture, so a GET later in the SAME tick sees the release — the
@@ -89,6 +113,9 @@ case "$method $url" in
       [ -f "$cf" ] || echo '[]' > "$cf"
       cid="$(( $(cat "$seq_f" 2>/dev/null || echo 1000) + 1 ))"; echo "$cid" > "$seq_f"
       cbody="$(jq -r '.body // ""' <<<"$body" 2>/dev/null || echo "")"
+      # every posted comment body, so a test can assert a claim's exact first
+      # line even after the runner has released (deleted) the claim (#348).
+      printf '%s\n' "$cbody" >> "$FIXTURES_DIR/.comment-posts"
       if jq --argjson id "$cid" --arg b "$cbody" '. + [{id:$id, body:$b}]' "$cf" > "$cf.tmp" 2>/dev/null; then
         mv "$cf.tmp" "$cf"; else rm -f "$cf.tmp"; fi
       echo "{\"id\":$cid}" ;;
@@ -108,6 +135,8 @@ esac
 exit 0
 EOF
 chmod +x "$tmp/bin/curl"
+}
+write_main_curl
 
 # ── fake claude: logs calls; CLAUDE_MODE drives the simulated session ────────
 cat > "$tmp/bin/claude" <<'EOF'
@@ -142,6 +171,11 @@ case "${CLAUDE_MODE:-advance}" in
     emit_result "worked #$n" ;;
   noop)      # the session returns without advancing the ticket
     emit_result "did nothing" ;;
+  open-pr)   # pr-mode (#302): the session opens an agent PR for the ticket and
+             # does NOT close the issue (a human merges). Write the open-PR list so
+             # the runner's landing_open_pr_for sees it on the outcome path.
+    printf '[{"number":500,"state":"open","head":{"ref":"agent/issue-%s"}}]\n' "$n" > "${PRS_FIXTURE:?}"
+    emit_result "opened PR for #$n" ;;
   limit)     # every call answers the weekly-limit refusal
     echo "You've hit your weekly limit · resets Aug 15, 8am (UTC)" ;;
   limit-then-advance)  # first call limited, second (post-failover) works
@@ -214,6 +248,7 @@ run_runner() {
     CURL_LOG="$tmp/curl.log" CLAUDE_CALLS="$tmp/claude.calls" CLAUDE_ENV="$tmp/claude.env" \
     FIXTURES_DIR="$tmp/fixtures" \
     LABELS_FIXTURE="$tmp/fixtures/labels.json" QUEUE_FIXTURE="$tmp/fixtures/queue.json" \
+    PRS_FIXTURE="$tmp/fixtures/prs.json" \
     SESSION_RUNNER_STATE="$tmp/state" SESSION_RUNNER_CHECKOUT="$tmp/checkout" \
     SESSION_RUNNER_LOCK="$tmp/lock" SESSION_RUNNER_OWNER_LOCK="$tmp/owner-lock" \
     SESSION_RUNNER_OFF_FILE="$tmp/off" GIT_LOG="$tmp/git.log" \
@@ -224,6 +259,7 @@ run_runner() {
     HOST_CAPACITY_DRIVE_WANTED="$tmp/hc-drive-wanted-absent-by-default" \
     SESSION_RUNNER_DRIVE_DEFER_COUNT="$tmp/hc-drive-defer-count" \
     SWARM_DB="$tmp/swarm.db" \
+    SWARM_POLICY_FILE="$tmp/push-policy.sh" \
     "$@" bash "$here/../session-runner.sh" 2>&1
 }
 # swarm.db assertions (#81): the mirror is a plain SQLite file — read it back
@@ -240,7 +276,7 @@ except sqlite3.OperationalError:
     pass   # no db yet (an empty tick wrote nothing) — no rows
 PY
 }
-reset_case() { : > "$tmp/curl.log"; : > "$tmp/claude.calls"; : > "$tmp/git.log"; rm -f "$tmp/claude.env" "$tmp/mm.log" "$tmp/state"/* "$tmp/limit-marker" "$tmp/active-marker" "$tmp/off" "$tmp/owner-lock" "$tmp/hc-slot1" "$tmp/hc-slot2" "$tmp/hc-slot1.holder" "$tmp/hc-slot2.holder" "$tmp/drive-wanted" "$tmp/hc-drive-defer-count" "$tmp/swarm.db" "$tmp/swarm.db-wal" "$tmp/swarm.db-shm" "$tmp/fixtures"/comments-*.json "$tmp/fixtures/.comment-seq" 2>/dev/null || true; reset_queue; }
+reset_case() { : > "$tmp/curl.log"; : > "$tmp/claude.calls"; : > "$tmp/git.log"; rm -f "$tmp/claude.env" "$tmp/mm.log" "$tmp/state"/* "$tmp/limit-marker" "$tmp/active-marker" "$tmp/off" "$tmp/owner-lock" "$tmp/hc-slot1" "$tmp/hc-slot2" "$tmp/hc-slot1.holder" "$tmp/hc-slot2.holder" "$tmp/drive-wanted" "$tmp/hc-drive-defer-count" "$tmp/swarm.db" "$tmp/swarm.db-wal" "$tmp/swarm.db-shm" "$tmp/fixtures"/comments-*.json "$tmp/fixtures/.comment-seq" "$tmp/fixtures/prs.json" 2>/dev/null || true; reset_queue; }
 
 # 1: kill switch — env and file both stop pickup before any API call.
 reset_case
@@ -918,6 +954,9 @@ case "${CLAUDE_MODE:-advance}" in
     emit_result "worked #$n" ;;
   noop)
     emit_result "did nothing" ;;
+  open-pr)   # pr-mode (#302): open an agent PR for the ticket; do NOT close it.
+    printf '[{"number":500,"state":"open","head":{"ref":"agent/issue-%s"}}]\n' "$n" > "${PRS_FIXTURE:?}"
+    emit_result "opened PR for #$n" ;;
   limit)
     echo "You've hit your weekly limit · resets Aug 15, 8am (UTC)" ;;
   limit-then-advance)
@@ -1004,6 +1043,7 @@ echo "ok 24a a losing host stands down before the session, releases its claim, b
 # 24b: no competing claim → this host's own marker is the lowest/live claim → it
 #      WINS and runs exactly one session, unchanged from today.
 reset_case
+: > "$tmp/fixtures/.comment-posts"
 mkissue 77
 jq -s '.' "$tmp/fixtures/issue-77.json" > "$tmp/fixtures/queue.json"
 out="$(run_runner)"
@@ -1013,6 +1053,14 @@ grep -q "POST http://fake/api/v1/repos/x/y/issues/77/comments" "$tmp/curl.log" \
 grep -qi "won the cross-host claim" <<<"$out" || fail "24b: the winner must report it won (got: $out)"
 [ "$(wc -l < "$tmp/claude.calls")" = 1 ] || fail "24b: the winner must run exactly one session (got: $(wc -l < "$tmp/claude.calls"))"
 grep -q "outcome: advanced" <<<"$out" || fail "24b: the winner works the ticket to completion (got: $out)"
+# #348: the claim says it is a SESSION claim and carries its ttl, so the swarm
+# janitor ages it instead of looking the runner's pid up among swarm runs (which
+# swept a live session's claim and let a second host start the same ticket); and
+# the winner re-asserts agent-working once the claim comment exists.
+grep -qE '^swarm-claim host=[^ ]+ run=[0-9]+ session-ttl=[0-9]+$' "$tmp/fixtures/.comment-posts" \
+  || fail "24b: the session claim must carry session-ttl=<seconds> on its first line (got: $(head -1 "$tmp/fixtures/.comment-posts"))"
+[ "$(grep -c "POST http://fake/api/v1/repos/x/y/issues/77/labels" "$tmp/curl.log")" -ge 2 ] \
+  || fail "24b: the winner must re-assert agent-working after it wins the claim (#348)"
 echo "ok 24b a host whose claim is lowest wins and runs exactly one session"
 
 # 24d (#1412): a TOMBSTONE claim — a peer's `swarm-claim` comment with a LOWER
@@ -1073,4 +1121,141 @@ grep -qi "proceeding unarbitrated" <<<"$out" || fail "24c: an unpostable claim m
 [ "$(wc -l < "$tmp/claude.calls")" = 1 ] || fail "24c: the unarbitrated fallback must still run one session (got: $(wc -l < "$tmp/claude.calls"))"
 echo "ok 24c a failed claim post falls back to running (never a wedge)"
 
-echo "session-runner: 24 groups passed"
+# 25: pr-mode landing (#302, replacing the #165 skip) — a ticket that lands by PR
+#     is now WORKED by the session: the prompt branches on the mode the runner
+#     resolves, opening the ticket's PR through the rail (land-pr.sh) instead of
+#     pushing main, and the runner counts an OPEN agent PR as advanced, dropping
+#     ready-for-session so the drained ticket leaves the session lane. Only an
+#     UNRESOLVABLE landing mode stays a skip (#165's fail-closed posture).
+#     landing_mode_for (#164) resolves BOTH the per-ticket `landing-pr` label and a
+#     pr-DEFAULT repo. Core resolution lives in tests/landing-lib-test.sh; these
+#     assert the session-runner WIRING.
+
+# group 24c swapped in a minimal curl (no /pulls route, claim POST returns no id);
+# restore the full stub so these groups exercise the real landing_open_pr_for wiring.
+write_main_curl
+
+# 25a: a `landing-pr`-labelled ticket (push-default repo) is picked and worked — the
+#      session opens its PR, the runner recognises it, drops ready-for-session, and
+#      counts the ticket advanced (not a failed attempt).
+reset_case
+mkissue 60 '{"id":200,"name":"landing-pr"}'
+jq -s '.' "$tmp/fixtures/issue-60.json" > "$tmp/fixtures/queue.json"
+out="$(run_runner CLAUDE_MODE=open-pr)"
+grep -q "picked #60" <<<"$out" || fail "25a: a landing-pr ticket must now be picked and worked (#302) (got: $out)"
+grep -q "POST http://fake/api/v1/repos/x/y/issues/60/labels" "$tmp/curl.log" \
+  || fail "25a: the pr ticket must be claimed agent-working"
+[ "$(wc -l < "$tmp/claude.calls")" = 1 ] || fail "25a: the pr session must run exactly once"
+grep -q "opened PR #500" <<<"$out" || fail "25a: the runner must recognise the opened PR (got: $out)"
+grep -q "outcome: advanced" <<<"$out" || fail "25a: an opened-PR pr ticket must be advanced, not a failed attempt (got: $out)"
+grep -q "DELETE http://fake/api/v1/repos/x/y/issues/60/labels/106" "$tmp/curl.log" \
+  || fail "25a: the drained pr ticket must lose ready-for-session (leave the session lane)"
+[ -f "$tmp/state/fail-60" ] && fail "25a: an advanced pr ticket must not leave a fail counter"
+echo "ok 25a a landing-pr ticket is worked through a PR and counted advanced (#302)"
+
+# 25b: a pr-mode ticket ALREADY handed to review (an open agent PR exists) is
+#      skipped at pick time — the runner drops ready-for-session so it leaves the
+#      session lane, burns no attempt and starts no session, and the push ticket
+#      behind it is picked. (Also self-heals a session killed after opening the PR.)
+reset_case
+mkissue 60 '{"id":200,"name":"landing-pr"}'
+mkissue 61
+jq -s '.' "$tmp/fixtures/issue-60.json" "$tmp/fixtures/issue-61.json" > "$tmp/fixtures/queue.json"
+printf '[{"number":500,"state":"open","head":{"ref":"agent/issue-60"}}]\n' > "$tmp/fixtures/prs.json"
+out="$(run_runner)"
+grep -q "already has an open PR (#500)" <<<"$out" \
+  || fail "25b: a pr ticket with an open PR must be recognised as handed to review (got: $out)"
+grep -q "DELETE http://fake/api/v1/repos/x/y/issues/60/labels/106" "$tmp/curl.log" \
+  || fail "25b: the reviewed pr ticket must lose ready-for-session at pick time"
+grep -q "POST http://fake/api/v1/repos/x/y/issues/60/labels" "$tmp/curl.log" \
+  && fail "25b: a handed-to-review ticket must never be claimed"
+[ -f "$tmp/state/fail-60" ] && fail "25b: a handed-to-review skip must burn no attempt"
+grep -q "picked #61" <<<"$out" || fail "25b: the push ticket behind it must still be picked (got: $out)"
+echo "ok 25b a pr ticket already in review is unqueued and skipped; the push ticket behind it is worked"
+
+# 25c: a pr-DEFAULT repo (SWARM_POLICY_FILE sets LANDING=pr) now WORKS even an
+#      UNLABELLED ticket through a PR — the whole point of #302 (pr-default repos
+#      had no unattended session lane at all under #165).
+reset_case
+printf 'LANDING=pr\n' > "$tmp/pr-policy.sh"
+mkissue 62
+jq -s '.' "$tmp/fixtures/issue-62.json" > "$tmp/fixtures/queue.json"
+out="$(run_runner SWARM_POLICY_FILE="$tmp/pr-policy.sh" CLAUDE_MODE=open-pr)"
+grep -q "picked #62" <<<"$out" || fail "25c: a pr-default repo must now work an unlabelled ticket via PR (#302) (got: $out)"
+grep -q "opened PR #500" <<<"$out" || fail "25c: the runner must recognise the opened PR in a pr-default repo (got: $out)"
+grep -q "outcome: advanced" <<<"$out" || fail "25c: the pr-default ticket must be advanced (got: $out)"
+grep -q "DELETE http://fake/api/v1/repos/x/y/issues/62/labels/106" "$tmp/curl.log" \
+  || fail "25c: the drained pr-default ticket must lose ready-for-session"
+echo "ok 25c a pr-default repo works an unlabelled ticket through a PR (#302)"
+
+# 25d: a ticket with an OFF-ALLOWLIST landing-* label makes landing_mode_for return
+#      non-zero (it refuses to guess how the ticket lands) — the runner still skips
+#      it fail-CLOSED rather than risk landing it the wrong way (#165 posture kept).
+reset_case
+mkissue 63 '{"id":201,"name":"landing-bogus"}'
+jq -s '.' "$tmp/fixtures/issue-63.json" > "$tmp/fixtures/queue.json"
+out="$(run_runner)"
+grep -q "picked #63" <<<"$out" && fail "25d: an unresolvable landing label must not be picked (got: $out)"
+grep -qi "cannot resolve how it lands" <<<"$out" || fail "25d: the fail-closed skip must say it cannot resolve landing (got: $out)"
+[ -s "$tmp/claude.calls" ] && fail "25d: a fail-closed skip must start no session"
+echo "ok 25d a ticket with an off-allowlist landing-* label is still skipped fail-closed (#165)"
+
+# 25e: the advance is gated on the PR, not on running — a pr-mode session that
+#      opened NO PR and left the ticket ready-for-session is NOT-advanced and counts
+#      a failed attempt; ready-for-session is NOT dropped.
+reset_case
+mkissue 64 '{"id":200,"name":"landing-pr"}'
+jq -s '.' "$tmp/fixtures/issue-64.json" > "$tmp/fixtures/queue.json"
+out="$(run_runner CLAUDE_MODE=noop)"
+grep -q "picked #64" <<<"$out" || fail "25e: the pr ticket must be picked (got: $out)"
+grep -q "outcome: not advanced" <<<"$out" || fail "25e: a pr session that opened no PR must be not-advanced (got: $out)"
+[ "$(cat "$tmp/state/fail-64")" = 1 ] || fail "25e: a not-advanced pr session must count a failed attempt"
+grep -q "DELETE http://fake/api/v1/repos/x/y/issues/64/labels/106" "$tmp/curl.log" \
+  && fail "25e: with no PR opened, ready-for-session must NOT be dropped"
+echo "ok 25e a pr session that opens no PR is not-advanced and keeps the ticket queued"
+
+# 26: self-refresh BEFORE the pick (#319) — a tick whose queue is ALL skip-tickets
+#     (nothing workable: a deferred one + a dep-blocked one) must STILL fetch and
+#     reset the dedicated checkout to origin/main. Before #319 the fetch/reset ran
+#     only AFTER a pick, so a skip-everything queue froze the checkout and a host
+#     ran a week-old runner (#302 never arrived). The refresh now rides the owner
+#     lock at the top of the tick, so it runs whether or not a ticket is picked.
+reset_case
+mkissue 12 '{"id":98,"name":"deferred"}'
+mkissue 20
+echo '[{"number":9,"state":"open","title":"blocker"}]' > "$tmp/fixtures/deps-20.json"
+jq -s '.' "$tmp/fixtures/issue-12.json" "$tmp/fixtures/issue-20.json" > "$tmp/fixtures/queue.json"
+out="$(run_runner)"
+grep -qi "nothing workable" <<<"$out" || fail "26 setup: the queue must leave nothing workable (got: $out)"
+grep -q "fetch -q origin" "$tmp/git.log" \
+  || fail "26: a skip-everything tick must still fetch the dedicated checkout (got: $(cat "$tmp/git.log"))"
+grep -q "reset -q --hard origin/main" "$tmp/git.log" \
+  || fail "26: a skip-everything tick must still reset the checkout to origin/main (#319; got: $(cat "$tmp/git.log"))"
+echo "ok 26 a skip-everything tick still refreshes the dedicated checkout to origin/main (#319)"
+
+# 27: the refresh RE-EXECs the fresh entrypoint (#319) — when the checkout's own
+#     .sandcastle/session-runner.sh now DIFFERS from the running one (a pin the
+#     host hadn't adopted because every ticket was skipped), the runner must
+#     re-exec the fresh copy THIS tick so the new pick/skip rules apply at once,
+#     not only on the next cron run. Stand in a sentinel fresh copy (the git stub
+#     is a no-op, so it survives the reset) and prove it runs INSTEAD of the old
+#     flow. The checkout-owner lock is dropped before the exec so the fresh runner
+#     would re-acquire cleanly (here the sentinel takes no lock).
+reset_case
+mkdir -p "$tmp/checkout/.sandcastle"
+cat > "$tmp/checkout/.sandcastle/session-runner.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "session-runner: FRESH-REEXEC-SENTINEL ran"
+exit 0
+EOF
+out="$(run_runner)"
+grep -q "re-execing the fresh runner" <<<"$out" \
+  || fail "27: a changed entrypoint must announce the re-exec (got: $out)"
+grep -q "FRESH-REEXEC-SENTINEL ran" <<<"$out" \
+  || fail "27: the re-exec must run the FRESH checkout copy (got: $out)"
+grep -q "picked #25" <<<"$out" \
+  && fail "27: after re-exec the OLD flow must not continue to pick (got: $out)"
+rm -rf "$tmp/checkout/.sandcastle"
+echo "ok 27 a changed entrypoint re-execs the fresh checkout copy before the pick (#319)"
+
+echo "session-runner: 27 groups passed"

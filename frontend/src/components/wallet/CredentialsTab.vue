@@ -1,8 +1,9 @@
 <template>
   <div class="credentials-tab">
     <!-- View toggle & filter -->
-    <div class="view-toolbar">
-      <div class="view-toggle">
+    <div class="view-toolbar" :class="{ 'no-toggle': isCoa }">
+      <!-- Coa builds render credentials as cards only — no Cards/Graph toggle. -->
+      <div v-if="!isCoa" class="view-toggle">
         <button
           class="toggle-btn"
           :class="{ active: viewMode === 'cards' }"
@@ -52,49 +53,34 @@
       <p>Toggle "Show revoked" to view revoked credentials.</p>
     </div>
 
-    <!-- Card list view -->
-    <div v-else-if="viewMode === 'cards'" class="cards-grid">
-      <div
+    <!-- Card list view (the only view in a Coa build) -->
+    <div v-else-if="!showGraph" class="cards-grid">
+      <WalletCredentialCard
         v-for="cred in filteredCredentials"
         :key="cred.said"
-        class="credential-card"
-        :class="{ 'card-issued': isIssuedByMe(cred) }"
-        @click="selectedCredential = cred"
-      >
-        <div class="card-top">
-          <div class="card-icon" :class="{ 'matou-icon': isMatouCredential(cred) }">
-            <img v-if="isMatouCredential(cred)" src="../../assets/images/matou-bird-logo-blue.svg" alt="Mātou" class="matou-logo" />
-            <q-icon v-else :name="credentialIconName(cred)" size="20px" />
-          </div>
-          <div class="card-top-right">
-            <span v-if="isIssuedByMe(cred)" class="direction-badge direction-issued">Issued</span>
-            <span v-else class="direction-badge direction-received">Received</span>
-            <span class="status-badge" :class="statusClass(cred.status)">
-              {{ statusLabel(cred.status) }}
-            </span>
-          </div>
-        </div>
-        <div class="card-body">
-          <h4 class="card-title">{{ credentialTitle(cred) }}</h4>
-          <p class="card-role" v-if="credentialSubtitle(cred)">{{ credentialSubtitle(cred) }}</p>
-          <p class="card-community">{{ credentialDescription(cred) }}</p>
-          <p v-if="isIssuedByMe(cred)" class="card-recipient">To: {{ issuerDisplayName(cred.issueeAid) }}</p>
-        </div>
-        <div class="card-footer">
-          <span class="card-date">{{ formatDate(cred.issuedAt) }}</span>
-        </div>
-      </div>
+        :credential="cred"
+        :name="credentialTitle(cred)"
+        :tag="isIssuedByMe(cred) ? 'Issued' : 'Received'"
+        :status-label="statusLabel(cred.status)"
+        :status-tone="isRevoked(cred.status) ? 'warning' : 'healthy'"
+        :subtitle="credentialSubtitle(cred)"
+        :service-name="credentialServiceName(cred)"
+        :description="credentialDescription(cred)"
+        :footer="formatDate(cred.issuedAt)"
+        :recipient="isIssuedByMe(cred) ? `To: ${issuerDisplayName(cred.issueeAid)}` : ''"
+        @open="selectedCredential = cred"
+      />
     </div>
 
-    <!-- Relationship graph view -->
+    <!-- Relationship graph view (never rendered in a Coa build) -->
     <div v-else class="graph-view" ref="graphContainer">
       <svg :width="graphWidth" :height="graphHeight" class="graph-svg">
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
-            <polygon points="0 0, 10 4, 0 8" fill="var(--matou-muted-foreground, #9ca3af)" />
+            <polygon points="0 0, 10 4, 0 8" fill="var(--matou-muted-foreground)" />
           </marker>
           <marker id="arrowhead-issued" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
-            <polygon points="0 0, 10 4, 0 8" fill="#e57e24" />
+            <polygon points="0 0, 10 4, 0 8" fill="var(--matou-accent-warm)" />
           </marker>
         </defs>
         <!-- Connection lines — one per unique counterparty -->
@@ -105,7 +91,7 @@
           :y1="lineStartY(cp.credentials[0], idx)"
           :x2="lineEndX(cp.credentials[0], idx)"
           :y2="lineEndY(cp.credentials[0], idx)"
-          :stroke="isIssuedByMe(cp.credentials[0]) ? '#e57e24' : 'var(--matou-muted-foreground, #9ca3af)'"
+          :stroke="isIssuedByMe(cp.credentials[0]) ? 'var(--matou-accent-warm)' : 'var(--matou-muted-foreground)'"
           stroke-width="1.5"
           stroke-dasharray="6,4"
           :marker-end="isIssuedByMe(cp.credentials[0]) ? 'url(#arrowhead-issued)' : 'url(#arrowhead)'"
@@ -135,7 +121,7 @@
         :style="{ left: outerNodeX(idx) + 'px', top: outerNodeY(idx) + 'px' }"
       >
         <div class="node-circle issuer" :class="isOrgIssuer(cp.aid) ? '' : issuerAvatarColor(cp.aid)">
-          <img v-if="isOrgIssuer(cp.aid)" src="../../assets/images/matou-bird-logo-blue.svg" alt="Mātou" class="node-logo" />
+          <img v-if="isOrgIssuer(cp.aid)" :src="kitLogo" :alt="KIT.brand.name" class="node-logo" />
           <img v-else-if="issuerAvatarUrl(cp.aid)" :src="issuerAvatarUrl(cp.aid)" alt="Counterparty" class="node-avatar" />
           <span v-else class="node-initials">{{ issuerInitials(cp.aid) }}</span>
         </div>
@@ -194,21 +180,30 @@ import { useProfilesStore } from 'stores/profiles';
 import { useIdentityStore } from 'stores/identity';
 import { useAppStore } from 'stores/app';
 import { getFileUrl } from 'src/lib/api/client';
+import { credentialTitle as resolveCredentialTitle } from 'src/lib/credentialAppearance';
+import {
+  credentialCardServiceName as credentialServiceName,
+  credentialStatusLabel as statusLabel,
+  isRevokedStatus as isRevoked,
+  isIssuedByMe as isIssuedByMeHelper,
+} from 'src/lib/walletCredential';
+import { isCoaBuild } from 'src/kit/build';
+import { KIT } from 'src/generated/kit';
+import kitLogo from 'src/assets/kit/logo.png';
 import CredentialDetailDialog from './CredentialDetailDialog.vue';
+import WalletCredentialCard from './WalletCredentialCard.vue';
 
 const walletStore = useWalletStore();
 const profilesStore = useProfilesStore();
 const identityStore = useIdentityStore();
 const appStore = useAppStore();
 
+// Coa builds hide the credentials graph: no Cards/Graph toggle, cards only.
+const isCoa = isCoaBuild();
 const viewMode = ref<'cards' | 'graph'>('cards');
+const showGraph = computed(() => !isCoa && viewMode.value === 'graph');
 const selectedCredential = ref<WalletCredential | null>(null);
 const showRevoked = ref(false);
-
-function isRevoked(status: string): boolean {
-  const s = status.toLowerCase();
-  return s === '1' || s === 'revoked';
-}
 
 const filteredCredentials = computed(() => {
   if (showRevoked.value) return walletStore.credentials;
@@ -307,11 +302,14 @@ function credentialIconName(cred: WalletCredential): string {
   return 'groups'; // membership
 }
 
-// Credential-type-specific card text
+// Credential-type-specific card text. A styled (a.display) or committee
+// credential overrides the legacy title via resolveCredentialTitle.
 function credentialTitle(cred: WalletCredential): string {
-  if (cred.schemaSaid === ENDORSEMENT_SCHEMA_SAID) return 'Membership Endorsement';
-  if (cred.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID) return cred.eventName || 'Event Attendance';
-  return cred.schemaTitle || cred.role || 'Credential';
+  let legacy: string;
+  if (cred.schemaSaid === ENDORSEMENT_SCHEMA_SAID) legacy = 'Membership Endorsement';
+  else if (cred.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID) legacy = cred.eventName || 'Event Attendance';
+  else legacy = cred.schemaTitle || cred.role || 'Credential';
+  return resolveCredentialTitle(cred, legacy);
 }
 
 function credentialSubtitle(cred: WalletCredential): string {
@@ -339,7 +337,8 @@ function credentialDescription(cred: WalletCredential): string {
       : issuerDisplayName(cred.issuerAid);
     return isIssuedByMe(cred) ? `Issued to ${name}` : `Confirmed by ${name}`;
   }
-  return cred.communityName || 'Mātou community';
+  if (credentialServiceName(cred) && cred.schemaDescription) return cred.schemaDescription;
+  return cred.communityName || `${KIT.brand.name} community`;
 }
 
 const outerNodeRadius = 36; // half of outer node size (72px)
@@ -447,32 +446,14 @@ function isOrgIssuer(aid: string): boolean {
   return !!appStore.orgAid && aid === appStore.orgAid;
 }
 
-function isMatouCredential(cred: WalletCredential): boolean {
-  return (cred.schemaTitle || '').toLowerCase().includes('matou');
-}
-
 function isIssuedByMe(cred: WalletCredential): boolean {
   const myAid = identityStore.currentAID?.prefix || identityStore.aidPrefix;
-  return !!myAid && cred.issueeAid !== myAid;
+  return isIssuedByMeHelper(cred, myAid || '');
 }
 
 /** For graph: the "other party" AID — issuee for issued creds, issuer for received */
 function counterpartyAid(cred: WalletCredential): string {
   return isIssuedByMe(cred) ? cred.issueeAid : cred.issuerAid;
-}
-
-function statusClass(status: string): string {
-  const s = status.toLowerCase();
-  if (s === 'issued' || s === 'valid' || s === '0') return 'status-active';
-  if (s === 'revoked' || s === '1') return 'status-revoked';
-  return 'status-pending';
-}
-
-function statusLabel(status: string): string {
-  const s = status.toLowerCase();
-  if (s === '0' || s === 'issued' || s === 'valid') return 'Active';
-  if (s === '1' || s === 'revoked') return 'Revoked';
-  return status || 'Pending';
 }
 
 function formatDate(dateStr: string): string {
@@ -500,6 +481,11 @@ function formatDate(dateStr: string): string {
   justify-content: space-between;
 }
 
+/* With the toggle hidden (Coa build) the revoked filter stays right-aligned. */
+.view-toolbar.no-toggle {
+  justify-content: flex-end;
+}
+
 .view-toggle {
   display: flex;
   gap: 0.5rem;
@@ -510,13 +496,13 @@ function formatDate(dateStr: string): string {
   align-items: center;
   gap: 0.375rem;
   font-size: 0.8125rem;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   cursor: pointer;
   user-select: none;
 }
 
 .revoked-toggle input[type="checkbox"] {
-  accent-color: var(--matou-primary, #1e5f74);
+  accent-color: var(--matou-primary);
   cursor: pointer;
 }
 
@@ -526,9 +512,9 @@ function formatDate(dateStr: string): string {
   gap: 0.375rem;
   padding: 0.5rem 1rem;
   background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius, 0.75rem);
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
@@ -536,13 +522,13 @@ function formatDate(dateStr: string): string {
 }
 
 .toggle-btn:hover {
-  border-color: var(--matou-primary, #1e5f74);
-  color: var(--matou-foreground, #1f2937);
+  border-color: var(--matou-primary);
+  color: var(--matou-foreground);
 }
 
 .toggle-btn.active {
-  background: var(--matou-primary, #1e5f74);
-  border-color: var(--matou-primary, #1e5f74);
+  background: var(--matou-primary);
+  border-color: var(--matou-primary);
   color: var(--matou-primary-foreground, white);
 }
 
@@ -556,7 +542,7 @@ function formatDate(dateStr: string): string {
   justify-content: center;
   gap: 0.75rem;
   padding: 3rem 1rem;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   text-align: center;
 }
 
@@ -573,14 +559,14 @@ function formatDate(dateStr: string): string {
 }
 
 .error-state {
-  color: var(--matou-destructive, #c8463a);
+  color: var(--matou-destructive);
 }
 
 .empty-state h3 {
   margin: 0;
   font-size: 1rem;
   font-weight: 600;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
 }
 
 .empty-state p {
@@ -588,161 +574,27 @@ function formatDate(dateStr: string): string {
   font-size: 0.875rem;
 }
 
-/* Card grid – single column so each card is full width */
+/* Card grid — a ROW of cards at the IDSS panel card's width (credentialCard.scss
+   .oc-cred-cards: ~220px columns, 12px gap, cards stretch to the row's height),
+   wrapping onto further rows. One column only on a phone. */
 .cards-grid {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 220px));
+  gap: 12px;
+  align-items: stretch;
 }
 
-.credential-card {
-  background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
-  border-radius: var(--matou-radius, 0.75rem);
-  padding: 1.25rem;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.credential-card:hover {
-  border-color: var(--matou-primary, #1e5f74);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
-}
-
-.credential-card.card-issued {
-  border-left: 3px solid #e57e24;
-}
-
-.credential-card.card-issued:hover {
-  border-color: #e57e24;
-  border-left: 3px solid #e57e24;
-}
-
-.card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-top-right {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.direction-badge {
-  font-size: 0.65rem;
-  font-weight: 600;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.direction-received {
-  background: #e8f4f8;
-  color: var(--matou-primary, #1e5f74);
-}
-
-.direction-issued {
-  background: #fef3e6;
-  color: #e57e24;
-}
-
-.card-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 0.5rem;
-  background: linear-gradient(135deg, var(--matou-primary, #1e5f74), var(--matou-accent, #4a9d9c));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-}
-
-.card-icon.matou-icon {
-  background: white;
-  border: 1px solid var(--matou-border, #e5e7eb);
-}
-
-.matou-logo {
-  width: 22px;
-  height: 22px;
-}
-
-.status-badge {
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 0.2rem 0.625rem;
-  border-radius: 999px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.status-active {
-  background: #ecfdf5;
-  color: #059669;
-}
-
-.status-revoked {
-  background: #fef2f2;
-  color: #dc2626;
-}
-
-.status-pending {
-  background: #fffbeb;
-  color: #d97706;
-}
-
-.card-body {
-  flex: 1;
-}
-
-.card-title {
-  margin: 0;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  color: var(--matou-foreground, #1f2937);
-}
-
-.card-role {
-  margin: 0.125rem 0 0;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--matou-foreground, #374151);
-}
-
-.card-community {
-  margin: 0.25rem 0 0;
-  font-size: 0.8125rem;
-  color: var(--matou-muted-foreground, #6b7280);
-}
-
-.card-recipient {
-  margin: 0.25rem 0 0;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: #e57e24;
-}
-
-.card-footer {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.card-date {
-  font-size: 0.75rem;
-  color: var(--matou-muted-foreground, #9ca3af);
+@media (max-width: 480px) {
+  .cards-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Graph view */
 .graph-view {
   position: relative;
   background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius, 0.75rem);
   overflow: hidden;
   min-height: 800px;
@@ -780,15 +632,15 @@ function formatDate(dateStr: string): string {
 }
 
 .node-circle.you {
-  background: linear-gradient(135deg, var(--matou-primary, #1e5f74), var(--matou-accent, #4a9d9c));
+  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
   width: 84px;
   height: 84px;
   font-size: 1.0625rem;
 }
 
 .node-circle.issuer {
-  background: var(--matou-secondary, #e8f4f8);
-  color: var(--matou-primary, #1e5f74);
+  background: var(--matou-secondary);
+  color: var(--matou-primary);
   cursor: default;
   transition: transform 0.15s ease;
 }
@@ -796,7 +648,7 @@ function formatDate(dateStr: string): string {
 .node-circle.issuer.gradient-1 { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
 .node-circle.issuer.gradient-2 { background: linear-gradient(135deg, #ec4899, #f43f5e); }
 .node-circle.issuer.gradient-3 { background: linear-gradient(135deg, #14b8a6, #06b6d4); }
-.node-circle.issuer.gradient-4 { background: linear-gradient(135deg, rgba(30, 95, 116, 0.8), rgba(74, 157, 156, 0.8)); }
+.node-circle.issuer.gradient-4 { background: linear-gradient(135deg, color-mix(in srgb, var(--matou-primary) 80%, transparent), color-mix(in srgb, var(--matou-accent) 80%, transparent)); }
 
 .node-avatar {
   width: 100%;
@@ -819,7 +671,7 @@ function formatDate(dateStr: string): string {
 .node-label {
   font-size: 0.8125rem;
   font-weight: 500;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   white-space: nowrap;
   max-width: 130px;
   overflow: hidden;
@@ -833,7 +685,7 @@ function formatDate(dateStr: string): string {
   top: 50%;
   left: calc(100% + 0.5rem);
   transform: translateY(-50%);
-  background: var(--matou-foreground, #1f2937);
+  background: var(--matou-foreground);
   color: white;
   padding: 0.5rem 0.75rem;
   border-radius: 0.375rem;
@@ -873,12 +725,12 @@ function formatDate(dateStr: string): string {
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  background: var(--matou-secondary, #e8f4f8);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  background: var(--matou-secondary);
+  border: 1px solid var(--matou-border);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--matou-primary, #1e5f74);
+  color: var(--matou-primary);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
   transition: transform 0.15s ease;
 }
@@ -893,7 +745,7 @@ function formatDate(dateStr: string): string {
   top: 50%;
   left: calc(100% + 0.5rem);
   transform: translateY(-50%);
-  background: var(--matou-foreground, #1f2937);
+  background: var(--matou-foreground);
   color: white;
   padding: 0.5rem 0.75rem;
   border-radius: 0.375rem;

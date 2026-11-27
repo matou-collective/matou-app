@@ -82,7 +82,9 @@ func TestIsValidRole(t *testing.T) {
 		{"Verified Member", false},
 		{"SuperAdmin", false},
 		{"", false},
-		{"member", false},
+		{"member", true},   // the IDSS member role (IDSSRoleMember) maps onto Member
+		{"operator", true}, // the IDSS steward role maps onto Founding Member
+		{"MEMBER", false},  // only the exact IDSS strings map — no case folding
 	}
 
 	for _, tt := range tests {
@@ -302,5 +304,24 @@ func TestValidateCredentialJSON(t *testing.T) {
 	_, err = client.ValidateCredentialJSON("{invalid}")
 	if err == nil {
 		t.Error("expected error for invalid JSON")
+	}
+}
+
+// IDSS issues Membership with role "operator" (steward) or "member" (idss
+// credschema). Both must validate and carry the permissions of the builtin role
+// they map onto; before this every IDSS credential failed to sync with
+// "invalid role: operator" and the founder never reached the dashboard.
+func TestIDSSRolesMapOntoBuiltins(t *testing.T) {
+	if !IsValidRole("operator") || !IsValidRole("member") {
+		t.Fatalf("IDSS roles must validate: operator=%v member=%v", IsValidRole("operator"), IsValidRole("member"))
+	}
+	if got, want := GetPermissionsForRole("operator"), GetPermissionsForRole("Founding Member"); len(got) != len(want) {
+		t.Errorf("operator permissions = %v, want Founding Member's %v", got, want)
+	}
+	if got := GetPermissionsForRole("member"); len(got) != 2 {
+		t.Errorf("member permissions = %v, want Member's", got)
+	}
+	if IsValidRole("Operator") || IsValidRole("admin") {
+		t.Error("only the exact IDSS role strings map; anything else stays invalid")
 	}
 }

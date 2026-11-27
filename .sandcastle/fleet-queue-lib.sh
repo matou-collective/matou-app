@@ -1,0 +1,566 @@
+#!/usr/bin/env bash
+# fleet-queue-lib.sh — the fleet-wide ticket order (#301).
+#
+# Before #301 every consumer repo's swarm leg read ONLY its own ready list, so
+# there was no order across repos at all: the first legs to win a host's two
+# slots kept them, and a ticket filed an hour earlier in a quiet repo waited
+# behind a loud repo's backlog. Ben's ruling (2026-10-22, on #301): ONE ticket
+# per run; when a ticket closes, its dependants are worked next; otherwise the
+# next ticket in line across the whole fleet — `priority` first, then the
+# filing date. This library is that order, pure and offline-testable:
+#
+#   collect   every registered repo's OWN vendored list-ready-tasks.sh, merged
+#   order     rank (priority / drive-blocker) → created_at → number
+#   promote   a closed ticket's dependants (Forgejo `blocks`) to the front
+#   cache     the order, on the host, so a leg can see where it stands
+#   stamp     the last dispatch, so the tick never piles on its own pick
+#   arbitrate a marker comment on the ticket, so ONE host dispatches it (#351)
+#   dispatch  workflow_dispatch of ONE repo with inputs.ticket + inputs.host
+#
+# Each repo's own lister is the authority on what is ready THERE (its DAG,
+# its open agent PRs, its standing drive, its landing parity): the fleet view
+# is the union of those answers, never a second opinion over the raw tracker —
+# an org-wide label search would keep "dispatching" a repo for tickets that
+# repo's lister hides, forever. No repo name, host or product path lives here:
+# the caller (the generated host tick, onboarding/host-state-lib.sh) passes
+# `<checkout>:<slug>` pairs from the host registry, and the API root is read
+# from a checkout's own swarm-identity.sh.
+#
+# Offline-tested by tests/fleet-queue-lib-test.sh (shimmed curl, fake listers).
+
+if [ -z "${__SWARM_FLEET_QUEUE_LIB:-}" ]; then
+__SWARM_FLEET_QUEUE_LIB=1
+
+_FLEET_QUEUE_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The drive predicate + the pooled slot paths (host_capacity_drive_wanted,
+# HOST_CAPACITY_SLOTS). host-capacity-lib.sh has no source guard and is
+# idempotent, but a caller that already sourced it keeps its own state.
+if ! command -v host_capacity_drive_wanted >/dev/null 2>&1; then
+  # shellcheck source=host-capacity-lib.sh
+  . "$_FLEET_QUEUE_HERE/host-capacity-lib.sh"
+fi
+HOST_CAPACITY_STATE_DIR="${HOST_CAPACITY_STATE_DIR:-$HOME/swarm/state}"
+
+# Knobs (seconds). The cache TTL must outlive the tick cadence AND the
+# redispatch window, since a tick that skips on a fresh stamp refreshes nothing.
+FLEET_QUEUE_CACHE_TTL="${FLEET_QUEUE_CACHE_TTL:-600}"
+FLEET_QUEUE_CLOSE_TTL="${FLEET_QUEUE_CLOSE_TTL:-900}"
+FLEET_QUEUE_REDISPATCH="${FLEET_QUEUE_REDISPATCH:-300}"
+FLEET_QUEUE_MAX_TIME="${FLEET_QUEUE_MAX_TIME:-30}"
+# Dispatch arbitration (#351). A marker holds its ticket for MARK_TTL seconds:
+# long enough to cover dispatch → the leg's in-sandbox claim (387 s on the run
+# that prompted this; the claim relabels the ticket and it leaves every lister),
+# short enough that a dispatch that died frees its ticket for another host. A
+# host arbitrates at most ARBITRATE_MAX tickets from the front of the order per
+# call, so a long queue held elsewhere costs a bounded number of tracker reads.
+FLEET_QUEUE_MARK_TTL="${FLEET_QUEUE_MARK_TTL:-600}"
+FLEET_QUEUE_ARBITRATE_MAX="${FLEET_QUEUE_ARBITRATE_MAX:-5}"
+# The ceiling (seconds) past which a dispatched-but-unpicked leg's marker is
+# released EARLY (#376 item 1), freeing its ticket for another host rather than
+# parking it for the full MARK_TTL. A leg the forge still shows `waiting` this long
+# has not been picked within one report-staleness window (the #373 horizon:
+# FLEET_DISPATCH_QUEUE_LAG_MAX / two host ticks); the MARK_TTL sweep stays the
+# backstop for a leg that cannot be read. 0 disables the early release (pre-#376:
+# only the TTL sweep frees an unpicked leg's marker).
+FLEET_QUEUE_LEG_WAIT_MAX="${FLEET_QUEUE_LEG_WAIT_MAX:-240}"
+# The lister / identity basenames looked up in each checkout (tests swap them).
+FLEET_QUEUE_LISTER="${FLEET_QUEUE_LISTER:-list-ready-tasks.sh}"
+FLEET_QUEUE_IDENTITY="${FLEET_QUEUE_IDENTITY:-swarm-identity.sh}"
+
+# ── stand-down of a host whose dispatches never claim (#315) ─────────────────
+# A dispatch that dies before it can claim (a sick host: no disk to mkdir the
+# runner's act cache, a name it cannot resolve — #191) leaves the fleet head
+# unchanged, so once the redispatch window lapses this host dispatches the SAME
+# ticket to itself forever. The caller counts consecutive unclaimed dispatches
+# (the fleet head is still the ticket we last stamped) and, past the threshold,
+# stands this host down with a DECAYING backoff so a recovered host rejoins on
+# its own the moment a probe dispatch claims.
+FLEET_QUEUE_STRIKES_MAX="${FLEET_QUEUE_STRIKES_MAX:-3}"   # unclaimed dispatches before standing down
+FLEET_QUEUE_BACKOFF_BASE="${FLEET_QUEUE_BACKOFF_BASE:-600}"  # first backoff, seconds
+FLEET_QUEUE_BACKOFF_MAX="${FLEET_QUEUE_BACKOFF_MAX:-7200}"   # backoff cap, seconds (doubles each strike)
+
+# ── disk-headroom floor for slot_free (#315) ─────────────────────────────────
+# A host with no room to mkdir the runner's act cache reports a free slot today
+# (slot_free gates only on a drive reservation and a pooled flock), wins the
+# dispatch, and dies at `workflow prepared` before step one. A declared floor
+# (the registry's `min-free-gb`, rendered into FLEET_QUEUE_MIN_FREE_GB) checked
+# against the filesystem that holds the act cache closes that: 0 disables it, so
+# a host that declares nothing behaves exactly as before. The cache path is
+# $HOME/.cache/act by default (the act runner's own layout — not `/`, which can
+# have room while the runner's $HOME does not); overridable for a test or an
+# unusual host, never a product literal in the harness.
+FLEET_QUEUE_MIN_FREE_GB="${FLEET_QUEUE_MIN_FREE_GB:-0}"
+FLEET_QUEUE_ACT_CACHE="${FLEET_QUEUE_ACT_CACHE:-$HOME/.cache/act}"
+
+# _fleet_queue_file <checkout> <basename> — the VENDORED copy (.sandcastle/)
+# when the checkout is a consumer, else the root copy (the self-hosting
+# factory checkout); rc 1 when neither exists (a pin that predates the file).
+_fleet_queue_file() {
+  if [ -f "$1/.sandcastle/$2" ]; then printf '%s' "$1/.sandcastle/$2"
+  elif [ -f "$1/$2" ]; then printf '%s' "$1/$2"
+  else return 1; fi
+}
+
+# fleet_queue_api_root <checkout> -> "<server>/api/v1", read from the
+# checkout's own identity layer in a subshell (never this shell's FORGEJO_API,
+# which a host env may carry for a DIFFERENT repo).
+fleet_queue_api_root() {
+  local f
+  f="$(_fleet_queue_file "$1" "$FLEET_QUEUE_IDENTITY")" || return 1
+  (
+    unset FORGEJO_API REPO_SLUG
+    # shellcheck disable=SC1090
+    . "$f" >/dev/null 2>&1 || true
+    [ -n "${FORGEJO_API:-}" ] || exit 1
+    printf '%s' "${FORGEJO_API%%/repos/*}"
+  )
+}
+
+# fleet_queue_collect <checkout:slug>... -> one merged JSON array on stdout.
+# Every repo's lister runs in PARALLEL (host-side, that repo's own identity and
+# policy, its cwd), each ticket gaining `repo` (the slug) and `rank` (0 for a
+# `priority` or drive-blocker ticket, 1 otherwise — the lister surfaces both
+# flags since #301). A repo whose lister fails, is missing, or answers
+# non-JSON is OMITTED with one stderr line; the rest still merge (fail-open per
+# repo: one repo's tracker blip must not blind the fleet).
+fleet_queue_collect() {
+  local pair checkout slug tag lister tmpd rc merged='[]' last
+  tmpd="$(mktemp -d)"
+  for pair in "$@"; do
+    checkout="${pair%%:*}"; slug="${pair#*:}"; tag="${slug//\//-}"
+    if ! lister="$(_fleet_queue_file "$checkout" "$FLEET_QUEUE_LISTER")"; then
+      echo "fleet-queue: $slug carries no $FLEET_QUEUE_LISTER at $checkout — omitted this tick" >&2
+      continue
+    fi
+    (
+      cd "$checkout" || exit 1
+      unset SWARM_POLICY_FILE SWARM_HOST_SIGNALS_DIR
+      REPO_SLUG="$slug" FORGEJO_API='' bash "$lister" >"$tmpd/$tag.json" 2>"$tmpd/$tag.err"
+      echo $? >"$tmpd/$tag.rc"
+    ) &
+  done
+  wait
+  for pair in "$@"; do
+    slug="${pair#*:}"; tag="${slug//\//-}"
+    [ -f "$tmpd/$tag.rc" ] || continue
+    rc="$(cat "$tmpd/$tag.rc" 2>/dev/null || echo 1)"
+    if [ "$rc" = 0 ] && jq -e 'type == "array"' "$tmpd/$tag.json" >/dev/null 2>&1; then
+      merged="$(jq --arg slug "$slug" --slurpfile add "$tmpd/$tag.json" \
+        '. + ($add[0] | map(. + {repo: $slug,
+                                  rank: (if ((.priority // false) or (.blocker // false)) then 0 else 1 end)}))' \
+        <<<"$merged")"
+    else
+      last="$(tail -n 1 "$tmpd/$tag.err" 2>/dev/null || true)"
+      echo "fleet-queue: $slug lister failed (rc=$rc) — omitted this tick${last:+: $last}" >&2
+    fi
+  done
+  rm -rf "$tmpd"
+  printf '%s' "$merged"
+}
+
+# fleet_queue_order <merged-json> -> the fleet order: rank first (priority and
+# drive blockers jump the line), then the filing date, oldest first; a ticket
+# with no created_at (a lister from a pin before #301) sorts LAST within its
+# rank rather than first; the number is the final tie-break.
+fleet_queue_order() {
+  jq 'sort_by(.rank, (.created_at // "~"), .number)' <<<"$1"
+}
+
+# fleet_queue_dependants <api-root> <slug> <n> -> JSON array of {repo, number}:
+# the open issues ticket <slug>#<n> BLOCKS (Forgejo's native dependencies, the
+# same DAG list-ready-tasks.sh filters on), in any repo. `[]` with a stderr
+# line on a failed read — a blip must never promote the wrong ticket.
+fleet_queue_dependants() {
+  local root="$1" slug="$2" n="$3" raw
+  if ! raw="$(curl -sf --max-time "$FLEET_QUEUE_MAX_TIME" -H "Authorization: token ${FORGEJO_TOKEN:-}" \
+        "$root/repos/$slug/issues/$n/blocks?limit=50" 2>/dev/null)"; then
+    echo "fleet-queue: could not read what $slug#$n blocks — no dependants promoted" >&2
+    printf '[]'; return 0
+  fi
+  jq -c '[.[]? | select(.state == "open") | {repo: (.repository.full_name // ""), number}]' <<<"$raw" 2>/dev/null || printf '[]'
+}
+
+# fleet_queue_promote <ordered-json> <dependants-json> -> the order with every
+# ticket named in <dependants> moved to the FRONT, their relative (fleet) order
+# kept; everything else follows unchanged.
+fleet_queue_promote() {
+  jq --argjson d "$2" '
+    def key: "\(.repo)#\(.number)";
+    ($d | map("\(.repo)#\(.number)")) as $k
+    | [.[] | select(key as $x | ($k | index($x)) != null)]
+      + [.[] | select(key as $x | ($k | index($x)) == null)]' <<<"$1"
+}
+
+# ── recent closes: "each ticket, on close, asks for any dependant" ─────────
+# A close is recorded on the HOST (by the finishing run's self-rearm and by the
+# `closed`-event leg), so every tick on this host — not just the one run that
+# knows — promotes that ticket's dependants until the record ages out.
+fleet_queue_recent_closes_path() {
+  printf '%s' "${FLEET_QUEUE_RECENT_CLOSES:-$HOST_CAPACITY_STATE_DIR/fleet-recent-closes}"
+}
+fleet_queue_recent_close_record() { # <slug> <n>
+  mkdir -p "$(dirname "$(fleet_queue_recent_closes_path)")" 2>/dev/null || true
+  printf '%s %s %s\n' "$(date +%s)" "$1" "$2" >>"$(fleet_queue_recent_closes_path)" 2>/dev/null || true
+}
+# fleet_queue_recent_closes [ttl] -> "slug n" lines younger than ttl, newest
+# first, de-duplicated; the file is rewritten pruned.
+fleet_queue_recent_closes() {
+  local f ttl="${1:-$FLEET_QUEUE_CLOSE_TTL}" now kept
+  f="$(fleet_queue_recent_closes_path)"
+  [ -s "$f" ] || return 0
+  now="$(date +%s)"
+  kept="$(awk -v now="$now" -v ttl="$ttl" '$1 ~ /^[0-9]+$/ && now - $1 < ttl { print }' "$f")"
+  printf '%s\n' "$kept" | grep . >"$f.tmp" 2>/dev/null; mv -f "$f.tmp" "$f" 2>/dev/null || true
+  printf '%s\n' "$kept" | grep . | sort -rn -k1,1 | cut -d' ' -f2,3 | awk '!seen[$0]++'
+}
+
+# ── the host cache: where the fleet stands, for legs that cannot compute it ──
+fleet_queue_cache_path() { printf '%s' "${FLEET_QUEUE_CACHE:-$HOST_CAPACITY_STATE_DIR/fleet-queue.json}"; }
+fleet_queue_cache_write() { # <ordered-json>
+  local f; f="$(fleet_queue_cache_path)"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  printf '%s\n' "$1" >"$f.tmp" && mv -f "$f.tmp" "$f"
+}
+# fleet_queue_cache_head [ttl] -> "slug n" of the fleet head when the cache is
+# fresher than ttl and non-empty; rc 1 otherwise (absent, stale, empty).
+fleet_queue_cache_head() {
+  local f ttl="${1:-$FLEET_QUEUE_CACHE_TTL}" age head
+  f="$(fleet_queue_cache_path)"
+  [ -s "$f" ] || return 1
+  age=$(( $(date +%s) - $(stat -c %Y "$f" 2>/dev/null || echo 0) ))
+  [ "$age" -lt "$ttl" ] || return 1
+  head="$(jq -r '.[0] | select(. != null) | "\(.repo) \(.number)"' "$f" 2>/dev/null || true)"
+  [ -n "$head" ] || return 1
+  printf '%s' "$head"
+}
+
+# ── the dispatch stamp: never pile a second dispatch on an unclaimed pick ───
+fleet_queue_stamp_path() { printf '%s' "${FLEET_QUEUE_STAMP:-$HOST_CAPACITY_STATE_DIR/fleet-queue-dispatched}"; }
+fleet_queue_stamp_write() { # <slug> <n>
+  mkdir -p "$(dirname "$(fleet_queue_stamp_path)")" 2>/dev/null || true
+  printf '%s %s %s\n' "$(date +%s)" "$1" "$2" >"$(fleet_queue_stamp_path)"
+}
+# fleet_queue_stamp_fresh [window] -> rc 0 (and "slug n age" on stdout) when
+# the last dispatch is younger than the window.
+fleet_queue_stamp_fresh() {
+  local f window="${1:-$FLEET_QUEUE_REDISPATCH}" at slug n age
+  f="$(fleet_queue_stamp_path)"
+  [ -s "$f" ] || return 1
+  read -r at slug n <"$f" || return 1
+  case "$at" in ''|*[!0-9]*) return 1 ;; esac
+  age=$(( $(date +%s) - at ))
+  [ "$age" -lt "$window" ] || return 1
+  printf '%s %s %s' "$slug" "$n" "$age"
+}
+# fleet_queue_stamp_ticket -> "slug n" of the last dispatch regardless of its
+# age (rc 1, no output, when no stamp exists). The strike accounting reads it to
+# ask "is the ticket we last dispatched STILL the fleet head?" — a healthy claim
+# relabels the ticket agent-working and it leaves every lister, so the head
+# moves; only a dispatch that never claimed leaves it standing.
+fleet_queue_stamp_ticket() {
+  local f at slug n
+  f="$(fleet_queue_stamp_path)"
+  [ -s "$f" ] || return 1
+  read -r at slug n <"$f" || return 1
+  { [ -n "${slug:-}" ] && [ -n "${n:-}" ]; } || return 1
+  printf '%s %s' "$slug" "$n"
+}
+
+# ── dispatch arbitration: one ticket goes to ONE host (#351) ────────────────
+# Every pool host runs its own tick with no view of its peers, and the ticks
+# fire in the same cron minute — so each idle host saw the same fleet head and
+# dispatched it to ITSELF. The in-sandbox claim then settled it, minutes later,
+# after every loser had booted a sandbox and held a heavy slot for a worker with
+# nothing to do. The dispatch stamp could not help: it is a file on one host.
+#
+# The one channel every host shares is the tracker, and the claim already rests
+# on a primitive there: comment ids are strictly increasing. So a host posts a
+# MARKER comment on the ticket (`fleet-dispatch host=<h>`) before it dispatches,
+# and the host of the LOWEST live marker is the one that dispatches. A host that
+# finds a peer's live marker posts nothing and takes the next ticket in line.
+#
+# Liveness is age: a marker older than FLEET_QUEUE_MARK_TTL holds nothing, so a
+# dispatch that died never wedges its ticket. The posting host records each
+# marker on disk and deletes it once expired (fleet_queue_marks_sweep).
+#
+# Every failure here FAILS OPEN — rc 0, "dispatch it", with one stderr line. A
+# duplicate dispatch is safe (the claim guards the ticket, as it did before
+# #351); a tick that stood down on a tracker blip would stall the fleet.
+_fleet_queue_api() { curl -sf --max-time "$FLEET_QUEUE_MAX_TIME" -H "Authorization: token ${FORGEJO_TOKEN:-}" "$@"; }
+
+fleet_queue_marks_path() { printf '%s' "${FLEET_QUEUE_MARKS:-$HOST_CAPACITY_STATE_DIR/fleet-queue-marks}"; }
+
+# fleet_queue_marks <api-root> <slug> <n> -> "id host" per LIVE marker on the
+# ticket, lowest id first; rc 1 when the comments read fails (raw-capture then
+# filter, claim-lib's rule: a failed read must never look like "nobody holds
+# it"). A marker whose created_at cannot be parsed counts as live — the host
+# that posted it still sweeps it by its own clock.
+fleet_queue_marks() {
+  local raw
+  raw="$(_fleet_queue_api "$1/repos/$2/issues/$3/comments" 2>/dev/null)" || return 1
+  jq -r --argjson now "$(date +%s)" --argjson ttl "$FLEET_QUEUE_MARK_TTL" '
+    [ .[]?
+      | select((.body // "") | test("^fleet-dispatch host=\\S+"))
+      | (try (.created_at | fromdateiso8601) catch null) as $t
+      | select($t == null or ($now - $t) < $ttl)
+      | {id, host: (.body | capture("^fleet-dispatch host=(?<h>\\S+)").h)} ]
+    | sort_by(.id) | .[] | "\(.id) \(.host)"' <<<"$raw" 2>/dev/null || return 1
+}
+
+# fleet_queue_mark_post <api-root> <slug> <n> <host> -> the new comment id; rc 1
+# on a failed post. The marker is recorded on the host BEFORE it is returned, so
+# a tick that dies right after still sweeps it.
+fleet_queue_mark_post() {
+  local raw id f
+  raw="$(jq -n --arg h "$4" --argjson m "$(( FLEET_QUEUE_MARK_TTL / 60 ))" \
+      '{body: ("fleet-dispatch host=" + $h + "\n(automated — the fleet queue is dispatching this ticket to that host, so other hosts take the next ticket in line; this note expires after " + ($m | tostring) + " min and is then removed)")}' |
+    _fleet_queue_api -X POST -H 'Content-Type: application/json' -d @- \
+      "$1/repos/$2/issues/$3/comments" 2>/dev/null)" || return 1
+  id="$(jq -r '.id // empty' <<<"$raw" 2>/dev/null)" || return 1
+  case "$id" in ''|*[!0-9]*) return 1 ;; esac
+  f="$(fleet_queue_marks_path)"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  printf '%s %s %s %s\n' "$(date +%s)" "$2" "$3" "$id" >>"$f" 2>/dev/null || true
+  printf '%s' "$id"
+}
+
+# _fleet_queue_mark_delete <api-root> <slug> <comment-id> -> the HTTP code.
+_fleet_queue_mark_delete() {
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "$FLEET_QUEUE_MAX_TIME" \
+    -X DELETE -H "Authorization: token ${FORGEJO_TOKEN:-}" \
+    "$1/repos/$2/issues/comments/$3" 2>/dev/null)" || true
+  printf '%s' "${code:-000}"
+}
+
+# fleet_queue_mark_release <api-root> <comment-id> — delete a marker this host
+# recorded, NOW (it lost the arbitration, or its dispatch failed), and forget
+# it. A delete that does not land leaves the record for the sweep to retry.
+fleet_queue_mark_release() {
+  local f at slug n cid code kept=""
+  f="$(fleet_queue_marks_path)"
+  [ -s "$f" ] || return 0
+  while read -r at slug n cid; do
+    [ -n "${cid:-}" ] || continue
+    if [ "$cid" = "$2" ]; then
+      code="$(_fleet_queue_mark_delete "$1" "$slug" "$cid")"
+      case "$code" in 2??|404) continue ;; esac
+    fi
+    kept="$kept$at $slug $n $cid"$'\n'
+  done <"$f"
+  printf '%s' "$kept" >"$f.tmp" && mv -f "$f.tmp" "$f"
+}
+
+# fleet_queue_marks_sweep <api-root> — delete this host's EXPIRED markers from
+# their tickets (a marker past its TTL holds nothing and is only litter on the
+# thread). A live marker is left alone; a delete the forge refuses keeps its
+# record so the next tick retries; a record ten TTLs old is dropped regardless
+# (never an unbounded file). Quiet, rc 0, and no tracker call when nothing is
+# recorded.
+fleet_queue_marks_sweep() {
+  local f at slug n cid now age code kept=""
+  f="$(fleet_queue_marks_path)"
+  [ -s "$f" ] || return 0
+  now="$(date +%s)"
+  while read -r at slug n cid; do
+    [ -n "${cid:-}" ] || continue
+    case "$at" in ''|*[!0-9]*) continue ;; esac
+    age=$(( now - at ))
+    if [ "$age" -ge "$FLEET_QUEUE_MARK_TTL" ]; then
+      code="$(_fleet_queue_mark_delete "$1" "$slug" "$cid")"
+      case "$code" in 2??|404) continue ;; esac
+      [ "$age" -lt $(( FLEET_QUEUE_MARK_TTL * 10 )) ] || continue
+    fi
+    kept="$kept$at $slug $n $cid"$'\n'
+  done <"$f"
+  printf '%s' "$kept" >"$f.tmp" && mv -f "$f.tmp" "$f"
+  return 0
+}
+
+# fleet_queue_waiting_legs <runs-json> <now-epoch> <host> -> a JSON object
+# {"<n>": <max-lag-seconds>} over the ticket numbers whose per-host leg the forge
+# still shows `waiting` for THIS host. The queued view is `actions/runs?status=
+# waiting` (GOTCHAS 78, the one view a run with no task row yet appears in); the
+# per-host leg's display title is `swarm <host> #<n>` (`runs-on: <host>`, GOTCHAS
+# 62), so a run still `waiting` names BOTH the host whose runner has not picked its
+# leg AND the ticket number it carries. The lag is now - the run's created time
+# (created / created_at / started, RFC3339). A run naming no `#<n>`, not naming this
+# host as a WHOLE token, or whose time will not parse contributes to NOTHING —
+# fail-open, so junk never frees a marker (#376 item 1) nor backs the host off
+# (#376 item 2). Pure (no disk, no clock, no network): trivially tested. It is the
+# host-side, per-ticket sibling of fleet-dispatch-lib.sh's fleet_dispatch_lag_from_runs
+# (which keeps only a host's max lag for the central dispatcher's #373 gate).
+fleet_queue_waiting_legs() {
+  jq -c --argjson now "$2" --arg host "$3" '
+    reduce (.workflow_runs // [])[] as $r ({};
+      ((($r.created // $r.created_at // $r.started // "") | (try fromdateiso8601 catch null))) as $t
+      | if $t == null then .
+        else (((($r.display_title // "") + " " + ($r.name // "")) | [scan("[A-Za-z0-9_.#-]+")])) as $toks
+          | if ($toks | index($host) | not) then .
+            else ($toks | map(select(startswith("#")) | ltrimstr("#")) | map(select(test("^[0-9]+$")))) as $ns
+              | reduce $ns[] as $n (.;
+                  (($now - $t) as $lag | if $lag > (.[$n] // -1) then .[$n] = $lag else . end))
+            end
+        end)
+  ' <<<"$1" 2>/dev/null || echo '{}'
+}
+
+# fleet_queue_arbitrate <api-root> <slug> <n> <host>
+#   rc 0  this host dispatches the ticket. FLEET_QUEUE_ARB_MARK is the marker it
+#         holds (empty when it failed open and holds none).
+#   rc 1  another host's live marker is lower: FLEET_QUEUE_ARB_HOLDER names it.
+#         The caller takes the next ticket in line.
+# Called in the caller's own shell (never `$(...)`): the two results are globals.
+fleet_queue_arbitrate() {
+  local root="$1" slug="$2" n="$3" host="$4" marks first_id first_host mine
+  FLEET_QUEUE_ARB_MARK=""; FLEET_QUEUE_ARB_HOLDER=""
+  if ! marks="$(fleet_queue_marks "$root" "$slug" "$n")"; then
+    echo "fleet-queue: could not read the dispatch markers on $slug#$n — dispatching unarbitrated (the claim still guards it)" >&2
+    return 0
+  fi
+  read -r first_id first_host <<<"$marks" || true
+  if [ -n "${first_id:-}" ]; then
+    # A live marker already stands. Ours → carry on with it (a re-dispatch after
+    # the stamp lapsed posts no second comment). A peer's → theirs, post nothing.
+    if [ "$first_host" = "$host" ]; then FLEET_QUEUE_ARB_MARK="$first_id"; return 0; fi
+    FLEET_QUEUE_ARB_HOLDER="$first_host"; return 1
+  fi
+  if ! mine="$(fleet_queue_mark_post "$root" "$slug" "$n" "$host")"; then
+    echo "fleet-queue: could not post a dispatch marker on $slug#$n — dispatching unarbitrated (the claim still guards it)" >&2
+    return 0
+  fi
+  # Re-read AFTER posting: ids are strictly increasing, so any peer marker with
+  # a lower id was posted before ours and is visible now.
+  if ! marks="$(fleet_queue_marks "$root" "$slug" "$n")"; then
+    echo "fleet-queue: could not re-read the dispatch markers on $slug#$n — dispatching unarbitrated (the claim still guards it)" >&2
+    FLEET_QUEUE_ARB_MARK="$mine"; return 0
+  fi
+  read -r first_id first_host <<<"$marks" || true
+  if [ -z "${first_id:-}" ] || [ "$first_id" = "$mine" ] || [ "$first_host" = "$host" ]; then
+    FLEET_QUEUE_ARB_MARK="$mine"; return 0
+  fi
+  fleet_queue_mark_release "$root" "$mine"
+  FLEET_QUEUE_ARB_HOLDER="$first_host"
+  return 1
+}
+
+# ── strikes: consecutive dispatches that never claimed (#315) ────────────────
+# The strike file carries "<count> <last-strike-epoch>". A healthy progression
+# (the head moved) resets it; each unclaimed-expiry bumps it. Past the threshold
+# the host stands down with a backoff that doubles per strike (capped), so a
+# sick host is probed ever less often yet rejoins the instant a probe claims.
+fleet_queue_strikes_path() { printf '%s' "${FLEET_QUEUE_STRIKES:-$HOST_CAPACITY_STATE_DIR/fleet-queue-strikes}"; }
+# fleet_queue_strikes -> the current strike count (0 when absent or malformed).
+fleet_queue_strikes() {
+  local f n rest
+  f="$(fleet_queue_strikes_path)"
+  [ -s "$f" ] || { echo 0; return 0; }
+  read -r n rest <"$f" || { echo 0; return 0; }
+  case "$n" in ''|*[!0-9]*) echo 0; return 0 ;; esac
+  echo "$n"
+}
+# fleet_queue_strike_bump -> increment the counter, stamping NOW as the strike
+# time, and echo the new count.
+fleet_queue_strike_bump() {
+  local f n
+  f="$(fleet_queue_strikes_path)"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  n="$(fleet_queue_strikes)"
+  n=$(( n + 1 ))
+  printf '%s %s\n' "$n" "$(date +%s)" >"$f"
+  echo "$n"
+}
+# fleet_queue_strike_reset -> clear the counter (the host demonstrably claimed).
+fleet_queue_strike_reset() { rm -f "$(fleet_queue_strikes_path)"; }
+
+# fleet_queue_standdown -> rc 0 (and "<strikes> <remaining-seconds>" on stdout)
+# when this host has >= FLEET_QUEUE_STRIKES_MAX consecutive unclaimed dispatches
+# AND the decaying backoff since the last strike has not yet elapsed; rc 1
+# otherwise (healthy, below the threshold, or the backoff lapsed so a probe
+# dispatch is due now). The backoff doubles for each strike past the threshold,
+# capped at FLEET_QUEUE_BACKOFF_MAX.
+fleet_queue_standdown() {
+  local f n last over backoff now elapsed remain
+  f="$(fleet_queue_strikes_path)"
+  [ -s "$f" ] || return 1
+  read -r n last <"$f" || return 1
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  case "$last" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$n" -ge "$FLEET_QUEUE_STRIKES_MAX" ] || return 1
+  over=$(( n - FLEET_QUEUE_STRIKES_MAX ))
+  backoff="$FLEET_QUEUE_BACKOFF_BASE"
+  while [ "$over" -gt 0 ] && [ "$backoff" -lt "$FLEET_QUEUE_BACKOFF_MAX" ]; do
+    backoff=$(( backoff * 2 )); over=$(( over - 1 ))
+  done
+  [ "$backoff" -le "$FLEET_QUEUE_BACKOFF_MAX" ] || backoff="$FLEET_QUEUE_BACKOFF_MAX"
+  now="$(date +%s)"
+  elapsed=$(( now - last ))
+  [ "$elapsed" -lt "$backoff" ] || return 1
+  remain=$(( backoff - elapsed ))
+  printf '%s %s' "$n" "$remain"
+}
+
+# fleet_queue_free_gb <path> -> whole GiB free on the filesystem holding <path>,
+# on stdout; rc 1 with no output when df cannot answer. The act cache dir may
+# not exist yet, so the probe walks up to the nearest existing ancestor (the
+# filesystem is the same). This is the ONE place df is called, so the offline
+# test shims df behind a full/empty-disk fixture.
+fleet_queue_free_gb() {
+  local p="$1" parent avail
+  while [ -n "$p" ] && [ ! -e "$p" ]; do
+    parent="${p%/*}"
+    [ -n "$parent" ] && [ "$parent" != "$p" ] || parent=/
+    p="$parent"
+  done
+  [ -n "$p" ] || p=/
+  # -P: POSIX one-line-per-fs (never wrapped); -k: 1K blocks (portable — -BG is
+  # GNU-only). Available is the 4th column of the data row.
+  avail="$(df -Pk "$p" 2>/dev/null | awk 'NR==2 {print $4}')" || return 1
+  case "$avail" in ''|*[!0-9]*) return 1 ;; esac
+  echo $(( avail / 1024 / 1024 ))
+}
+
+# fleet_queue_slot_free -> rc 0 iff this host could start a run NOW: no fresh
+# rehearsal-drive reservation, enough headroom on the runner's act-cache
+# filesystem (FLEET_QUEUE_MIN_FREE_GB, 0 = unchecked), and at least one pooled
+# slot flocks non-blocking (probed and released at once — never camp, never
+# hold; the leg takes it for real). Sourced into the caller's shell so the
+# probe fds close here. The disk gate FAILS OPEN (a df blip never blinds the
+# host) but FAILS CLOSED on a concrete under-floor reading — a host that cannot
+# mkdir the act cache must not report a free slot (#315).
+fleet_queue_slot_free() {
+  local slot fd free
+  host_capacity_drive_wanted && return 1
+  if [ "${FLEET_QUEUE_MIN_FREE_GB:-0}" -gt 0 ]; then
+    free="$(fleet_queue_free_gb "$FLEET_QUEUE_ACT_CACHE")" || free=""
+    if [ -n "$free" ] && [ "$free" -lt "$FLEET_QUEUE_MIN_FREE_GB" ]; then
+      echo "fleet-queue: ${free}G free on the runner cache filesystem ($FLEET_QUEUE_ACT_CACHE, < ${FLEET_QUEUE_MIN_FREE_GB}G floor) — no free slot until the disk recovers" >&2
+      return 1
+    fi
+  fi
+  host_capacity_statedir_ensure
+  for slot in $HOST_CAPACITY_SLOTS; do
+    exec {fd}>"$slot" || continue
+    if flock -n "$fd"; then exec {fd}>&-; return 0; fi
+    exec {fd}>&-
+  done
+  return 1
+}
+
+# fleet_queue_dispatch <api-root> <slug> <n> <host> -> prints the HTTP code;
+# rc 0 on a 2xx. ONE repo's swarm.yml, with inputs.ticket (the pick: the leg
+# works it or nothing) and inputs.host (ONLY that host's leg runs — the others
+# stand down before touching a slot, so one dispatch is one run, no claim race
+# between an idle host's legs).
+fleet_queue_dispatch() {
+  local root="$1" slug="$2" n="$3" host="$4" code
+  code="$(jq -cn --arg t "$n" --arg h "$host" '{ref: "main", inputs: {ticket: $t, host: $h}}' |
+    curl -s -o /dev/null -w '%{http_code}' --max-time "$FLEET_QUEUE_MAX_TIME" \
+      -X POST -H "Authorization: token ${FORGEJO_TOKEN:-}" -H 'Content-Type: application/json' -d @- \
+      "$root/repos/$slug/actions/workflows/swarm.yml/dispatches" 2>/dev/null)" || true
+  code="${code:-000}"
+  printf '%s' "$code"
+  case "$code" in 2??) return 0 ;; *) return 1 ;; esac
+}
+
+fi

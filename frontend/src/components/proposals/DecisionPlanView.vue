@@ -263,7 +263,7 @@ function outcomeClass(outcome: GovernanceAction['outcome']): string {
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  background: rgba(74, 157, 156, 0.12);
+  background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;

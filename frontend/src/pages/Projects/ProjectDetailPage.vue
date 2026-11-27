@@ -20,6 +20,24 @@
               {{ formatStatus(project.status) }}
             </span>
           </div>
+
+          <!-- Why is this project still "Created"? Shown to users (e.g. a
+               project lead) who cannot sign off the plan themselves, so they
+               know what activates the project and who to ask (#802). -->
+          <div
+            v-if="project.status === 'created' && !perms.canSignOffPlan.value"
+            class="created-status-hint"
+            data-testid="created-status-hint"
+          >
+            <Info class="created-status-hint-icon" />
+            <span>
+              This project becomes <strong>Active</strong> once its implementation plan is
+              signed off. You don't have permission to sign off the plan — ask a
+              <strong>Project Steward</strong>, <strong>Operations Steward</strong>, or
+              <strong>Founding Member</strong> to sign it off and activate the project.
+            </span>
+          </div>
+
           <h1 class="project-title">{{ project.title }}</h1>
           <p class="project-description">{{ project.description }}</p>
 
@@ -275,6 +293,7 @@
               :project-id="project.id"
               :can-edit="perms.canAddMilestones.value"
               :can-confirm="perms.canConfirmContribution.value"
+              :can-reorder="perms.canReorderContributions.value"
               :is-plan-signed-off="implementationPlan.signed_off"
               :user-role="currentUserRole"
               :current-user-id="currentUserId"
@@ -288,7 +307,89 @@
               @archive-milestone="confirmArchiveMilestone"
               @edit-contribution="openEditContribution"
               @archive-contribution="confirmArchiveContribution"
+              @reorder-contributions="handleReorderContributions"
             />
+          </div>
+
+          <!-- Unassigned contributions holding area (#777): work captured in
+               the plan draft but not yet placed in a milestone. -->
+          <div
+            v-if="unassignedPlanContributions.length > 0 || perms.canAddMilestones.value"
+            class="unassigned-section"
+          >
+            <div class="unassigned-header">
+              <span class="unassigned-title">Not yet in a milestone</span>
+              <span v-if="unassignedPlanContributions.length > 0" class="unassigned-count">
+                {{ unassignedPlanContributions.length }}
+              </span>
+            </div>
+            <p class="unassigned-hint">
+              A place to capture contributions while drafting the plan, before
+              you've decided which milestone they belong to.
+            </p>
+
+            <div v-if="unassignedPlanContributions.length > 0" class="contributions-list">
+              <ContributionCardCompact
+                v-for="contribution in unassignedPlanContributions"
+                :key="contribution.id"
+                :contribution="contribution"
+                :can-confirm="perms.canConfirmContribution.value"
+                :can-edit="perms.canAddMilestones.value"
+                :is-plan-signed-off="implementationPlan.signed_off"
+                :user-role="currentUserRole"
+                :current-user-id="currentUserId"
+                :all-contributions="allProjectContributions"
+                @update="handleContributionUpdate"
+                @view-detail="handleViewContribution"
+                @create-child="handleCreateChildContribution"
+                @assign="handleAssignContribution"
+                @edit="openEditContribution"
+                @archive="confirmArchiveContribution"
+              />
+            </div>
+
+            <div v-if="perms.canAddMilestones.value" class="add-contribution-row">
+              <button class="add-contribution-btn" @click="handleCreateUnassignedContribution">
+                <Plus class="add-icon" />
+                Add Contribution
+              </button>
+            </div>
+          </div>
+
+          <!-- Archived contributions (#846): archiving can be undone by whoever
+               may archive. Restoring a parent also brings back the
+               sub-contributions archived with it. -->
+          <div
+            v-if="archivedContributions.length > 0 && perms.canArchiveContribution.value"
+            class="archived-section"
+            data-testid="archived-contributions"
+          >
+            <div class="unassigned-header">
+              <span class="unassigned-title">Archived contributions</span>
+              <span class="unassigned-count">{{ archivedContributions.length }}</span>
+            </div>
+            <ul class="archived-list">
+              <li
+                v-for="c in archivedContributions"
+                :key="c.id"
+                class="archived-row"
+                data-testid="archived-contribution-row"
+              >
+                <span class="archived-row-title">{{ c.title }}</span>
+                <q-btn
+                  flat
+                  no-caps
+                  dense
+                  color="primary"
+                  icon="restore"
+                  label="Restore"
+                  data-testid="restore-contribution"
+                  :loading="restoringContributionId === c.id"
+                  :disable="restoringContributionId !== null"
+                  @click="doRestoreContribution(c)"
+                />
+              </li>
+            </ul>
           </div>
         </template>
       </div>
@@ -369,7 +470,7 @@
     <!-- Destroy project confirm -->
     <ConfirmDestroyDialog
       v-model="showDestroy"
-      title="Delete Project"
+      title="Archive Project"
       :entity-label="project?.title ?? ''"
       :cascade-summary="cascadeSummary"
       :loading="archivingProject"
@@ -561,6 +662,8 @@
       v-model="showContribForm"
       :project-id="editingContribution?.project_id ?? project?.id ?? ''"
       :milestone-id="editingContribution?.milestone_id"
+      :milestones="milestones"
+      :can-move-milestone="perms.canReorderContributions.value"
       :editing="true"
       :contribution="(editingContribution as any)"
       :can-offer="perms.isLead.value || perms.isSteward.value"
@@ -577,8 +680,20 @@
       title="Archive Contribution"
       :message="contribArchiveMessage"
       :loading="archivingContribLoading"
+      :confirm-disabled="archivingSubCount > 0 && !subContribChoice"
       @confirm="doArchiveContribution"
-    />
+    >
+      <q-option-group
+        v-if="archivingSubCount > 0"
+        v-model="subContribChoice"
+        data-testid="archive-sub-choice"
+        type="radio"
+        :options="[
+          { label: 'Archive all sub-contributions', value: 'archive' },
+          { label: 'Keep them and promote them to top-level contributions in the same milestone', value: 'promote' },
+        ]"
+      />
+    </ConfirmArchiveDialog>
 
     <!-- Sign-off plan confirm (only shown when unconfirmed contributions exist) -->
     <q-dialog v-model="showSignOffConfirm">
@@ -629,6 +744,8 @@ import {
   Calendar,
   DollarSign,
   Pencil,
+  Plus,
+  Info,
 } from 'lucide-vue-next';
 import { useProjectsStore } from 'stores/projects';
 import { useCommentCursorsStore } from 'stores/commentCursors';
@@ -647,9 +764,11 @@ import { useContributionWorkflow } from 'src/composables/useContributionWorkflow
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import ProjectForm from 'src/components/projects/ProjectForm.vue';
 import MilestoneCard from 'src/components/projects/MilestoneCard.vue';
+import { topLevelContributions, unassignedContributions } from 'src/lib/contributions/nesting';
 import MilestoneFormDialog from 'src/components/projects/MilestoneFormDialog.vue';
 import AssignRoleDialog from 'src/components/projects/AssignRoleDialog.vue';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
+import ContributionCardCompact from 'src/components/projects/ContributionCardCompact.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
 import ConfirmDestroyDialog from 'src/components/common/ConfirmDestroyDialog.vue';
 import ConfirmArchiveDialog from 'src/components/common/ConfirmArchiveDialog.vue';
@@ -668,7 +787,14 @@ const identityStore = useIdentityStore();
 const contributionsStore = useContributionsStore();
 const profilesStore = useProfilesStore();
 const workflow = useContributionWorkflow();
-const isKeriAdmin = computed(() => identityStore.isAdmin);
+// Community-admin tier only (Operations Steward / Founding Member) — the roles
+// the backend grants a community-wide pass on project actions. Must NOT use the
+// loose identityStore.isAdmin/isSteward, which also flips on for Technical /
+// Financial / Cultural / Community Steward credentials: those do not confer
+// community-wide project powers, so gating on them rendered Delete/Assign
+// buttons the backend then refused (#749). Everyone else falls through to the
+// per-project project_lead_id/project_steward_id match below.
+const isCommunityAdmin = computed(() => identityStore.isCommunityAdmin);
 const { lastEvent } = useBackendEvents();
 
 // ── Current user context ─────────────────────────────────────────────────────
@@ -681,8 +807,9 @@ const currentUserName = computed(() => {
   return member?.name || '';
 });
 const currentUserRole = computed(() => {
-  // KERI-verified admin (founding member, steward, etc.) gets full admin role
-  if (isKeriAdmin.value) return 'community_admin';
+  // Community admin (Operations Steward / Founding Member) gets the full admin
+  // role on every project.
+  if (isCommunityAdmin.value) return 'community_admin';
   const p = project.value;
   if (!p) return 'member';
   if (p.project_lead_id === currentUserId.value) return 'project_lead';
@@ -772,6 +899,8 @@ async function confirmDestroy() {
     await projectsStore.archive(project.value.id);
     showDestroy.value = false;
     await router.push({ name: 'projects' });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to delete project' });
   } finally {
     archivingProject.value = false;
   }
@@ -836,13 +965,26 @@ const showContribForm = ref(false);
 const showArchiveContrib = ref(false);
 const archivingContribution = ref<Contribution | null>(null);
 const archivingContribLoading = ref(false);
+// What to do with the archived contribution's sub-contributions; the archiver
+// must pick one when there are any (#845).
+const subContribChoice = ref<'archive' | 'promote' | null>(null);
+
+const archivingSubCount = computed(() => {
+  const c = archivingContribution.value;
+  if (!c) return 0;
+  return allProjectContributions.value.filter(
+    (x) => x.parent_contribution === c.id && x.status !== 'archived',
+  ).length;
+});
 
 const contribArchiveMessage = computed(() => {
   const c = archivingContribution.value;
   if (!c || !project.value) return '';
-  const subs = planContributions.value.filter(x => x.parent_contribution === c.id).length;
-  const subText = subs > 0 ? ` and its ${subs} sub-contribution${subs === 1 ? '' : 's'}` : '';
-  return `Archiving "${c.title}"${subText} cannot be undone from the UI.`;
+  const subs = archivingSubCount.value;
+  if (subs > 0) {
+    return `"${c.title}" has ${subs} sub-contribution${subs === 1 ? '' : 's'}. Choose what happens to ${subs === 1 ? 'it' : 'them'}. Rewarded sub-contributions are never archived.`;
+  }
+  return `Archiving "${c.title}" can be undone from the Archived contributions list.`;
 });
 
 function openEditContribution(c: Contribution) {
@@ -864,6 +1006,7 @@ function onArchiveContributionFromDialog(c: Contribution) {
 }
 
 function confirmArchiveContribution(c: Contribution) {
+  subContribChoice.value = null;
   archivingContribution.value = c;
   showArchiveContrib.value = true;
 }
@@ -872,6 +1015,7 @@ function confirmArchiveContribution(c: Contribution) {
 // Closes the edit dialog and opens the archive confirmation.
 function onDeleteContributionFromForm() {
   if (editingContribution.value) {
+    subContribChoice.value = null;
     archivingContribution.value = editingContribution.value as Contribution;
     showContribForm.value = false;
     editingContribution.value = null;
@@ -879,21 +1023,74 @@ function onDeleteContributionFromForm() {
   }
 }
 
+// Refresh BOTH the implementation plan (top-level contributions hydrated into
+// milestones) AND the flat project-contributions list (which backs the
+// sub-contribution list in the detail dialog). Keeping both refetches in one
+// helper stops the save and archive handlers from drifting on which lists they
+// refresh — the drift that left edited sub-contributions stale until a
+// navigation away and back (#751).
+async function refreshPlanAndContributions() {
+  if (!project.value) return;
+  await Promise.all([
+    projectsStore.fetchImplementationPlan(project.value.id),
+    projectsStore.fetchProjectContributions(project.value.id),
+  ]);
+  // Keep an open detail dialog in sync with the freshly-fetched data so an edit
+  // to the viewed contribution (or one of its sub-contributions) shows at once.
+  refreshViewingContribution();
+}
+
+// Re-point viewingContribution at the freshest copy from the refetched data so
+// the open detail dialog reflects a just-saved edit without a re-navigation.
+function refreshViewingContribution() {
+  const current = viewingContribution.value;
+  if (!current) return;
+  const fresh =
+    planContributions.value.find((c) => c.id === current.id) ??
+    allProjectContributions.value.find((c) => c.id === current.id);
+  if (fresh) viewingContribution.value = { ...fresh };
+}
+
+// Archived contributions that can be restored right now: a sub-contribution
+// whose parent is still archived is hidden, since the parent is restored first.
+const archivedContributions = computed(() => {
+  const all = allProjectContributions.value;
+  const archivedIds = new Set(all.filter((c) => c.status === 'archived').map((c) => c.id));
+  return all.filter(
+    (c) =>
+      c.status === 'archived' &&
+      !(c.parent_contribution && archivedIds.has(c.parent_contribution)),
+  );
+});
+
+const restoringContributionId = ref<string | null>(null);
+
+async function doRestoreContribution(c: Contribution) {
+  if (!project.value || restoringContributionId.value) return;
+  restoringContributionId.value = c.id;
+  try {
+    await contributionsStore.restore(c.id);
+    await refreshPlanAndContributions();
+    $q.notify({ type: 'positive', message: `"${c.title}" restored. The plan needs to be signed off again.` });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to restore contribution' });
+  } finally {
+    restoringContributionId.value = null;
+  }
+}
+
 async function doArchiveContribution() {
   if (!archivingContribution.value || !project.value) return;
   archivingContribLoading.value = true;
   try {
-    await contributionsStore.archive(archivingContribution.value.id);
-    // Refresh BOTH the implementation plan (top-level contributions hydrated
-    // in milestones) AND the project contributions list (which includes
-    // sub-contributions). The dialog's allContributions prop reads from the
-    // latter; without this, archived subs stay visible in the sub-list.
-    if (project.value) {
-      await Promise.all([
-        projectsStore.fetchImplementationPlan(project.value.id),
-        projectsStore.fetchProjectContributions(project.value.id),
-      ]);
-    }
+    await contributionsStore.archive(
+      archivingContribution.value.id,
+      archivingSubCount.value > 0 ? (subContribChoice.value ?? undefined) : undefined,
+    );
+    // The dialog's allContributions prop reads from the flat project
+    // contributions list; without refreshing it, archived subs stay visible in
+    // the sub-list.
+    await refreshPlanAndContributions();
     // Close the contribution detail dialog if it's showing the archived
     // contribution (so user isn't left looking at a stale view of an
     // archived item).
@@ -913,13 +1110,28 @@ async function doArchiveContribution() {
 
 async function onContributionSave(payload: Record<string, unknown>) {
   if (!editingContribution.value || !project.value) return;
-  // contribution_type isn't in UpdateContributionRequest — strip it before sending.
+  // contribution_type isn't in UpdateContributionRequest; milestone_id is not a
+  // plain-update field (it routes through the dedicated move endpoint). Strip
+  // both before sending the update.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { contribution_type, ...rest } = payload as { contribution_type?: string } & UpdateContributionRequest;
+  const { contribution_type, milestone_id, ...rest } = payload as {
+    contribution_type?: string;
+    milestone_id?: string;
+  } & UpdateContributionRequest;
   const req = rest as UpdateContributionRequest;
+  const targetMilestoneId =
+    typeof milestone_id === 'string' && milestone_id !== editingContribution.value.milestone_id
+      ? milestone_id
+      : undefined;
   try {
     await contributionsStore.update(editingContribution.value.id, req);
-    if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
+    if (targetMilestoneId) {
+      await contributionsStore.move(editingContribution.value.id, targetMilestoneId);
+    }
+    // Refresh the plan AND the flat project-contributions list (+ any open
+    // detail dialog) so the edit shows immediately — the plan alone does not
+    // hydrate sub-contributions, so the sub-list would stay stale (#751).
+    await refreshPlanAndContributions();
     showContribForm.value = false;
     editingContribution.value = null;
     $q.notify({ type: 'positive', message: 'Contribution updated!' });
@@ -982,19 +1194,34 @@ const planContributions = computed<Contribution[]>(() => {
   return list.filter((c) => c.status !== 'archived');
 });
 
+// Top-level contributions only: a sub shown nested under its parent must not
+// inflate the plan's contribution count, confirmation progress or sign-off
+// readiness, even when it wrongly carries a milestone_id (#773).
+const topLevelPlanContributions = computed(() =>
+  topLevelContributions(planContributions.value),
+);
+
+// Contributions captured in the plan draft but not yet placed in a milestone
+// (#777). A holding area so planners can jot down work before deciding where
+// it fits. These are deliberately excluded from planContributions above, so
+// they don't count toward confirmation progress or block plan sign-off.
+const unassignedPlanContributions = computed(() =>
+  unassignedContributions(allProjectContributions.value),
+);
+
 const confirmedCount = computed(
-  () => planContributions.value.filter((c) => c.status === 'confirmed').length,
+  () => topLevelPlanContributions.value.filter((c) => c.status === 'confirmed').length,
 );
 
 const confirmationProgress = computed(() => {
-  const total = planContributions.value.length;
+  const total = topLevelPlanContributions.value.length;
   return total > 0 ? confirmedCount.value / total : 0;
 });
 
 const allContributionsConfirmed = computed(
   () =>
-    planContributions.value.length > 0 &&
-    planContributions.value.every((c) => c.status === 'confirmed'),
+    topLevelPlanContributions.value.length > 0 &&
+    topLevelPlanContributions.value.every((c) => c.status === 'confirmed'),
 );
 
 const canSignOffPlan = computed(
@@ -1181,15 +1408,9 @@ watch(lastEvent, (event) => {
     return;
   }
   if (refreshEvents.includes(event.type)) {
-    projectsStore.fetchImplementationPlan(project.value.id).then(() => {
-      // Refresh viewingContribution from the updated plan data
-      if (viewingContribution.value) {
-        const fresh = planContributions.value.find(c => c.id === viewingContribution.value?.id);
-        if (fresh) {
-          viewingContribution.value = { ...fresh };
-        }
-      }
-    });
+    // Refresh the plan AND the flat project-contributions list (the latter backs
+    // the sub-contribution list), then re-sync any open detail dialog (#751).
+    void refreshPlanAndContributions();
     // If the dialog is open, re-fetch the viewing contribution to pick up child updates
     if (viewingContribution.value && (event.type === 'contribution_updated' || event.type === 'contribution:updated')) {
       import('src/lib/api/contributions').then(({ getContribution }) => {
@@ -1326,7 +1547,7 @@ async function handleAddMilestone(req: CreateMilestoneRequest | UpdateMilestoneR
 
 function handleSignOffPlan() {
   if (!project.value || !implementationPlan.value) return;
-  const unconfirmed = planContributions.value.filter((c) => c.status !== 'confirmed').length;
+  const unconfirmed = topLevelPlanContributions.value.filter((c) => c.status !== 'confirmed').length;
   if (unconfirmed > 0) {
     signOffUnconfirmedCount.value = unconfirmed;
     showSignOffConfirm.value = true;
@@ -1405,13 +1626,28 @@ function handleCreateContribution(milestoneId: string) {
   showCreateContributionDialog.value = true;
 }
 
+// Create a contribution with no milestone — it lands in the plan draft's
+// unassigned holding area (#777).
+function handleCreateUnassignedContribution() {
+  createContributionMilestoneId.value = undefined;
+  showCreateContributionDialog.value = true;
+}
+
 async function handleCreateContributionSubmit(req: CreateContributionRequest) {
   creatingContribution.value = true;
   try {
     await contributionsStore.create(req);
     showCreateContributionDialog.value = false;
     $q.notify({ type: 'positive', message: 'Contribution created!' });
-    if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
+    // Refresh the plan (milestone contributions) AND the project's contributions
+    // list — a contribution created with no milestone lands only in the latter,
+    // which feeds the unassigned holding area (#777).
+    if (project.value) {
+      await Promise.all([
+        projectsStore.fetchImplementationPlan(project.value.id),
+        projectsStore.fetchProjectContributions(project.value.id),
+      ]);
+    }
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to create contribution' });
   } finally {
@@ -1473,12 +1709,23 @@ async function handleContributionUpdate(updated: Contribution & { _action?: stri
 
   // Refresh both the implementation plan AND project contributions so the
   // milestone view (top-level) and collapsible sub-contributions list both
-  // pick up the new status.
-  if (project.value) {
-    await Promise.all([
-      projectsStore.fetchImplementationPlan(project.value.id),
-      projectsStore.fetchProjectContributions(project.value.id),
-    ]);
+  // pick up the new status, and re-point the open dialog at the fresh data so
+  // a structural change (e.g. promoting a sub-contribution, #778) is reflected
+  // in the viewed parent's sub-list immediately.
+  await refreshPlanAndContributions();
+}
+
+async function handleReorderContributions(orderedIds: string[]) {
+  try {
+    await contributionsStore.reorder(orderedIds);
+    if (project.value) {
+      await Promise.all([
+        projectsStore.fetchImplementationPlan(project.value.id),
+        projectsStore.fetchProjectContributions(project.value.id),
+      ]);
+    }
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to reorder contributions' });
   }
 }
 
@@ -1587,10 +1834,37 @@ async function submitAssign() {
   color: var(--matou-muted-foreground);
 
   &.created { background: #e0e7ff; color: #4338ca; }
-  &.active { background: rgba(74, 157, 156, 0.12); color: var(--matou-accent); }
+  &.active { background: color-mix(in srgb, var(--matou-accent) 12%, transparent); color: var(--matou-accent); }
   &.pending_completion { background: #ffedd5; color: #c2410c; }
   &.completed { background: #dbeafe; color: #2563eb; }
   &.archived { background: #f3f4f6; color: #6b7280; }
+}
+
+.created-status-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--matou-accent) 8%, transparent);
+  color: var(--matou-muted-foreground);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  max-width: 640px;
+
+  strong {
+    color: var(--matou-foreground);
+    font-weight: 600;
+  }
+}
+
+.created-status-hint-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--matou-accent);
 }
 
 .project-title {
@@ -1654,13 +1928,13 @@ async function submitAssign() {
   font-family: inherit;
 
   &.lead {
-    background: rgba(74, 157, 156, 0.12);
-    color: var(--matou-chart-2, #4a9d9c);
+    background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
+    color: var(--matou-chart-2);
   }
 
   &.steward {
-    background: rgba(30, 95, 116, 0.1);
-    color: var(--matou-accent, #4a9d9c);
+    background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
+    color: var(--matou-accent);
   }
 
   &.clickable {
@@ -1754,7 +2028,7 @@ async function submitAssign() {
   font-size: 0.75rem;
   padding: 2px 10px;
   border-radius: 12px;
-  background: rgba(74, 157, 156, 0.12);
+  background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
   color: var(--matou-accent);
 }
 
@@ -1848,7 +2122,7 @@ async function submitAssign() {
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: rgba(30, 95, 116, 0.05);
+  background: color-mix(in srgb, var(--matou-primary) 5%, transparent);
   border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius-sm);
   margin-bottom: 16px;
@@ -1929,6 +2203,123 @@ async function submitAssign() {
   gap: 12px;
 }
 
+// ── Unassigned contributions holding area (#777) ─────────────────────────────
+
+.unassigned-section {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px dashed var(--matou-border);
+  border-radius: var(--matou-radius-sm);
+  background: var(--matou-secondary);
+  // #823: isolate the holding area onto its own stacking + compositing layer.
+  // The compact contribution cards carry a translucent status "wash"; composited
+  // over this section's tinted background inside the scrolling plan, Chromium
+  // left partial-repaint ghosts — the tint looked mis-layered behind the cards
+  // and flickered as a card's hover box-shadow transitioned. `isolation: isolate`
+  // establishes a clean stacking context (the tint sits firmly behind the cards)
+  // and `translateZ(0)` promotes the subtree to its own layer so it repaints
+  // completely rather than leaving stale translucent pixels. Milestone bodies
+  // (opaque background) are unaffected — this is scoped to the holding area.
+  position: relative;
+  isolation: isolate;
+  transform: translateZ(0);
+}
+
+.unassigned-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.unassigned-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--matou-muted-foreground);
+}
+
+.unassigned-count {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--matou-muted);
+  color: var(--matou-muted-foreground);
+  font-size: 0.72rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.unassigned-hint {
+  font-size: 0.8rem;
+  color: var(--matou-muted-foreground);
+  margin: 6px 0 12px;
+  line-height: 1.5;
+}
+
+.unassigned-section .contributions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.unassigned-section .add-contribution-row {
+  margin-top: 8px;
+}
+
+.unassigned-section .add-contribution-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px dashed var(--matou-border);
+  border-radius: var(--matou-radius-sm);
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--matou-muted-foreground);
+  transition: all 0.12s ease;
+
+  &:hover {
+    border-color: var(--matou-primary);
+    color: var(--matou-primary);
+  }
+}
+
+.archived-section {
+  margin-top: 16px;
+}
+
+.archived-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.archived-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--matou-border);
+  border-radius: var(--matou-radius-sm);
+  font-size: 0.85rem;
+  color: var(--matou-muted-foreground);
+}
+
+.unassigned-section .add-icon {
+  width: 14px;
+  height: 14px;
+}
+
 // ── Assign dialog ────────────────────────────────────────────────────────────
 
 .assign-dialog {
@@ -1992,7 +2383,7 @@ async function submitAssign() {
 
   &.active {
     border-color: var(--matou-primary);
-    background: rgba(30, 95, 116, 0.06);
+    background: color-mix(in srgb, var(--matou-primary) 6%, transparent);
     color: var(--matou-primary);
   }
 }
@@ -2019,7 +2410,7 @@ async function submitAssign() {
 
   &.selected {
     border-color: var(--matou-primary);
-    background: rgba(30, 95, 116, 0.06);
+    background: color-mix(in srgb, var(--matou-primary) 6%, transparent);
   }
 }
 
@@ -2097,7 +2488,7 @@ async function submitAssign() {
   max-width: 80%;
 
   &--mine {
-    background: var(--matou-primary-light, rgba(37, 99, 235, 0.08));
+    background: var(--matou-primary-light);
     border-color: rgba(37, 99, 235, 0.15);
     border-radius: 12px 12px 4px 12px;
   }

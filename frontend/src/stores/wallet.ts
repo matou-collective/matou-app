@@ -2,29 +2,19 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
+import {
+  roleCredentialsForBackendSync,
+  toWalletCredential,
+  type WalletCredential,
+} from 'src/lib/walletCredential';
+import { withLiveStanding } from 'src/lib/keri/communityStanding';
+import { syncCredentials } from 'src/lib/api/client';
 
 // --- Types ---
 
-export interface WalletCredential {
-  said: string;
-  schemaSaid: string;
-  schemaTitle: string;
-  schemaDescription: string;
-  issuerAid: string;
-  issueeAid: string;
-  communityName: string;
-  role: string;
-  permissions: string[];
-  joinedAt: string;
-  issuedAt: string;
-  status: string;
-  // Endorsement-specific
-  claim: string;
-  endorsementType: string;
-  // Event attendance-specific
-  eventName: string;
-  eventType: string;
-}
+// The credential's shape and its mapping from the agent's raw record live in
+// `src/lib/walletCredential`, shared with the sign-in approve card (#683).
+export type { WalletCredential };
 
 export interface TokenBalance {
   type: 'GOV' | 'UTIL';
@@ -103,30 +93,7 @@ export const useWalletStore = defineStore('wallet', () => {
     cred: Record<string, unknown>,
     schemaMap: Map<string, { title: string; description: string }>,
   ): WalletCredential {
-    const sad = cred.sad as Record<string, unknown> | undefined;
-    const attrs = (sad?.a || {}) as Record<string, unknown>;
-    const statusObj = cred.status as Record<string, unknown> | undefined;
-    const schemaSaid = (sad?.s as string) || '';
-    const schema = schemaMap.get(schemaSaid);
-
-    return {
-      said: (sad?.d as string) || '',
-      schemaSaid,
-      schemaTitle: schema?.title || '',
-      schemaDescription: schema?.description || '',
-      issuerAid: (sad?.i as string) || '',
-      issueeAid: (attrs.i as string) || identityStore.currentAID?.prefix || '',
-      communityName: (attrs.communityName as string) || '',
-      role: (attrs.role as string) || '',
-      permissions: (attrs.permissions as string[]) || [],
-      joinedAt: (attrs.joinedAt as string) || '',
-      issuedAt: (attrs.dt as string) || '',
-      status: (statusObj?.s as string) || 'unknown',
-      claim: (attrs.claim as string) || '',
-      endorsementType: (attrs.endorsementType as string) || '',
-      eventName: (attrs.eventName as string) || '',
-      eventType: (attrs.eventType as string) || '',
-    };
+    return toWalletCredential(cred, schemaMap, identityStore.currentAID?.prefix || '');
   }
 
   async function fetchSchemas(
@@ -161,7 +128,12 @@ export const useWalletStore = defineStore('wallet', () => {
     credentialsError.value = null;
 
     try {
-      const rawCredentials = await client.credentials().list();
+      // The agent reads a credential's standing as it was when admitted; the
+      // community's key history says whether it has been revoked since (#687).
+      const rawCredentials = await withLiveStanding(
+        await client.credentials().list(),
+        identityStore.currentAID?.prefix,
+      );
       console.log('[WalletStore] Loaded credentials:', rawCredentials.length);
 
       // Collect unique schema SAIDs and fetch their metadata
@@ -177,12 +149,35 @@ export const useWalletStore = defineStore('wallet', () => {
       credentials.value = rawCredentials.map((c: unknown) =>
         mapRawCredential(c as Record<string, unknown>, schemaMap)
       );
+
+      // Push the member's own role credentials to the backend cache so RBAC
+      // role resolution sees a received steward credential even when the
+      // community trees won't sync (no read key) — see #744.
+      await syncRoleCredentialsToBackend();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[WalletStore] Failed to load credentials:', err);
       credentialsError.value = msg;
     } finally {
       credentialsLoading.value = false;
+    }
+  }
+
+  // Sync the member's own role credentials to the backend's credential cache.
+  // The backend derives RBAC roles from that cache (CredentialRoleLookup,
+  // #739); a received Operations Steward credential that only lives in the
+  // KERIA wallet otherwise never upgrades the member's effective role, leaving
+  // them stuck on "insufficient permissions" (#744). Non-fatal: a failed sync
+  // must not break the wallet view, and the next refresh retries.
+  async function syncRoleCredentialsToBackend(): Promise<void> {
+    const myAid = identityStore.currentAID?.prefix;
+    if (!myAid) return;
+    const toSync = roleCredentialsForBackendSync(credentials.value, myAid);
+    if (toSync.length === 0) return;
+    try {
+      await syncCredentials({ userAid: myAid, credentials: toSync });
+    } catch (err) {
+      console.warn('[WalletStore] Role-credential backend sync deferred:', err);
     }
   }
 

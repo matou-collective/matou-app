@@ -15,7 +15,9 @@
       </span>
     </div>
 
-    <h3 class="card-title">{{ contribution.title }}</h3>
+    <h3 class="card-title">
+      <span v-if="contribution.reference" class="contribution-ref">{{ contribution.reference }}</span>{{ contribution.title }}
+    </h3>
 
     <p class="card-description">{{ contribution.description }}</p>
 
@@ -114,6 +116,7 @@ const assignedName = computed(() => {
 
 <style scoped lang="scss">
 @import 'src/css/contribution-status.scss';
+@include contribution-reference;
 
 .contribution-card {
   position: relative;
@@ -132,7 +135,7 @@ const assignedName = computed(() => {
   }
 
   &:hover {
-    border-color: var(--matou-accent, #4a9d9c);
+    border-color: var(--matou-accent);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   }
 }
@@ -229,7 +232,7 @@ const assignedName = computed(() => {
   height: 20px;
   padding: 0 6px;
   border-radius: 10px;
-  background: var(--matou-destructive, #dc2626);
+  background: var(--matou-destructive);
   color: white;
   font-size: 0.7rem;
   font-weight: 600;

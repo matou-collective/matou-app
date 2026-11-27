@@ -304,6 +304,93 @@ db run-end --run RUN95B --verdict ok --source test --exit 0 --ended 1790000000
   || fail "the run-end mass finaliser must close the open attempt (invariant 2 intact)"
 pass=$((pass+1))
 
+# --- #200: a mid-run failover attributes iterations to two different fingerprints
+#     The claude-fence shim prints one `claude-account-fp=<fp>` protocol line per
+#     iteration into the combined worker output; the recorder zips them
+#     positionally against iterations[] IN ORDER, exactly like SANDCASTLE_ATTEMPT.
+#     So iteration 1 (ran on account A's token) and iteration 2 (failed over to
+#     B's token mid-run) stamp DIFFERENT account_fp on their spend rows — the
+#     attribution no longer races a single post-run marker read. A third
+#     iteration with NO fp line leaves account_fp NULL (the flag is omitted).
+fpA=aaaaaaaaaaaa; fpB=bbbbbbbbbbbb
+payloadfp="{
+  \"stdout\": \"claude-account-fp=$fpA\\nSANDCASTLE_ATTEMPT issue=301 outcome=success commits=c1\\nclaude-account-fp=$fpB\\nSANDCASTLE_ATTEMPT issue=302 outcome=success commits=c2\\nSANDCASTLE_ATTEMPT issue=303 outcome=success commits=c3\",
+  \"iterations\": [
+    {\"sessionId\": \"fp-1\", \"sessionFilePath\": \"/logs/nofp1.jsonl\",
+     \"usage\": {\"inputTokens\": 1, \"cacheCreationInputTokens\": 0, \"cacheReadInputTokens\": 0, \"outputTokens\": 1}},
+    {\"sessionId\": \"fp-2\", \"sessionFilePath\": \"/logs/nofp2.jsonl\",
+     \"usage\": {\"inputTokens\": 1, \"cacheCreationInputTokens\": 0, \"cacheReadInputTokens\": 0, \"outputTokens\": 1}},
+    {\"sessionId\": \"fp-3\", \"sessionFilePath\": \"/logs/nofp3.jsonl\",
+     \"usage\": {\"inputTokens\": 1, \"cacheCreationInputTokens\": 0, \"cacheReadInputTokens\": 0, \"outputTokens\": 1}}
+  ]
+}"
+printf '%s' "$payloadfp" | bash "$script" RUNFP
+[ "$(val "SELECT account_fp FROM spend WHERE run_id='RUNFP' AND issue=301")" = "$fpA" ] \
+  || fail "iteration 1's spend must carry account A's fingerprint"
+[ "$(val "SELECT account_fp FROM spend WHERE run_id='RUNFP' AND issue=302")" = "$fpB" ] \
+  || fail "a mid-run failover must stamp iteration 2's spend with the OTHER account's fingerprint"
+[ "$(val "SELECT account_fp FROM spend WHERE run_id='RUNFP' AND issue=301")" \
+  != "$(val "SELECT account_fp FROM spend WHERE run_id='RUNFP' AND issue=302")" ] \
+  || fail "the two iterations must attribute to two DIFFERENT fingerprints"
+[ -z "$(val "SELECT account_fp FROM spend WHERE run_id='RUNFP' AND issue=303")" ] \
+  || fail "an iteration with no fp protocol line must leave account_fp NULL"
+pass=$((pass+1))
+
+# --- #2110: the SANDCASTLE_ATTEMPT markers are read from the host-mounted SINK --
+#     (.attemptsSink), not only the worker's stdout. close-report.sh appends every
+#     marker to that sink (#2106); main.mts reads it into the payload before the
+#     mount is torn down. A worker that pipes close-report through `| tail`/`| head`
+#     truncates markers out of `.stdout` — the same fragility #2106 fixed for the
+#     #283 reconcile. Here that truncation would BOTH drop an iteration's telemetry
+#     AND misalign the positional zip (markers[i] -> iteration i) for every later
+#     iteration. The sink carries the full, in-order set, so prefer it. Below,
+#     iteration 1 worked 901 but its marker was `| tail`'d out of stdout; only
+#     902's survived there. The sink has both, in order.
+payloadsink='{
+  "stdout": "agent chatter — a worker piped close-report through tail, so 901 marker never reached stdout\nSANDCASTLE_ATTEMPT issue=902 outcome=success commits=bbb",
+  "attemptsSink": "SANDCASTLE_ATTEMPT issue=901 outcome=success commits=aaa\nSANDCASTLE_ATTEMPT issue=902 outcome=success commits=bbb",
+  "iterations": [
+    {"sessionId": "snk-1", "sessionFilePath": "/logs/snk1.jsonl",
+     "usage": {"inputTokens": 111, "cacheCreationInputTokens": 0, "cacheReadInputTokens": 0, "outputTokens": 11}},
+    {"sessionId": "snk-2", "sessionFilePath": "/logs/snk2.jsonl",
+     "usage": {"inputTokens": 222, "cacheCreationInputTokens": 0, "cacheReadInputTokens": 0, "outputTokens": 22}}
+  ]
+}'
+printf '%s' "$payloadsink" | bash "$script" RUNSINK
+[ "$(count "attempts WHERE run_id='RUNSINK' AND issue=901")" = 1 ] \
+  || fail "iteration 1's marker was truncated from stdout — it MUST be recovered from the sink (attempt row for 901)"
+[ "$(val "SELECT status FROM attempts WHERE run_id='RUNSINK' AND issue=901")" = success ] \
+  || fail "the sink-recovered 901 attempt must read status=success"
+[ "$(val "SELECT commits FROM attempts WHERE run_id='RUNSINK' AND issue=901")" = "aaa" ] \
+  || fail "the sink-recovered 901 attempt must carry its commits verbatim"
+[ "$(count "attempts WHERE run_id='RUNSINK' AND issue=902")" = 1 ] \
+  || fail "iteration 2's 902 attempt must also be recorded exactly once"
+# Alignment: the positional zip must pair each sink marker with the RIGHT iteration
+# — 901 with iteration 1 (111 input tokens), 902 with iteration 2 (222), never crossed.
+[ "$(val "SELECT input_tokens FROM spend WHERE run_id='RUNSINK' AND issue=901")" = 111 ] \
+  || fail "901 must zip to iteration 1 (111 input tokens), not be misaligned"
+[ "$(val "SELECT input_tokens FROM spend WHERE run_id='RUNSINK' AND issue=902")" = 222 ] \
+  || fail "902 must zip to iteration 2 (222 input tokens)"
+[ "$(val "SELECT count(*) FROM spend WHERE run_id='RUNSINK' AND issue IS NULL")" = 0 ] \
+  || fail "with the sink carrying both markers, no iteration is left stranded issue-NULL"
+pass=$((pass+1))
+
+# --- #2110: an empty/absent attemptsSink falls back to the stdout marker parse --
+#     (a bare `pnpm run sandcastle`, or a run where the best-effort sink write was
+#     skipped) — exactly pre-#2110 behaviour, so existing consumers never regress.
+payloadnosink='{
+  "stdout": "SANDCASTLE_ATTEMPT issue=903 outcome=success commits=ccc",
+  "attemptsSink": "",
+  "iterations": [{"sessionId": "ns-1", "sessionFilePath": "/logs/ns1.jsonl",
+    "usage": {"inputTokens": 7, "cacheCreationInputTokens": 0, "cacheReadInputTokens": 0, "outputTokens": 1}}]
+}'
+printf '%s' "$payloadnosink" | bash "$script" RUNNOSINK
+[ "$(val "SELECT status FROM attempts WHERE run_id='RUNNOSINK' AND issue=903")" = success ] \
+  || fail "an empty attemptsSink must fall back to the stdout marker parse (pre-#2110)"
+[ "$(val "SELECT input_tokens FROM spend WHERE run_id='RUNNOSINK' AND issue=903")" = 7 ] \
+  || fail "the stdout-fallback iteration's spend must still attribute to issue 903"
+pass=$((pass+1))
+
 # --- malformed stdin: never crashes, records nothing, exits 0 ----------------
 printf 'not json {' | bash "$script" RUN4 || fail "malformed stdin must still exit 0"
 [ "$(count "attempts WHERE run_id='RUN4'")" = 0 ] || fail "malformed stdin must record nothing"

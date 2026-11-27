@@ -65,4 +65,46 @@ identity_apply() {
   swarm_git_identity "$1"
 }
 
+# heal_workdir_literal_home <value> — TRUE (rc 0) when a HEAL_WORKDIR value is a
+# LITERAL single-host home path (begins `/home/`) instead of the per-host
+# `$HOME/...` form the generator writes (#352). HEAL_WORKDIR is read on EVERY
+# pool host — healer.yml is `runs-on: swarm`, and swarm.yml/triage.yml call
+# heal.sh wherever a failed run landed — so a literal home MEASURED on one host
+# (say `/home/dev/...`) dies on every host whose runner user home differs, at
+# `mkdir -p "$HEALER_STATE"` with Permission denied (a ~10s red). This operates
+# on the UNEXPANDED source text, never a sourced value: `$HOME/swarm/<slug>` is
+# correct and never matches; `/home/dev/swarm/<slug>` is the trap and does.
+heal_workdir_literal_home() {
+  case "${1:-}" in
+    /home/*) return 0 ;;
+    *)       return 1 ;;
+  esac
+}
+
+# identity_heal_workdir_value <swarm-identity.sh> — echo the RHS of the file's
+# HEAL_WORKDIR default assignment, UNEXPANDED, or nothing when the file has no
+# such line. Reads the committed source text rather than sourcing the file —
+# sourcing would expand `$HOME`, hiding the very literal this hunts. Accepts the
+# generated default form `: "${HEAL_WORKDIR:=...}"` and a plain `HEAL_WORKDIR=...`.
+identity_heal_workdir_value() {
+  [ -f "${1:-}" ] || return 0
+  sed -n -e 's/.*HEAL_WORKDIR:=\([^}"]*\).*/\1/p' \
+         -e 's/^[[:space:]]*HEAL_WORKDIR=\([^"]*\).*/\1/p' "$1" | head -1
+}
+
+# identity_check_heal_workdir <swarm-identity.sh> — the shared #352 guard behind
+# `onboard-host enrol`'s preflight AND check-harness-drift.sh. rc 1 (loud, to
+# stderr, the offending value and the portable form named) when the committed
+# HEAL_WORKDIR default is a literal `/home/...` path; rc 0 when it is the
+# per-host `$HOME/...` form or absent.
+identity_check_heal_workdir() {
+  local file="${1:-}" val
+  val="$(identity_heal_workdir_value "$file")"
+  if [ -n "$val" ] && heal_workdir_literal_home "$val"; then
+    echo "identity: HEAL_WORKDIR default '$val' in $file is a literal home path — HEAL_WORKDIR is evaluated on EVERY pool host (healer.yml is runs-on: swarm; swarm.yml/triage.yml run heal.sh wherever a run failed), so a one-host home path dies elsewhere at mkdir with Permission denied. Use \$HOME/swarm/<slug> (#352)." >&2
+    return 1
+  fi
+  return 0
+}
+
 fi

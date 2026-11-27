@@ -52,11 +52,39 @@ PP_PROTECTED_DIRS_DEFAULT=".sandcastle .forgejo"
 # Paths exempted from the protected set — runtime, not machinery. The healer's
 # evidence directories (/tmp/matou-heal-*) are runtime artifacts the healer
 # writes during an investigation; they must never be treated as machinery a
-# worker edited. Overridable/extendable via PP_EXEMPT_GLOBS (newline/space
-# separated shell globs, matched against the path). The healer's own "never
-# edits itself" rule is unchanged and lives in the rehearsal healer's rails —
-# this exemption only keeps its evidence dirs out of the worker boundary.
-PP_EXEMPT_GLOBS_DEFAULT="*matou-heal-* */matou-heal-*"
+# worker edited. `.sandcastle/logs/*`, `.sandcastle/.state/*` and
+# `.sandcastle/worktrees/*` are the gitignored runtime-artifact trees (see
+# `.sandcastle/.gitignore`) that live UNDER the protected `.sandcastle/` dir but
+# are NOT machinery. The harness itself writes a uniquely-named worker log
+# (`.sandcastle/logs/sandcastle-worker-<ts>-<id>-worker.log`) and checks out the
+# worker's own git worktree (`.sandcastle/worktrees/sandcastle-worker-<ts>-<id>/`,
+# a full copy of the repo) into the snapshotted workspace AFTER the
+# before-snapshot is taken (#273) — fingerprinting them wholesale made every
+# worker-bearing run a #445 false positive that rolled back (DELETED) the
+# healer's own diagnostic log and the live worker's entire checkout. Machinery
+# under `.sandcastle/` (`*.sh`, `*.mts`, prompts, workflows) stays protected; only
+# these three runtime trees are exempt. Overridable/extendable via
+# PP_EXEMPT_GLOBS (newline/space separated shell globs, matched against the
+# path). The healer's own "never edits itself" rule is unchanged and lives in the
+# rehearsal healer's rails — this exemption only keeps its evidence dirs out of
+# the worker boundary.
+#
+# The benign host-side CACHE trees under `.sandcastle/` are exempt too (#284(a),
+# the deferred half of #272): `.sandcastle/pnpm-store/*`, `.sandcastle/nix-store/*`
+# and the regenerated Python bytecode `.sandcastle/__pycache__/*` plus the
+# per-subpackage `.sandcastle/*/__pycache__/*` (swarm-db.py and the TUI), and the
+# `.sandcastle/go-cache/*` (gomobile/go-build) and `.sandcastle/npm-cache/*`
+# host-side caches (#761 — originally missed here, so pp_snapshot cp'd ~2.8G of
+# cache blobs into /tmp twice per run and exhausted the tmpfs user quota). All are
+# gitignored by `.sandcastle/.gitignore`, mounted or regenerated under the
+# protected tree exactly like logs/.state/worktrees — the same low-risk runtime
+# class, not machinery. They stay ANCHORED under `.sandcastle/` (never a bare
+# `*__pycache__/*`) so a worker cannot hide a machinery edit under an invented
+# cache-looking directory. `.sandcastle/.env` and `.sandcastle/secrets/*_token`
+# are #272's OTHER deferred half — they were NOT folded in here: exempting them
+# is a protected-boundary POSTURE change (it removes host secrets from what the
+# boundary rolls back), a one-way door ADR 0174 reserves for a human (#284(b)).
+PP_EXEMPT_GLOBS_DEFAULT="*matou-heal-* */matou-heal-* .sandcastle/logs/* .sandcastle/.state/* .sandcastle/worktrees/* .sandcastle/pnpm-store/* .sandcastle/nix-store/* .sandcastle/go-cache/* .sandcastle/npm-cache/* .sandcastle/__pycache__/* .sandcastle/*/__pycache__/*"
 
 # The escape path, spelled out verbatim so every enforcement failure routes a
 # worker that was RIGHT the machinery needs changing instead of letting it
@@ -73,10 +101,36 @@ If you believe a protected path genuinely needs changing, do NOT edit it. Instea
   3. Continue your original ticket without the machinery change if possible, or
      report blocked in your close report naming the filed issue.'
 
+# _pp_words <raw> — split a newline/space separated list into the global array
+# `_PP_WORDS`, WITHOUT pathname expansion.
+#
+# Why this exists: unquoted `for g in $list` word-splitting ALSO performs
+# pathname expansion, so any entry that happens to match something under the
+# caller's cwd is silently REWRITTEN into the concrete names that exist right
+# now. run-swarm.sh calls the boundary with cwd = the repo root, where
+# `.sandcastle/.state/` and `.sandcastle/logs/` do exist — so the exemption
+# `.sandcastle/.state/*` expanded to the single literal `.sandcastle/.state/healer`
+# and stopped exempting anything BENEATH it, making every file under a runtime
+# tree protected again and re-opening the #273/#278 false positive (run 22813
+# attributed and rolled back `.sandcastle/.state/healer/<signature>` — the
+# healer's own ledger — to the worker). The patterns must survive splitting as
+# patterns; only `case` may expand them.
+_PP_WORDS=()
+_pp_words() {
+  local raw="$1" w restore_noglob=1
+  case "$-" in *f*) restore_noglob=0 ;; esac
+  set -f
+  _PP_WORDS=()
+  for w in $raw; do [ -n "$w" ] && _PP_WORDS+=("$w"); done
+  [ "$restore_noglob" = 0 ] || set +f
+}
+
 # pp_protected_dirs — echo the fingerprinted protected directories, one per line.
 pp_protected_dirs() {
-  local raw="${PP_PROTECTED_DIRS:-$PP_PROTECTED_DIRS_DEFAULT}" d
-  for d in $raw; do [ -n "$d" ] && printf '%s\n' "$d"; done
+  _pp_words "${PP_PROTECTED_DIRS:-$PP_PROTECTED_DIRS_DEFAULT}"
+  local d
+  # `${a[@]+...}` so an EMPTY list is not an unbound-variable abort under set -u.
+  for d in ${_PP_WORDS[@]+"${_PP_WORDS[@]}"}; do [ -n "$d" ] && printf '%s\n' "$d"; done
 }
 
 # pp_is_protected <relpath> — return 0 if the path is inside the declared
@@ -88,8 +142,9 @@ pp_is_protected() {
   rel="${rel#./}"; rel="${rel%/}"
   [ -n "$rel" ] || return 1
 
-  local globs="${PP_EXEMPT_GLOBS:-$PP_EXEMPT_GLOBS_DEFAULT}"
-  for g in $globs; do
+  _pp_words "${PP_EXEMPT_GLOBS:-$PP_EXEMPT_GLOBS_DEFAULT}"
+  local -a exempt=(${_PP_WORDS[@]+"${_PP_WORDS[@]}"})
+  for g in ${exempt[@]+"${exempt[@]}"}; do
     # shellcheck disable=SC2254
     case "$rel" in $g) return 1 ;; esac
   done
@@ -117,8 +172,24 @@ _pp_digest() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 # and a `blobs/<key>` copy of each file's bytes (so a rollback can restore the
 # pre-run content, not merely detect the change). Exempt paths are skipped.
 # Idempotent: the snapdir is (re)initialised each call.
+#
+# Soundness exposure (#321): a blob `cp` can fail (a `/tmp` space/quota wall) and
+# must NOT silently truncate the snapshot into a baseline the boundary then
+# trusts. Two things make a truncated snapshot DETECTABLE by the caller:
+#   - every blob-copy failure is COUNTED, and the count is written to the marker
+#     file `blob_failures` as the LAST action — so a non-zero count means
+#     reduced rollback fidelity (a missing blob cannot be restored) AND is the
+#     canary for the same disk pressure that can abort the `index` write;
+#   - because the marker is written LAST, an ABORTED snapshot (e.g. a failed
+#     `index` append under the caller's `set -e`, which leaves the index
+#     partial — the genuine `appeared`-false-attribution hazard) leaves the
+#     marker ABSENT. `pp_snapshot_sound` reads both signals; `verify-lib.sh`
+#     degrades the boundary to unenforced (loud, never a false RED or rollback)
+#     when a snapshot is not sound.
+# Returns non-zero when any blob copy failed (callers that `|| true` the call
+# still see the signal via the marker file).
 pp_snapshot() {
-  local root="$1" snap="$2" d rel f digest key
+  local root="$1" snap="$2" d rel f digest key failures=0
   rm -rf "$snap"; mkdir -p "$snap/blobs"; : > "$snap/index"
   while IFS= read -r d; do
     [ -n "$d" ] || continue
@@ -128,10 +199,37 @@ pp_snapshot() {
       pp_is_protected "$rel" || continue
       digest="$(_pp_digest "$f")"
       key="$(_pp_key "$rel")"
-      cp "$f" "$snap/blobs/$key" 2>/dev/null || true
+      # Keep the index line even on a cp failure: dropping it would itself make
+      # the path read as `appeared` next run. The failure is surfaced by count.
+      cp "$f" "$snap/blobs/$key" 2>/dev/null || failures=$((failures + 1))
       printf '%s\t%s\t%s\n' "$digest" "$key" "$rel" >> "$snap/index"
     done < <(find "$root/$d" -type f -print0 2>/dev/null)
   done < <(pp_protected_dirs)
+  # Written LAST so it doubles as the completion marker (absent ⇒ aborted).
+  printf '%s\n' "$failures" > "$snap/blob_failures"
+  [ "$failures" -eq 0 ]
+}
+
+# pp_blob_failures <snapdir> — echo the blob-copy failure count pp_snapshot
+# recorded (0 when the marker is absent — callers distinguish absence via
+# pp_snapshot_sound). Always numeric.
+pp_blob_failures() {
+  local snap="$1" n
+  n="$(cat "$snap/blob_failures" 2>/dev/null)" || n=0
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# pp_snapshot_sound <snapdir> — rc 0 iff the snapshot completed cleanly: its
+# completion marker exists AND records zero blob-copy failures. A MISSING marker
+# (pp_snapshot aborted mid-fingerprint — e.g. a disk-full `index` append under
+# the caller's set -e, leaving a partial index) OR a non-zero failure count both
+# mean the fingerprint may be TRUNCATED and must not be trusted as a boundary
+# baseline (#321).
+pp_snapshot_sound() {
+  local snap="$1"
+  [ -f "$snap/blob_failures" ] || return 1
+  [ "$(pp_blob_failures "$snap")" -eq 0 ]
 }
 
 # _pp_load <snapdir> <assoc-name-digest> <assoc-name-key> — read a snapshot's
@@ -146,12 +244,81 @@ _pp_load() {
   done < "$snap/index"
 }
 
+# ── git-aware exoneration + canonical restore (#2104) ────────────────────────
+# The fingerprint above compares WALL-CLOCK working-tree bytes before vs after
+# the worker. On the SHARED workdir (ADR 0184's two slots; the per-repo lock is
+# released before the run, #638) a PEER job legitimately `reset --hard
+# origin/main` mid-run, so a commit that landed on origin/main DURING the run (a
+# heal, a human push) materialises into the working tree between the two
+# snapshots and the byte compare attributes it to the worker. Run 57327 reded
+# exactly this: #1252's `.sandcastle/ts-gate.sh` arrived via a peer triage reset,
+# was scored `appeared`, rolled back — and DELETED a file `main` owns (#2099).
+#
+# The cure is to subtract, from the attributed set, every path whose AFTER
+# content is already the CANONICAL `origin/main` content AND which the worker did
+# not dirty before it ran: such a path is an upstream advance, not the worker's
+# edit. This is strictly no-weaker than the byte compare — the only paths it
+# drops are byte-identical to what `origin/main` ALREADY ships, so there is no
+# machinery deviation left to protect — while a path the worker genuinely edited
+# (content != origin/main), committed on its branch (ditto), dirtied, or deleted
+# is still caught. A path DIRTY before the worker ran (another session's
+# uncommitted machinery edit — the #239 shared-worktree hazard) is NEVER
+# exonerated, so a worker reverting it to the committed baseline is still rolled
+# back and that pending work is still restored.
+#
+# Both the canonical lookup and the before-dirty set are supplied by the git-ful
+# caller (verify-lib.sh) through two env seams, so this library stays PURE and
+# git-free: with NEITHER set (the offline tests over plain directories, a repo
+# that opted the git awareness out) the boundary behaves EXACTLY as the byte
+# compare did.
+#
+#   PP_CANONICAL_CMD     invoked as `$PP_CANONICAL_CMD <relpath> <dest>`: writes
+#                        the canonical (origin/main) bytes of <relpath> to <dest>
+#                        and exits 0 when that path is tracked in canonical, else
+#                        exits non-zero (leaving <dest> untouched). Empty => no
+#                        exoneration and no canonical restore.
+#   PP_BEFORE_DIRTY_FILE a file of newline-separated repo-relative paths that were
+#                        DIRTY (tracked-modified or untracked) when the before
+#                        snapshot was taken. A path listed here is never exonerated.
+
+# _pp_canonical_digest <rel> — echo the sha256 of the canonical (origin/main)
+# bytes of <rel>, or nothing when PP_CANONICAL_CMD is unset or <rel> is not
+# tracked in canonical. An absent path reads as the empty digest, so a worker
+# whose AFTER state matches an upstream deletion is exonerated too.
+_pp_canonical_digest() {
+  local rel="$1" cmd="${PP_CANONICAL_CMD:-}" tmp d=""
+  [ -n "$cmd" ] || return 0
+  tmp="$(mktemp)"
+  "$cmd" "$rel" "$tmp" 2>/dev/null && d="$(_pp_digest "$tmp")"
+  rm -f "$tmp"
+  [ -n "$d" ] && printf '%s' "$d"
+}
+
+# _pp_dirty_before <rel> — rc 0 if <rel> was recorded DIRTY in the before
+# snapshot (PP_BEFORE_DIRTY_FILE), so it must never be exonerated.
+_pp_dirty_before() {
+  local rel="$1" f="${PP_BEFORE_DIRTY_FILE:-}"
+  [ -n "$f" ] && [ -f "$f" ] || return 1
+  grep -qxF -- "$rel" "$f"
+}
+
+# pp_canonical_restore <rel> <dest> — restore <rel> from the canonical
+# (origin/main) tree into <dest>. rc 0 iff PP_CANONICAL_CMD is wired AND <rel> is
+# tracked in canonical (its bytes are now in <dest>); rc 1 otherwise, so the
+# caller falls back to deleting a path the worker truly introduced.
+pp_canonical_restore() {
+  local rel="$1" dest="$2" cmd="${PP_CANONICAL_CMD:-}"
+  [ -n "$cmd" ] || return 1
+  mkdir -p "$(dirname "$dest")" 2>/dev/null || true
+  "$cmd" "$rel" "$dest" 2>/dev/null
+}
+
 # pp_attributed <before_snap> <after_snap> — print one `<disposition>\t<relpath>`
 # line per protected path the worker introduced, where disposition is
 # `appeared` (absent before), `vanished` (absent after), or `changed`. Emits
 # nothing when the worker introduced no protected change. Sorted by path.
 pp_attributed() {
-  local before="$1" after="$2" rel b a
+  local before="$1" after="$2" rel b a canondig
   local -A BD=() BK=() AD=() AK=()
   _pp_load "$before" BD BK
   _pp_load "$after"  AD AK
@@ -161,6 +328,14 @@ pp_attributed() {
     [ -n "$rel" ] || continue
     b="${BD[$rel]:-}"; a="${AD[$rel]:-}"
     [ "$b" = "$a" ] && continue
+    # #2104: an upstream advance is not the worker's edit. When the git-ful caller
+    # wires PP_CANONICAL_CMD, drop a path whose AFTER content already equals the
+    # canonical origin/main content AND which the worker did not dirty before it
+    # ran — strictly no-weaker (the dropped bytes are what main already ships).
+    if [ -n "${PP_CANONICAL_CMD:-}" ] && ! _pp_dirty_before "$rel"; then
+      canondig="$(_pp_canonical_digest "$rel")"
+      [ "$a" = "$canondig" ] && continue
+    fi
     if [ -z "$b" ]; then printf 'appeared\t%s\n' "$rel"
     elif [ -z "$a" ]; then printf 'vanished\t%s\n' "$rel"
     else printf 'changed\t%s\n' "$rel"; fi
@@ -168,10 +343,13 @@ pp_attributed() {
 }
 
 # pp_rollback <root> <before_snap> <after_snap> — restore every attributed
-# protected path to its PRE-RUN state: a path the worker created is deleted; a
-# path it changed or deleted is restored byte-for-byte from the before-snapshot
-# blob. Paths the worker did not touch (incl. pre-existing dirty ones) are never
-# read or written. Prints one `<action>\t<relpath>` line per path acted on.
+# protected path to its PRE-RUN state: a path it changed or deleted is restored
+# byte-for-byte from the before-snapshot blob; a path the worker created is
+# DELETED, unless the canonical tree (origin/main, via PP_CANONICAL_CMD) tracks
+# it — then it is reverted to the committed content so the boundary can never
+# DESTROY machinery `main` owns (#2104/#2099). Paths the worker did not touch
+# (incl. pre-existing dirty ones) are never read or written. Prints one
+# `<action>\t<relpath>` line per path acted on.
 pp_rollback() {
   local root="$1" before="$2" after="$3" disp rel key
   local -A BK=() BD=()
@@ -179,14 +357,20 @@ pp_rollback() {
   pp_attributed "$before" "$after" | while IFS=$'\t' read -r disp rel; do
     [ -n "$rel" ] || continue
     key="${BK[$rel]:-}"
-    if [ -z "$key" ]; then
-      # No pre-run content: the worker created it — remove the introduction.
-      rm -f "$root/$rel" 2>/dev/null || true
-      printf 'deleted\t%s\n' "$rel"
-    else
+    if [ -n "$key" ]; then
       mkdir -p "$(dirname "$root/$rel")" 2>/dev/null || true
       cp "$before/blobs/$key" "$root/$rel" 2>/dev/null || true
       printf 'restored\t%s\n' "$rel"
+    elif pp_canonical_restore "$rel" "$root/$rel"; then
+      # #2104: no pre-run blob, but origin/main TRACKS this path — restore the
+      # committed machinery; the boundary must never DELETE a file main owns
+      # (the #2099 loss), only revert a worker's introduction to canonical.
+      printf 'restored\t%s\n' "$rel"
+    else
+      # No pre-run content and origin/main does not track it either — the worker
+      # truly introduced this path; remove the introduction.
+      rm -f "$root/$rel" 2>/dev/null || true
+      printf 'deleted\t%s\n' "$rel"
     fi
   done
 }

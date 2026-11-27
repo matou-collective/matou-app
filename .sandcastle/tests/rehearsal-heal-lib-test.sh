@@ -5,6 +5,10 @@
 # and the loop-guard marks. Real throwaway git repos, no shims.
 # Run: bash .sandcastle/tests/rehearsal-heal-lib-test.sh
 set -euo pipefail
+# #277: neutralise any ambient account fingerprint so the no-fingerprint scrub
+# scenario (8) exercises the fp-LESS path on every host, not just those where
+# CLAUDE_ACCOUNT_FP happens to be unset. Matches the #227 hermeticity sweep.
+unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN_B CLAUDE_TOKEN_PRIMARY CLAUDE_ACCOUNT_FP 2>/dev/null || true
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/../rehearsal-heal-lib.sh"
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -245,6 +249,70 @@ co="$tmp/co5"; pre="$(mkco "$co")"
 heal_rails "$co" "$pre" && fail "workflow edit passed"
 pass=$((pass+1))
 
+# --- #2177: the FACTORY_MANIFEST rail — a heal must not land a drifted vendored
+#     file. The heal clone wires no core.hooksPath, so ADR 0287's pre-push drift
+#     gate never fires; this rail is the only thing between a hand-edited
+#     vendored file and main (the heal twin of #1963/#1964, which #2177 witnessed
+#     landing: baa7f598). A manifest-path edit lands ONLY as a genuine re-vendor:
+#     FACTORY_REF bumped in the SAME commit AND a CLEAN drift verdict (exit 0).
+mkvendorco() { # mkvendorco <dir> <drift-exit> — a checkout with a vendored file,
+               # a FACTORY_MANIFEST that lists it, a FACTORY_REF, and a
+               # check-harness-drift.sh STUB that exits <drift-exit>. Echoes pre_head.
+  git init -q "$1"; ( cd "$1"; git config user.email t@t; git config user.name t
+    mkdir -p .sandcastle
+    printf 'vendored v1\n' > .sandcastle/forgejo-lib.sh
+    printf 'forgejo-lib.sh\n' > .sandcastle/FACTORY_MANIFEST
+    printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' > .sandcastle/FACTORY_REF
+    printf '#!/usr/bin/env bash\nexit %s\n' "$2" > .sandcastle/check-harness-drift.sh
+    chmod +x .sandcastle/check-harness-drift.sh
+    git add -A; git commit -qm base )
+  git -C "$1" rev-parse HEAD
+}
+
+# V1 (the pin #2177 asks for): a commit that edits a manifest path with NO
+# FACTORY_REF bump is reset + refused OFFLINE — the cheap pre-check fires before
+# the network drift check runs (the stub would exit 0, but it is never called).
+co="$tmp/coV1"; pre="$(mkvendorco "$co" 0)"
+( cd "$co" && printf 'vendored v2 (hand-edited)\n' > .sandcastle/forgejo-lib.sh \
+  && git commit -aqm "rehearsal healer: tweak forgejo-lib (sigV1)" )
+heal_rails "$co" "$pre" && fail "a vendored-path edit with no FACTORY_REF bump passed"
+[ "$HEAL_RAIL_REASON" = "vendored-path edit" ] || fail "V1 reason not vendored-path edit: $HEAL_RAIL_REASON"
+[ "$HEAL_RAIL_SWARMABLE" = "false" ] || fail "vendored-path refusal should not be swarmable"
+[ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset after vendored-path breach"
+pass=$((pass+1))
+
+# V2: a genuine re-vendor — the vendored file changes AND FACTORY_REF bumps AND
+# the drift check returns CLEAN (exit 0) — PASSES, the commit stands.
+co="$tmp/coV2"; pre="$(mkvendorco "$co" 0)"
+( cd "$co" && printf 'vendored v2\n' > .sandcastle/forgejo-lib.sh \
+  && printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' > .sandcastle/FACTORY_REF \
+  && git commit -aqm "rehearsal healer: re-vendor (sigV2)" )
+heal_rails "$co" "$pre" || fail "a clean re-vendor (FACTORY_REF bumped + drift clean) was refused"
+[ "$(git -C "$co" rev-parse HEAD)" != "$pre" ] || fail "clean re-vendor was reset"
+pass=$((pass+1))
+
+# V3: a FACTORY_REF bump whose drift check is NON-clean still refuses — a
+# TRANSPORT exit 3 (or any non-zero) is not a clean result (GOTCHAS #30 / ADR
+# 0287), so the edit cannot be cleared and is reset.
+co="$tmp/coV3"; pre="$(mkvendorco "$co" 3)"
+( cd "$co" && printf 'vendored v2\n' > .sandcastle/forgejo-lib.sh \
+  && printf 'cccccccccccccccccccccccccccccccccccccccc\n' > .sandcastle/FACTORY_REF \
+  && git commit -aqm "rehearsal healer: re-vendor with drift (sigV3)" )
+heal_rails "$co" "$pre" && fail "a vendored edit whose drift check faulted (exit 3) passed"
+[ "$HEAL_RAIL_REASON" = "vendored-path edit" ] || fail "V3 reason wrong: $HEAL_RAIL_REASON"
+[ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset after V3 (transport) breach"
+pass=$((pass+1))
+
+# V4: a commit that touches NO manifest path is untouched by the rail even with a
+# manifest present — the rail never over-fires on an ordinary heal and never runs
+# the network drift check (the stub exits 3, so if it WERE run this would refuse).
+co="$tmp/coV4"; pre="$(mkvendorco "$co" 3)"
+( cd "$co" && printf 'ordinary fix\n' > note.txt \
+  && git add -A && git commit -qm "rehearsal healer: ordinary (sigV4)" )
+heal_rails "$co" "$pre" || fail "an ordinary heal (no vendored path) was refused by the rail"
+[ "$(git -C "$co" rev-parse HEAD)" != "$pre" ] || fail "ordinary heal reset"
+pass=$((pass+1))
+
 # 6: two commits → breach + reset
 co="$tmp/co6"; pre="$(mkco "$co")"
 ( cd "$co" && echo a >> base.txt && git commit -aqm "rehearsal healer: one" \
@@ -267,6 +335,22 @@ msg="$(git -C "$co" log -1 --pretty=%B)"
 grep -qi 'closes #378' <<<"$msg" && fail "close keyword survived scrub"
 grep -q 'advances #378' <<<"$msg" || fail "keyword not rewritten to advances"
 grep -q '^rehearsal healer: ' <<<"$msg" || fail "prefix not enforced"
+# #223: with no CLAUDE_ACCOUNT_FP in env, scrub leaves the message byte-identical
+# to pre-#223 — no attribution trailer.
+grep -q '^Factory-Account:' <<<"$msg" && fail "trailer stamped with no fingerprint set"
+pass=$((pass+1))
+
+# 8b: #223 — the healer clone wires no hooksPath, so scrub itself stamps the
+# Factory-Account trailer from CLAUDE_ACCOUNT_FP (the account the heal ran on).
+co="$tmp/co8b"; pre="$(mkco "$co")"
+( cd "$co" && echo a >> base.txt && git commit -aqm "rehearsal healer: fix #379" )
+CLAUDE_ACCOUNT_FP=abc123def456 scrub_commit_message "$co"
+msg="$(git -C "$co" log -1 --pretty=%B)"
+[ "$(grep -c '^Factory-Account: abc123def456' <<<"$msg")" = 1 ] || fail "8b: one Factory-Account trailer with the fingerprint"
+grep -q '^rehearsal healer: ' <<<"$msg" || fail "8b: prefix still enforced alongside the trailer"
+# Idempotent: a second scrub with the same fp does not duplicate the trailer.
+CLAUDE_ACCOUNT_FP=abc123def456 scrub_commit_message "$co"
+[ "$(git -C "$co" log -1 --pretty=%B | grep -c '^Factory-Account:')" = 1 ] || fail "8b: trailer duplicated on re-scrub"
 pass=$((pass+1))
 
 # 9: mechanical-failure counter: 0 → mark → 1 → mark → 2 → clear → 0
@@ -324,22 +408,29 @@ heal_push "$co" "$pre" "$rd" && fail "heal_push landed despite a rebase conflict
 [ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset to pre after rebase conflict"
 pass=$((pass+1))
 
-# --- rehearsal_heal_authed_url (#676) ----------------------------------------
+# --- credential-free origin (#195, supersedes rehearsal_heal_authed_url #676) --
+# The healer now clones/pushes with a credential-free origin + git-cred-lib's
+# token-free helper, never a swarm:$FORGEJO_TOKEN@ URL. rehearsal-heal-lib sources
+# git-cred-lib, so git_cred_strip_url / git_cred_export / git_cred_persist are in
+# scope here — the helper injects auth at git time, no token on disk or argv.
 
-# 12: a bare git.matou.nz https URL gets the swarm:$FORGEJO_TOKEN credential
-FORGEJO_TOKEN=tok12
-got="$(rehearsal_heal_authed_url "https://git.matou.nz/Matou/idss.git")"
-[ "$got" = "https://swarm:tok12@git.matou.nz/Matou/idss.git" ] || fail "credential not injected: $got"
+# 12: the retired credential-INJECTING function is GONE (no token ever in a URL)
+! command -v rehearsal_heal_authed_url >/dev/null 2>&1 || fail "rehearsal_heal_authed_url should be removed (#195)"
+command -v git_cred_strip_url >/dev/null 2>&1 || fail "rehearsal-heal-lib must source git-cred-lib (git_cred_strip_url in scope)"
 pass=$((pass+1))
 
-# 13: a local bare-repo path (the test fixtures' shape) passes through unchanged
-got="$(rehearsal_heal_authed_url "$tmp/origin.git")"
+# 13: a token-bearing git.matou.nz origin is STRIPPED to credential-free — the
+# inverse of the old inject: auth now rides the helper, never the URL
+got="$(git_cred_strip_url "https://swarm:tok12@git.matou.nz/Matou/idss.git")"
+[ "$got" = "https://git.matou.nz/Matou/idss.git" ] || fail "credential not stripped: $got"
+pass=$((pass+1))
+
+# 14: a local bare-repo path (the fixtures' shape) and a bare https URL both pass
+# through unchanged — the clone / remote set-url call is a no-op on them
+got="$(git_cred_strip_url "$tmp/origin.git")"
 [ "$got" = "$tmp/origin.git" ] || fail "local path was rewritten: $got"
-pass=$((pass+1))
-
-# 14: a URL that already carries userinfo passes through unchanged (idempotent)
-got="$(rehearsal_heal_authed_url "https://swarm:tok12@git.matou.nz/Matou/idss.git")"
-[ "$got" = "https://swarm:tok12@git.matou.nz/Matou/idss.git" ] || fail "already-credentialed URL was rewritten: $got"
+got="$(git_cred_strip_url "https://git.matou.nz/Matou/idss.git")"
+[ "$got" = "https://git.matou.nz/Matou/idss.git" ] || fail "bare https URL was rewritten: $got"
 pass=$((pass+1))
 
 echo "OK: $pass cases"

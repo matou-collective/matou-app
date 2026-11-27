@@ -114,8 +114,10 @@ export FORGEJO_TOKEN FORGEJO_API
 . "$here/landing-lib.sh"
 policy_load "${SWARM_POLICY_FILE:-}"
 
-print_landing() { # print_landing <issue-number>
-  if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
+print_landing() { # print_landing <issue-number> [ticket-landing]
+  # The ticket's OWN landing (list-ready-tasks.sh's `.landing`, idss ADR 0267)
+  # wins over the repo default; absent (an older lister) falls back to it.
+  if [ "${2:-${SWARM_POLICY_LANDING:-push}}" = pr ]; then
     echo "landing: PR from $(landing_branch_for "$1")" >&2
   else
     echo "landing: push to main" >&2
@@ -165,9 +167,23 @@ alive_rc=0; wait "$alive_pid" || alive_rc=$?
 
 if [ "$lister_rc" -ne 0 ]; then
   if [ "$lister_rc" -eq 124 ]; then
-    echo "claim-next-task: the lister exceeded its ${CLAIM_LISTER_MAX_TIME}s wall-clock bound — emitting [] inside the 30s prompt-expansion budget rather than letting its retry schedule run the tick past it; cron/backstop re-fires." >&2
-    echo '[]'
-    exit 0
+    # idss#2145: finish idss#1425 on THIS leg. A lister that could not complete
+    # inside its ${CLAIM_LISTER_MAX_TIME}s bound used to be laundered into a
+    # graceful [] — but the prompt shell-expansion renders [] as an EMPTY
+    # ready-tasks queue, which a worker's "Done" check reads as a completion
+    # candidate: fail-closed at the script, fail-OPEN at the surface that
+    # matters. When the forge's own open-issues page sat at 8-22s every tick
+    # (idss#2145), that laundered [] fired on every iteration and the whole lane
+    # read as "nothing to do" while red main sat unclaimed and NOTHING in the
+    # fleet reported a fault. So rc 124 now fails LOUD, exactly like the
+    # alive-runs arm below: a non-zero exit that run-swarm re-keys to the "list
+    # ready tasks" stage and the healer sees, never a silent empty queue. The
+    # production fast path (list-ready-tasks.sh's #2145 single-issue fetch when
+    # the host has already picked this run's one ticket) keeps the lister well
+    # under the bound, so this loud arm is the genuine-fault backstop, not the
+    # routine outcome it had become.
+    echo "claim-next-task: the lister exceeded its ${CLAIM_LISTER_MAX_TIME}s wall-clock bound — failing LOUD (non-zero, no []) rather than laundering it into an empty ready queue a worker reads as 'nothing to do' (idss#1425, idss#2145). run-swarm re-keys this to the 'list ready tasks' stage and the cron/backstop re-fires." >&2
+    exit "$lister_rc"
   fi
   exit "$lister_rc"
 fi
@@ -191,7 +207,7 @@ n="$(jq length <<<"$ready")"
 # untouched — only the LOUDNESS changes. (Ben's fail-closed ruling, 2026-08-11,
 # review of commit 68fb911; loudness added idss#1425.)
 if [ "$alive_rc" -ne 0 ]; then
-  echo "claim-next-task: the alive-runs fetch (the actions-API tasks list) faulted (rc=$alive_rc) — failing LOUD rather than laundering it into a [] that renders as an empty ready queue and reads as 'nothing to do' (idss#1425). No claim posted; run-swarm re-keys this to the claim stage and the cron/backstop re-fires." >&2
+  echo "claim-next-task: the alive-runs fetch (the actions-API tasks list) faulted (rc=$alive_rc) — failing LOUD rather than laundering it into a [] that renders as an empty ready queue and reads as 'nothing to do' (idss#1425). No claim posted; #325: this in-sandbox fault surfaces as a PromptError under the host's 'sandcastle run (workers)' verdict stage (execute-lib.sh) — there is NO dedicated claim stage re-key, so it shares a stage key with a genuine worker crash — and the cron/backstop re-fires." >&2
   exit "$alive_rc"
 fi
 alive="$(cat "$alive_file")"
@@ -233,7 +249,19 @@ for i in $(seq 0 $((n - 1))); do
   cid="$(claim_post "$num" "$host" "$run")" || continue
   if claim_won "$num" "$cid" "$alive"; then
     claim_mark_working "$num" || true
-    print_landing "$num"
+    # #350: tell the HOST which ticket this run claimed, the moment it is won.
+    # A run with no fleet pick claims here in the sandbox, so its slot holder
+    # says ref=run and swarm.db's attempt row lands only at run END — the
+    # Floor's slot showed "ticket —" for the whole run. Append the number to
+    # the writable sink main.mts mounts at /run/host-attempts (the mount
+    # close-report.sh's attempt line already uses, #2106); the host's probe
+    # reads it beside the slot holder. One short append is atomic; best-effort
+    # — a missing or unwritable sink changes nothing about the claim or stdout.
+    cn_sink="${SANDCASTLE_CLAIM_SINK:-/run/host-attempts/claimed.log}"
+    cn_sink_dir="$(dirname "$cn_sink")"
+    [ -d "$cn_sink_dir" ] && [ -w "$cn_sink_dir" ] &&
+      printf '%s\n' "$num" >> "$cn_sink" 2>/dev/null || true
+    print_landing "$num" "$(jq -r ".[$i].landing // empty" <<<"$ready")"
     jq -c "[.[$i]]" <<<"$ready"
     exit 0
   fi

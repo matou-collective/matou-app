@@ -11,11 +11,34 @@ describe('electron-builder config from kit.build.json', () => {
     expect(c.artifactName).toBe('matou-${version}-${os}.${ext}');
     expect(c.mac.artifactName).toBe('matou-${version}-${os}-${arch}.${ext}');
     expect(c.linux.executableName).toBe('matou');
+    // The packaged package.json `name` — what Chromium derives the X11 WM_CLASS
+    // and the Wayland app_id from — must be the executableName, NOT the source
+    // "matou-frontend", so a running window matches the installed
+    // <executableName>.desktop and shows the community icon (#617).
+    expect(c.extraMetadata.name).toBe('matou');
+    // desktopName is what Chromium turns into the Wayland xdg app_id at startup
+    // (via CHROME_DESKTOP); without it the app_id falls back to productName and
+    // GNOME can't match the window to matou.desktop (#634).
+    expect(c.extraMetadata.desktopName).toBe('matou.desktop');
+    // The packaged app name stays the source "Matou": safeStorage keys the Linux
+    // keyring secret on it, so overriding it orphans every install's secrets (#644).
+    expect(c.extraMetadata).not.toHaveProperty('productName');
     expect(c.publish).toEqual([{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }]);
+    expect(c.mac).not.toHaveProperty('publish'); // the signed Mātou Mac build keeps the GitHub feed
   });
-  it('maps a community kit to coa values and publish null', () => {
-    const c = electronBuilderConfig({ appId: 'org.matou.coa.x-y', productName: 'X Y', artifactBase: 'x-y', executableName: 'x-y', androidApplicationId: 'org.matou.coa.x-y', urlScheme: 'org.matou.coa.x-y', publish: null, updates: false, primaryColour: '#000000', backgroundColour: '#000000' });
-    expect(c.publish).toBeNull();
+  it('maps a community kit to coa values, its generic feed, and no mac feed', () => {
+    const feed = [{ provider: 'generic', url: 'https://coa.matou.nz/dl/x-y/current', channel: 'latest' }];
+    const c = electronBuilderConfig({ appId: 'org.matou.coa.x-y', productName: 'X Y', artifactBase: 'x-y', executableName: 'x-y', androidApplicationId: 'org.matou.coa.x-y', urlScheme: 'org.matou.coa.x-y', publish: feed, updates: true, primaryColour: '#000000', backgroundColour: '#000000' });
+    expect(c.publish).toEqual(feed);
+    // An unsigned Mac app cannot apply an update (app-updates spec §1): no latest-mac.yml, no app-update.yml.
+    expect(c.mac.publish).toBeNull();
     expect(c.artifactName).toBe('x-y-${version}-${os}.${ext}');
+    // A branded kit's Wayland app_id / X11 WM_CLASS derives from executableName,
+    // not "matou-frontend" — this is what lets its dock icon resolve (#617).
+    expect(c.extraMetadata.name).toBe('x-y');
+    // The Wayland app_id must resolve to <executableName>.desktop, not the
+    // productName-derived fallback, so the branded dock icon shows (#634).
+    expect(c.extraMetadata.desktopName).toBe('x-y.desktop');
+    expect(c.extraMetadata).not.toHaveProperty('productName'); // #644: keyring secret is keyed on the app name
   });
 });

@@ -278,6 +278,127 @@ func TestContributionsHandler_UpdateAssignedContributorID(t *testing.T) {
 	}
 }
 
+// createContribForUpdate creates a contribution with a budget and estimated
+// duration set, returning the handler and the new contribution's id.
+func createContribForUpdate(t *testing.T, budget string, estimate int) (*ContributionsHandler, string) {
+	t.Helper()
+	handler := setupTestContributionsHandler()
+	createBody, _ := json.Marshal(map[string]interface{}{
+		"project_id": "proj-1", "title": "Planned Task", "description": "Has a budget",
+		"contribution_type": "technical", "priority": "medium", "created_by": "lead-1",
+		"objectives": []string{"o"}, "deliverables": []string{"d"},
+		"acceptance_criteria": []string{"a"}, "skill_requirements": []string{"s"},
+		"budget": budget, "estimated_duration": estimate,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/contributions", bytes.NewReader(createBody))
+	w := httptest.NewRecorder()
+	handler.HandleCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
+	}
+	var created map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	return handler, created["id"].(string)
+}
+
+func getContrib(t *testing.T, handler *ContributionsHandler, id string) map[string]interface{} {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/contributions/"+id, nil)
+	w := httptest.NewRecorder()
+	handler.HandleGet(w, req, id)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get failed: %d %s", w.Code, w.Body.String())
+	}
+	var got map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	return got
+}
+
+// #747 — clearing Budget (to "") and Estimated Hours (to 0) must persist the
+// cleared value, not silently revert to the old one.
+func TestContributionsHandler_UpdateClearsBudgetAndEstimate(t *testing.T) {
+	handler, id := createContribForUpdate(t, "500", 10)
+
+	// Sanity: the contribution starts with the set values.
+	before := getContrib(t, handler, id)
+	if before["budget"] != "500" {
+		t.Fatalf("setup: expected budget 500, got %v", before["budget"])
+	}
+	if before["estimated_duration"] != float64(10) {
+		t.Fatalf("setup: expected estimated_duration 10, got %v", before["estimated_duration"])
+	}
+
+	// Clear both fields: budget -> "" (present, empty), estimated_duration -> 0.
+	updateBody, _ := json.Marshal(map[string]interface{}{
+		"budget": "", "estimated_duration": 0,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/contributions/"+id, bytes.NewReader(updateBody))
+	w := httptest.NewRecorder()
+	handler.HandleUpdate(w, req, id)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update failed: %d %s", w.Code, w.Body.String())
+	}
+
+	after := getContrib(t, handler, id)
+	// budget is `omitempty`, so a cleared "" is absent from the response.
+	if b, ok := after["budget"]; ok && b != "" {
+		t.Errorf("expected cleared budget, got %v", b)
+	}
+	if after["estimated_duration"] != float64(0) {
+		t.Errorf("expected cleared estimated_duration 0, got %v", after["estimated_duration"])
+	}
+}
+
+// #747 — a non-empty budget / non-zero estimate must still save.
+func TestContributionsHandler_UpdateSetsBudgetAndEstimate(t *testing.T) {
+	handler, id := createContribForUpdate(t, "", 0)
+
+	updateBody, _ := json.Marshal(map[string]interface{}{
+		"budget": "1200", "estimated_duration": 40,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/contributions/"+id, bytes.NewReader(updateBody))
+	w := httptest.NewRecorder()
+	handler.HandleUpdate(w, req, id)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update failed: %d %s", w.Code, w.Body.String())
+	}
+
+	after := getContrib(t, handler, id)
+	if after["budget"] != "1200" {
+		t.Errorf("expected budget 1200, got %v", after["budget"])
+	}
+	if after["estimated_duration"] != float64(40) {
+		t.Errorf("expected estimated_duration 40, got %v", after["estimated_duration"])
+	}
+}
+
+// #747 — partial-update semantics: a key the form does not send must leave that
+// field unchanged (so an edit that touches only the title doesn't wipe budget).
+func TestContributionsHandler_UpdateOmittedFieldsUnchanged(t *testing.T) {
+	handler, id := createContribForUpdate(t, "750", 20)
+
+	updateBody, _ := json.Marshal(map[string]interface{}{
+		"title": "Renamed Task",
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/contributions/"+id, bytes.NewReader(updateBody))
+	w := httptest.NewRecorder()
+	handler.HandleUpdate(w, req, id)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update failed: %d %s", w.Code, w.Body.String())
+	}
+
+	after := getContrib(t, handler, id)
+	if after["title"] != "Renamed Task" {
+		t.Errorf("expected title updated, got %v", after["title"])
+	}
+	if after["budget"] != "750" {
+		t.Errorf("expected budget unchanged at 750, got %v", after["budget"])
+	}
+	if after["estimated_duration"] != float64(20) {
+		t.Errorf("expected estimated_duration unchanged at 20, got %v", after["estimated_duration"])
+	}
+}
+
 // recordingNotifier captures ContribNotifications for assertions.
 type recordingNotifier struct {
 	sent []*ContribNotification
@@ -332,6 +453,105 @@ func editEvidenceRequest(id, actor string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+id+"/edit-evidence", bytes.NewReader(body))
 	req.Header.Set("X-User-AID", actor)
 	return req.WithContext(context.WithValue(req.Context(), ctxUserAID, actor))
+}
+
+// setupForComment creates a shared contribution and returns the handler, its
+// notifier, the SSE channel, and the contribution id.
+func setupForComment(t *testing.T) (*ContributionsHandler, *recordingNotifier, chan SSEEvent, string) {
+	t.Helper()
+	store := contributions.NewMockStore()
+	svc := contributions.NewService(store)
+	notifier := &recordingNotifier{}
+	handler := NewContributionsHandler(svc, nil, notifier)
+	broker := NewEventBroker()
+	handler.SetBroker(broker)
+	events := broker.Subscribe()
+
+	c, err := svc.CreateContribution(context.Background(), "community", &contributions.CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Weave the net", Description: "Do it",
+		ContributionType: "technical", Priority: "low", CreatedBy: "lead-1",
+		Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	return handler, notifier, events, c.ID
+}
+
+func addCommentRequest(id string, body map[string]interface{}) *http.Request {
+	b, _ := json.Marshal(body)
+	return httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+id+"/comments", bytes.NewReader(b))
+}
+
+func TestContributionsHandler_AddComment_NotifiesMentionedPeople(t *testing.T) {
+	handler, notifier, events, id := setupForComment(t)
+
+	w := httptest.NewRecorder()
+	handler.HandleAddComment(w, addCommentRequest(id, map[string]interface{}{
+		"user_id":   "author-1",
+		"user_name": "Author",
+		"text":      "hey @[person:EAlice|Alice] and @[person:EBob|Bob]",
+		// Alice and Bob are mentioned; the author mentions themself and repeats
+		// Alice — neither should produce a (duplicate/self) notification.
+		"mentioned_aids": []string{"EAlice", "EBob", "EAlice", "author-1"},
+	}), id)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The comment persisted its resolved AIDs.
+	var created contributions.ContributionComment
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	if len(created.MentionedAIDs) != 4 {
+		t.Errorf("mentioned_aids not round-tripped: %v", created.MentionedAIDs)
+	}
+
+	// Exactly Alice and Bob are notified, once each, with the mention type and
+	// the contribution title in the message.
+	recipients := map[string]int{}
+	for _, n := range notifier.sent {
+		if n.Type != "contribution:mentioned" {
+			t.Errorf("notification type = %s, want contribution:mentioned", n.Type)
+		}
+		if n.EntityID != id || n.EntityType != "contribution" {
+			t.Errorf("unexpected entity: %s/%s", n.EntityType, n.EntityID)
+		}
+		if !bytes.Contains([]byte(n.Message), []byte("Weave the net")) {
+			t.Errorf("message missing contribution title: %q", n.Message)
+		}
+		recipients[n.RecipientID]++
+	}
+	if recipients["EAlice"] != 1 || recipients["EBob"] != 1 || recipients["author-1"] != 0 || len(recipients) != 2 {
+		t.Errorf("recipients = %v, want {EAlice:1, EBob:1}", recipients)
+	}
+
+	// The generic comment_added SSE still fires.
+	select {
+	case ev := <-events:
+		if ev.Type != "contribution:comment_added" {
+			t.Errorf("event type = %s, want contribution:comment_added", ev.Type)
+		}
+	default:
+		t.Error("expected a comment_added SSE broadcast")
+	}
+}
+
+func TestContributionsHandler_AddComment_NoMentionsNoNotifications(t *testing.T) {
+	handler, notifier, _, id := setupForComment(t)
+
+	w := httptest.NewRecorder()
+	handler.HandleAddComment(w, addCommentRequest(id, map[string]interface{}{
+		"user_id":   "author-1",
+		"user_name": "Author",
+		"text":      "just a plain comment",
+	}), id)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(notifier.sent) != 0 {
+		t.Errorf("no notifications expected without mentions, got %d", len(notifier.sent))
+	}
 }
 
 func TestContributionsHandler_EditEvidence_NonOwnerForbidden(t *testing.T) {
@@ -396,5 +616,175 @@ func TestContributionsHandler_EditEvidence_OwnerNotifiesAndBroadcasts(t *testing
 	}
 	if !recipients["lead-1"] || !recipients["reviewer-1"] || recipients["contributor-1"] || len(recipients) != 2 {
 		t.Errorf("recipients = %v, want {lead-1, reviewer-1}", recipients)
+	}
+}
+
+func TestContributionsHandler_Reorder(t *testing.T) {
+	handler := setupTestContributionsHandler()
+	ctx := context.Background()
+	spaceID := resolveCommunitySpaceID(httptest.NewRequest(http.MethodGet, "/", nil), handler.spaceManager)
+
+	proj, err := handler.service.CreateProject(ctx, spaceID, &contributions.CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	plan, err := handler.service.CreateImplementationPlan(ctx, spaceID, &contributions.CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+	if err != nil {
+		t.Fatalf("CreateImplementationPlan: %v", err)
+	}
+	ms, err := handler.service.AddMilestone(ctx, spaceID, "u", &contributions.CreateMilestoneRequest{ImplementationPlanID: plan.ID, Title: "M", Duration: "1w"})
+	if err != nil {
+		t.Fatalf("AddMilestone: %v", err)
+	}
+	mk := func(title string) *contributions.Contribution {
+		c, err := handler.service.CreateContribution(ctx, spaceID, &contributions.CreateContributionRequest{
+			ProjectID: proj.ID, MilestoneID: ms.MilestoneID, Title: title, Description: "d",
+			ContributionType: contributions.ProposalTypeTechnical, Priority: contributions.PriorityMedium,
+			CreatedBy: "u", Objectives: []string{"o"}, Deliverables: []string{"d"},
+			AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		})
+		if err != nil {
+			t.Fatalf("CreateContribution: %v", err)
+		}
+		return c
+	}
+	a, b, c := mk("A"), mk("B"), mk("C")
+
+	body, _ := json.Marshal(map[string]interface{}{"ordered_ids": []string{c.ID, a.ID, b.ID}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+b.ID+"/reorder", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.HandleReorder(w, req, b.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	gotA, _ := handler.service.GetContribution(ctx, spaceID, a.ID)
+	gotB, _ := handler.service.GetContribution(ctx, spaceID, b.ID)
+	gotC, _ := handler.service.GetContribution(ctx, spaceID, c.ID)
+	if gotC.SortOrder == nil || *gotC.SortOrder != 0 || gotA.SortOrder == nil || *gotA.SortOrder != 1 || gotB.SortOrder == nil || *gotB.SortOrder != 2 {
+		t.Fatalf("reorder not persisted: C=%v A=%v B=%v", gotC.SortOrder, gotA.SortOrder, gotB.SortOrder)
+	}
+
+	// A bad reorder list (missing a sibling) is a 400.
+	body, _ = json.Marshal(map[string]interface{}{"ordered_ids": []string{c.ID}})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+b.ID+"/reorder", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	handler.HandleReorder(w, req, b.ID)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad reorder list, got %d", w.Code)
+	}
+}
+
+func TestContributionsHandler_Move(t *testing.T) {
+	handler := setupTestContributionsHandler()
+	ctx := context.Background()
+	spaceID := resolveCommunitySpaceID(httptest.NewRequest(http.MethodGet, "/", nil), handler.spaceManager)
+
+	proj, err := handler.service.CreateProject(ctx, spaceID, &contributions.CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	plan, err := handler.service.CreateImplementationPlan(ctx, spaceID, &contributions.CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+	if err != nil {
+		t.Fatalf("CreateImplementationPlan: %v", err)
+	}
+	ms1, err := handler.service.AddMilestone(ctx, spaceID, "u", &contributions.CreateMilestoneRequest{ImplementationPlanID: plan.ID, Title: "M1", Duration: "1w"})
+	if err != nil {
+		t.Fatalf("AddMilestone M1: %v", err)
+	}
+	ms2, err := handler.service.AddMilestone(ctx, spaceID, "u", &contributions.CreateMilestoneRequest{ImplementationPlanID: plan.ID, Title: "M2", Duration: "1w"})
+	if err != nil {
+		t.Fatalf("AddMilestone M2: %v", err)
+	}
+	mk := func(title, milestoneID, parentID string) *contributions.Contribution {
+		c, err := handler.service.CreateContribution(ctx, spaceID, &contributions.CreateContributionRequest{
+			ProjectID: proj.ID, MilestoneID: milestoneID, ParentContributionID: parentID, Title: title, Description: "d",
+			ContributionType: contributions.ProposalTypeTechnical, Priority: contributions.PriorityMedium,
+			CreatedBy: "u", Objectives: []string{"o"}, Deliverables: []string{"d"},
+			AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+		})
+		if err != nil {
+			t.Fatalf("CreateContribution: %v", err)
+		}
+		return c
+	}
+	top := mk("Top", ms1.MilestoneID, "")
+	sub := mk("Sub", "", top.ID)
+
+	// A top-level contribution moves to the target milestone (200).
+	body, _ := json.Marshal(map[string]interface{}{"milestone_id": ms2.MilestoneID})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+top.ID+"/move", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.HandleMove(w, req, top.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	got, _ := handler.service.GetContribution(ctx, spaceID, top.ID)
+	if got.MilestoneID != ms2.MilestoneID {
+		t.Errorf("contribution milestone = %q, want %q", got.MilestoneID, ms2.MilestoneID)
+	}
+
+	// Moving a sub-contribution is rejected at the API (400).
+	body, _ = json.Marshal(map[string]interface{}{"milestone_id": ms2.MilestoneID})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+sub.ID+"/move", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	handler.HandleMove(w, req, sub.ID)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 moving a sub-contribution, got %d", w.Code)
+	}
+
+	// A missing milestone_id is a 400.
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+top.ID+"/move", bytes.NewReader([]byte(`{}`)))
+	w = httptest.NewRecorder()
+	handler.HandleMove(w, req, top.ID)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing milestone_id, got %d", w.Code)
+	}
+}
+
+// HandleClose (#844): 409 while a sub-contribution is not rewarded, 200 and a
+// $0 rewarded parent once every sub-contribution is rewarded.
+func TestContributionsHandler_Close_ParentAtZero(t *testing.T) {
+	handler := setupTestContributionsHandler()
+	ctx := context.Background()
+	spaceID := "community"
+	mk := func(parent string) *contributions.Contribution {
+		c, err := handler.service.CreateContribution(ctx, spaceID, &contributions.CreateContributionRequest{
+			ProjectID: "p", Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+			Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+			ParentContributionID: parent,
+		})
+		if err != nil {
+			t.Fatalf("CreateContribution: %v", err)
+		}
+		return c
+	}
+	parent := mk("")
+	child := mk(parent.ID)
+
+	post := func() *httptest.ResponseRecorder {
+		proof := &contributions.Proof{V: "matou-proof/v1", Action: "contribution_close", Subject: parent.ID,
+			Space: spaceID, Value: "rewarded", Dt: time.Now().Format(time.RFC3339), AID: "lead-1", Sig: "0Bsig"}
+		body, _ := json.Marshal(map[string]interface{}{"reason": "all sub-contributions paid", "proof": proof})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+parent.ID+"/close", bytes.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), ctxUserAID, "lead-1"))
+		w := httptest.NewRecorder()
+		handler.HandleClose(w, req)
+		return w
+	}
+
+	if w := post(); w.Code != http.StatusConflict {
+		t.Fatalf("open child: want 409, got %d: %s", w.Code, w.Body.String())
+	}
+	child.Status = contributions.ContribRewarded
+	if err := handler.service.SaveContribution(ctx, spaceID, child); err != nil {
+		t.Fatal(err)
+	}
+	if w := post(); w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	got, _ := handler.service.GetContribution(ctx, spaceID, parent.ID)
+	if got.Status != contributions.ContribRewarded || got.ActualCost != 0 || got.CloseReason == "" {
+		t.Errorf("parent not closed without a budget: %+v", got)
 	}
 }

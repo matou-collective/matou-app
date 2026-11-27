@@ -63,6 +63,24 @@ code {
   font-size: 0.875em;
 }
 
+// ── Native form controls (light/dark theme text colour) ─────────────────────────
+// Raw <input>, <textarea> and <select> follow the theme background (via
+// --matou-input-background on .m-textarea and friends) but a native control does
+// not inherit `color`: browsers default it to the system field text (black), which
+// is invisible on the dark input background. Set it explicitly here so every raw
+// control follows the theme. This is an element-level selector, so any component
+// that sets its own colour on a class or scoped selector (e.g. the chat composer)
+// still wins on specificity. See #624.
+input,
+textarea,
+select {
+  color: var(--matou-foreground);
+
+  &::placeholder {
+    color: var(--matou-muted-foreground);
+  }
+}
+
 // Custom component styles that use design tokens
 // These are component-specific and don't conflict with Tailwind utilities
 
@@ -96,15 +114,17 @@ code {
 // device inset on top of the onboarding screens' standard `p-6 md:p-8` padding
 // (1.5rem → 2rem) so that content clears those system bars.
 //
-// On web/Electron `env(safe-area-inset-*)` resolves to 0, leaving the padding
+// On web/Electron the insets resolve to 0, leaving the padding
 // identical to `p-6 md:p-8` — no visual change. The doubled selector (`.x.x`)
 // raises specificity above Tailwind's `p-6`/`md:p-8` utilities so it wins
 // regardless of stylesheet order.
+// The top inset comes through --matou-safe-area-top (App.vue), which the update
+// notice zeroes while it is showing because it has already cleared the bar.
 .pt-safe-area.pt-safe-area {
-  padding-top: calc(1.5rem + env(safe-area-inset-top));
+  padding-top: calc(1.5rem + var(--matou-safe-area-top));
 
   @media (min-width: 768px) {
-    padding-top: calc(2rem + env(safe-area-inset-top));
+    padding-top: calc(2rem + var(--matou-safe-area-top));
   }
 }
 

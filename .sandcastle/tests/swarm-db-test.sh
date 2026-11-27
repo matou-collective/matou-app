@@ -171,6 +171,17 @@ db spend --run GREEN --issue 900 --input 40 --output 20 --requests 7 --at 170000
   || fail "a spend row written without --cache-creation must read NULL"
 pass=$((pass+1))
 
+# --- #200: spend rows carry the account FINGERPRINT (nullable, additive) ------
+# Stored verbatim when supplied; an omitted --account-fp reads NULL, so the
+# column never fails a caller that predates it.
+db spend --run GREEN --issue 900 --input 7 --output 1 --requests 1 --at 1700000003 \
+  --account A --account-fp 1a7674eb4ee7
+[ "$(val "SELECT account_fp FROM spend WHERE run_id='GREEN' AND at=1700000003")" = 1a7674eb4ee7 ] \
+  || fail "spend --account-fp must be stored verbatim on the row"
+[ -z "$(val "SELECT account_fp FROM spend WHERE run_id='GREEN' AND at=1700000000")" ] \
+  || fail "a spend row written without --account-fp must read NULL (unattributed)"
+pass=$((pass+1))
+
 # --- #75: the additive column reaches a PRE-EXISTING db (migration, not just
 #     SCHEMA). A db whose spend table was created BEFORE the column existed must
 #     GAIN it on the next migrate, and its old rows must read NULL — additive
@@ -197,21 +208,121 @@ PY
   || fail "migrate must ADD the account column to a pre-existing spend table"
 [ -z "$(lval "SELECT account FROM spend WHERE run_id='OLD'")" ] \
   || fail "an existing pre-migration spend row must read NULL account, not be rewritten"
-# #96: the same additive path lands cache_creation_tokens/cache_read_tokens/model.
-for col in cache_creation_tokens cache_read_tokens model; do
+# #96/#200: the same additive path lands cache_creation_tokens/cache_read_tokens/
+# model and the account_fp fingerprint column.
+for col in cache_creation_tokens cache_read_tokens model account_fp; do
   [ "$(lval "SELECT count(*) FROM pragma_table_info('spend') WHERE name='$col'")" = 1 ] \
     || fail "migrate must ADD the $col column to a pre-existing spend table"
   [ -z "$(lval "SELECT $col FROM spend WHERE run_id='OLD'")" ] \
     || fail "an existing pre-migration spend row must read NULL $col, not be rewritten"
 done
 python3 "$py" --db "$legacy" spend --run NEW --issue 2 --input 1 --output 1 --requests 1 --at 101 \
-  --account A --cache-creation 3 --cache-read 30 --model claude-opus-4-8
+  --account A --cache-creation 3 --cache-read 30 --model claude-opus-4-8 --account-fp 1a7674eb4ee7
 [ "$(lval "SELECT account FROM spend WHERE run_id='NEW'")" = A ] \
   || fail "a post-migration insert must be able to stamp the new account column"
 [ "$(lval "SELECT cache_read_tokens FROM spend WHERE run_id='NEW'")" = 30 ] \
   || fail "a post-migration insert must be able to stamp the new cache columns"
+[ "$(lval "SELECT account_fp FROM spend WHERE run_id='NEW'")" = 1a7674eb4ee7 ] \
+  || fail "a post-migration insert must be able to stamp the new account_fp column"
 [ "$(lval "SELECT model FROM spend WHERE run_id='NEW'")" = claude-opus-4-8 ] \
   || fail "a post-migration insert must be able to stamp the new model column"
+pass=$((pass+1))
+
+# --- #202: runs.host — populated at run start, selectable in the grouped query
+# The additive host column is stamped by run-start --host and reads NULL when
+# omitted (a pre-#202 caller is byte-identical). It reaches spend via runs.host
+# through the run_id join, so spend-by --group …,host attributes per-device.
+db run-start --run HOSTA --repo Matou/idss --trigger cron --started 1700100000 --host box-a
+db run-start --run HOSTB --repo Matou/idss --trigger cron --started 1700100000 --host box-b
+db run-start --run HOSTN --repo Matou/idss --trigger cron --started 1700100000   # no --host
+[ "$(val "SELECT host FROM runs WHERE run_id='HOSTA'")" = box-a ] \
+  || fail "run-start --host must stamp the host column verbatim"
+[ -z "$(val "SELECT host FROM runs WHERE run_id='HOSTN'")" ] \
+  || fail "a run-start without --host must read NULL host (additive)"
+db spend --run HOSTA --issue 7 --input 100 --output 10 --requests 1 --at 1700100000 --account A --model m-test
+db spend --run HOSTB --issue 7 --input 200 --output 20 --requests 2 --at 1700100000 --account A --model m-test
+byhost="$(SWARM_DB="$SWARM_DB" bash "$reader" spend-by --group host --repo Matou/idss)"
+grep -qE "^box-a[[:space:]]+100[[:space:]]+10[[:space:]]+1" <<<"$byhost" \
+  || fail "spend-by --group host must attribute box-a's 100/10/1 (got: $byhost)"
+grep -qE "^box-b[[:space:]]+200[[:space:]]+20[[:space:]]+2" <<<"$byhost" \
+  || fail "spend-by --group host must attribute box-b's 200/20/2 (got: $byhost)"
+grep -q "^host" <<<"$byhost" || fail "spend-by output must carry the group dimension header (got: $byhost)"
+pass=$((pass+1))
+
+# --- #202: the grouped query folds over an arbitrary dimension combination ----
+# A two-dimension group (repo,account) sums every matching spend row; the header
+# names both dimensions then the token/request columns. An unknown dimension is
+# REFUSED (a typo must not silently read as a different grouping).
+byra="$(SWARM_DB="$SWARM_DB" bash "$reader" spend-by --group repo,account --repo Matou/idss)"
+# idss's account-A rows under this repo: HOSTA 100/10 + HOSTB 200/20 (+ any earlier
+# idss A rows). Assert the row carries repo+account and folds box-a/box-b together.
+grep -qE "^Matou/idss[[:space:]]+A[[:space:]]" <<<"$byra" \
+  || fail "spend-by --group repo,account must carry a repo+account row (got: $byra)"
+if SWARM_DB="$SWARM_DB" bash "$reader" spend-by --group repo,bogus >/dev/null 2>&1; then
+  fail "spend-by must REFUSE an unknown --group dimension, not silently drop it"
+fi
+pass=$((pass+1))
+
+# --- #202: the USD join — a model-keyed price table derives a dollar estimate -
+# prices are operator-seeded public rates per 1e6 tokens, per class. --usd LEFT
+# JOINs them so each row's tokens price at ITS model's rate; an UNPRICED model
+# counts 0 dollars (under-report, never guess), and the figure is additive.
+pricedb="$tmp/prices.db"
+python3 "$py" --db "$pricedb" run-start --run P1 --repo Acme/w --trigger cron --started 1700200000 --host px
+# one fully-priced row and one on an unpriced model, same group bucket
+python3 "$py" --db "$pricedb" spend --run P1 --issue 1 --input 1000000 --output 500000 --requests 1 \
+  --at 1700200000 --account A --model priced --cache-creation 200000 --cache-read 4000000
+python3 "$py" --db "$pricedb" spend --run P1 --issue 1 --input 1000000 --output 0 --requests 1 \
+  --at 1700200000 --account A --model unpriced
+python3 "$py" --db "$pricedb" price-set --model priced --input 15 --output 75 --cache-write 18.75 --cache-read 1.5
+pval() { python3 - "$pricedb" "$1" <<'PY'
+import sqlite3, sys
+row = sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()
+print("" if row is None or row[0] is None else row[0])
+PY
+}
+[ "$(pval "SELECT input_per_mtok FROM prices WHERE model='priced'")" = 15.0 ] \
+  || fail "price-set must store the model's input rate verbatim"
+usd="$(SWARM_DB="$pricedb" bash "$reader" spend-by --group model --usd)"
+# priced: 1M*15 + 0.5M*75 + 0.2M*18.75 + 4M*1.5 = 15+37.5+3.75+6 = 62.25
+grep -qE "^priced[[:space:]].*[[:space:]]62\.25$" <<<"$usd" \
+  || fail "spend-by --usd must price 'priced' at \$62.25 (got: $usd)"
+# unpriced model: tokens still counted, USD 0 (no price row => under-report)
+grep -qE "^unpriced[[:space:]]+1000000[[:space:]]+0[[:space:]]+1[[:space:]]+1[[:space:]]+0(\.0+)?$" <<<"$usd" \
+  || fail "spend-by --usd must count an unpriced model's tokens but price it \$0 (got: $usd)"
+grep -q "usd" <<<"$usd" || fail "spend-by --usd must add a 'usd' column header (got: $usd)"
+# price-load seeds the table from an operator conf, idempotently
+conf="$tmp/prices.conf"
+printf '# model in out cw cr\nunpriced 3 15 3.75 0.3\nbad-line foo\n' > "$conf"
+[ "$(python3 "$py" --db "$pricedb" price-load "$conf")" = 1 ] \
+  || fail "price-load must load exactly the one well-formed row and skip the bad line"
+[ "$(pval "SELECT output_per_mtok FROM prices WHERE model='unpriced'")" = 15.0 ] \
+  || fail "price-load must seed the row it read from the conf"
+pass=$((pass+1))
+
+# --- #202: runs.host reaches a PRE-EXISTING db via migration (additive) -------
+# A db whose runs table predates the host column must GAIN it on the next
+# migrate, and its old rows must read NULL — never a rewrite.
+hlegacy="$tmp/host-legacy.db"
+python3 - "$hlegacy" <<'PY'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, repo TEXT, trigger TEXT, "
+          "started_at INTEGER, ended_at INTEGER, verdict TEXT, verdict_source TEXT, exit_code INTEGER)")
+c.execute("INSERT INTO runs (run_id, repo, trigger, started_at) VALUES ('OLDRUN','Acme/w','cron',1)")
+c.commit(); c.close()
+PY
+python3 "$py" --db "$hlegacy" migrate
+hlval() { python3 - "$hlegacy" "$1" <<'PY'
+import sqlite3, sys
+row = sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()
+print("" if row is None or row[0] is None else row[0])
+PY
+}
+[ "$(hlval "SELECT count(*) FROM pragma_table_info('runs') WHERE name='host'")" = 1 ] \
+  || fail "migrate must ADD the host column to a pre-existing runs table"
+[ -z "$(hlval "SELECT host FROM runs WHERE run_id='OLDRUN'")" ] \
+  || fail "an existing pre-migration run row must read NULL host, not be rewritten"
 pass=$((pass+1))
 
 # --- reader: issue history ties attempts + events together -------------------
@@ -301,13 +412,31 @@ db event --run LP --kind limit-pause --detail "unpark account=B" --at "$((t0+740
 db event --run LP --kind limit-pause --detail "park account=A"   --at "$((t0+90000))"  # still open → 0
 lost="$(SWARM_DB="$SWARM_DB" bash "$reader" limit-lost)"
 week="$(python3 -c "import time;print(time.strftime('%Y-W%W', time.gmtime($t0)))")"
-grep -qE "$week[[:space:]]+A[[:space:]]+3600[[:space:]]+1" <<<"$lost" \
+grep -qE "${week}[[:space:]]+A[[:space:]]+3600[[:space:]]+1" <<<"$lost" \
   || fail "limit-lost must attribute 3600 parked seconds to account A (one window): $lost"
-grep -qE "$week[[:space:]]+B[[:space:]]+7200[[:space:]]+1" <<<"$lost" \
+grep -qE "${week}[[:space:]]+B[[:space:]]+7200[[:space:]]+1" <<<"$lost" \
   || fail "limit-lost must attribute 7200 parked seconds to account B (one window): $lost"
 # the still-open park adds no second A window (no unclosed duration counted)
 [ "$(grep -cE "[[:space:]]A[[:space:]]" <<<"$lost")" = 1 ] \
   || fail "an unclosed park must not add a counted window: $lost"
+pass=$((pass+1))
+
+# --- #200: limit-lost groups by token FINGERPRINT when the edges carry one ----
+# The park/unpark edges now ride ` fp=<fp>`; limit-lost keys off the fingerprint,
+# so two accounts on one host each get their own lost-capacity line even if they
+# were both labelled the same letter. An edge with only account= (pre-#200) still
+# buckets by its letter — proven above.
+tf=1704672000                               # 2024-01-08 00:00:00 UTC (a Monday)
+db event --run LP2 --kind limit-pause --detail "park account=A fp=aaaaaaaaaaaa"   --at "$tf"
+db event --run LP2 --kind limit-pause --detail "unpark account=A fp=aaaaaaaaaaaa" --at "$((tf+1800))"   # fp a: 1800s
+db event --run LP2 --kind limit-pause --detail "park account=A fp=bbbbbbbbbbbb"   --at "$((tf+100))"
+db event --run LP2 --kind limit-pause --detail "unpark account=A fp=bbbbbbbbbbbb" --at "$((tf+3700))"   # fp b: 3600s
+lost2="$(SWARM_DB="$SWARM_DB" bash "$reader" limit-lost)"
+week2="$(python3 -c "import time;print(time.strftime('%Y-W%W', time.gmtime($tf)))")"
+grep -qE "${week2}[[:space:]]+aaaaaaaaaaaa[[:space:]]+1800[[:space:]]+1" <<<"$lost2" \
+  || fail "limit-lost must group by fingerprint (fp aaaa… → 1800s): $lost2"
+grep -qE "${week2}[[:space:]]+bbbbbbbbbbbb[[:space:]]+3600[[:space:]]+1" <<<"$lost2" \
+  || fail "two fingerprints under the SAME letter must be separate lost-capacity lines: $lost2"
 pass=$((pass+1))
 
 # --- best-effort: writers NEVER fail their caller (the db is a mirror) --------
@@ -543,6 +672,64 @@ grep -q "$outside/leak.db" "$sandbox/.swarmdb-leak-attempts" || fail "the breadc
 # armed + SWARM_DB INSIDE the sandbox → write proceeds exactly as normal.
 ( set -e; SWARMDB_ASSERT_UNDER="$sandbox" SWARM_DB="$sandbox/ok.db" swarmdb migrate )
 [ -f "$sandbox/ok.db" ] || fail "the tripwire must ALLOW a write whose SWARM_DB is under the sandbox"
+pass=$((pass+1))
+
+# --- #117: prune-fixtures deletes ONLY leaked fixture shapes, dry-run default ---
+# The one-time cleanup #116's prevention could not do: fixture rows already in a
+# live db. Every fixture shape must go (with its child rows); every real row —
+# including a real `limit-park` unpark "window reset" edge — must survive.
+pdb="$tmp/prune.db"
+p() { python3 "$py" --db "$pdb" "$@"; }
+pval() { SWARM_DB="$pdb" val "$1"; }
+# fixtures
+p run-start --run triage-x-y-1788049474-1 --repo x/y --trigger cron
+p run-start --run heal-x-y-1788049476-2 --repo Matou/dev-factory --trigger heal  # fixture under a real repo
+p proc-open --run heal-x-y-1788049476-2 --kind claude --ref 1
+p event --run heal-x-y-1788049476-2 --kind heal --detail d
+p run-start --run Acme-widget-1787498847-3 --repo Acme/widget --trigger push
+p attempt --run Acme-widget-1787498847-3 --issue 9
+p spend --run Acme-widget-1787498847-3 --input 1
+p run-start --run odd-run --repo x/y
+p event --run limit-park --kind limit-pause --detail "park account=A" --evidence /tmp/tmp.G0hFzwrfN1/limit-marker
+# real rows that must survive
+p run-start --run Matou-dev-factory-973-2395660 --repo Matou/dev-factory --trigger label
+p proc-open --run Matou-dev-factory-973-2395660 --kind claude --ref 2
+p attempt --run Matou-dev-factory-973-2395660 --issue 117
+p spend --run Matou-dev-factory-973-2395660 --input 5
+p event --run Matou-dev-factory-973-2395660 --kind limit-pause --detail "park account=A" --evidence "resets 6pm (UTC)"
+p event --run limit-park --kind limit-pause --detail "unpark account=A" --evidence "window reset"
+p event --run limit-park --kind gate --evidence /tmp/tmp.X/limit-marker   # wrong kind: not the fixture shape
+p run-start --run Matou-x-y-1 --repo Matou/x-y                             # GLOB is exact, not %-x-y-%
+total_before="$(pval "SELECT (SELECT COUNT(*) FROM runs)+(SELECT COUNT(*) FROM events)+(SELECT COUNT(*) FROM processes)+(SELECT COUNT(*) FROM attempts)+(SELECT COUNT(*) FROM spend)")"
+# dry-run (default): reports the exact set, deletes nothing.
+dry="$(p prune-fixtures)"
+[ "$dry" = "$(printf 'runs 4\nevents 2\nprocesses 1\nattempts 1\nspend 1\ndry-run')" ] \
+  || fail "prune-fixtures dry-run must report the exact fixture set: [$dry]"
+[ "$(pval "SELECT (SELECT COUNT(*) FROM runs)+(SELECT COUNT(*) FROM events)+(SELECT COUNT(*) FROM processes)+(SELECT COUNT(*) FROM attempts)+(SELECT COUNT(*) FROM spend)")" = "$total_before" ] \
+  || fail "prune-fixtures without --apply must delete NOTHING"
+# --apply: the same set goes, in one transaction.
+applied="$(p prune-fixtures --apply)"
+[ "$applied" = "$(printf 'runs 4\nevents 2\nprocesses 1\nattempts 1\nspend 1\napplied')" ] \
+  || fail "prune-fixtures --apply must report what it deleted: [$applied]"
+[ "$(pval "SELECT COUNT(*) FROM runs WHERE repo IN ('x/y','Acme/widget') OR run_id GLOB '*-x-y-1788*' OR run_id GLOB 'Acme-*'")" = 0 ] \
+  || fail "every fixture run must be gone"
+[ "$(pval "SELECT COUNT(*) FROM events WHERE evidence GLOB '/tmp/tmp.*/limit-marker' AND kind='limit-pause'")" = 0 ] \
+  || fail "every fixture park event must be gone"
+[ "$(pval "SELECT COUNT(*) FROM runs")" = 2 ] || fail "real runs must survive prune-fixtures"
+[ "$(pval "SELECT COUNT(*) FROM events")" = 3 ] \
+  || fail "real events (incl. the window-reset unpark and a non-limit-pause /tmp evidence) must survive"
+[ "$(pval "SELECT COUNT(*) FROM events WHERE run_id='limit-park' AND evidence='window reset'")" = 1 ] \
+  || fail "a real unpark 'window reset' edge is NOT a fixture shape and must survive"
+for t in processes attempts spend; do
+  [ "$(pval "SELECT COUNT(*) FROM $t")" = 1 ] || fail "the real run's $t row must survive"
+done
+# idempotent: a second --apply finds nothing.
+[ "$(p prune-fixtures --apply)" = "$(printf 'runs 0\nevents 0\nprocesses 0\nattempts 0\nspend 0\napplied')" ] \
+  || fail "a second prune-fixtures --apply must be a no-op"
+# an absent db is an error, never a freshly-migrated empty one.
+p_absent_rc=0; python3 "$py" --db "$tmp/absent.db" prune-fixtures 2>/dev/null || p_absent_rc=$?
+[ "$p_absent_rc" -ne 0 ] && [ ! -f "$tmp/absent.db" ] \
+  || fail "prune-fixtures must refuse (non-zero, no file created) when the db is absent"
 pass=$((pass+1))
 
 echo "swarm-db: $pass groups passed"

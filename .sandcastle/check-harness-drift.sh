@@ -58,8 +58,22 @@ if [ ! -f "$ref_file" ]; then
 fi
 [ -f "$manifest" ] || { echo "check-harness-drift: $ref_file exists but $manifest is missing." >&2; exit 1; }
 
-factory_ref="$(tr -d '[:space:]' <"$ref_file")"
-[ -n "$factory_ref" ] || { echo "check-harness-drift: $ref_file is empty." >&2; exit 1; }
+# FACTORY_REF may name a TAG (#209): `onboard.sh vendor <tag>` records the
+# resolved SHA on its own line plus a `tag=<tag>` line, so the pin stays
+# human-readable AND this byte-comparison still keys on the SHA, unchanged. A
+# legacy bare-SHA file parses the same way (sha found, no tag). A hand-written
+# tag/branch-only file carries no SHA — fetch it by name below, then rev-parse
+# the checkout for the resolved SHA. Either way `factory_ref` is the thing we
+# fetch and compare against (a SHA whenever one is recorded).
+factory_sha="$(grep -Eo '[0-9a-f]{40}' "$ref_file" | head -1 || true)"
+factory_tag="$(sed -n 's/^[[:space:]]*tag=//p' "$ref_file" | head -1 || true)"
+if [ -n "$factory_sha" ]; then
+  factory_ref="$factory_sha"
+else
+  factory_ref="$(tr -d '[:space:]' <"$ref_file")"
+  [ -n "$factory_ref" ] || { echo "check-harness-drift: $ref_file is empty." >&2; exit 1; }
+  [ -n "$factory_tag" ] || factory_tag="$factory_ref"
+fi
 
 # Fetch the pinned revision into a throwaway checkout — never a working tree
 # we share. Shallow fetch of the exact SHA; fall back to a full clone for
@@ -111,6 +125,15 @@ until fetch_factory; do
   attempt=$((attempt + 1))
 done
 
+# Record both the tag (if the pin was named by one) and the SHA it resolved to
+# (#209): the byte-comparison keys on the SHA, but a human reading this output
+# sees the tag they pinned. When only a tag/branch was recorded, rev-parse the
+# checkout for the SHA now that the fetch has resolved it.
+[ -n "$factory_sha" ] || factory_sha="$(git -C "$work" rev-parse HEAD 2>/dev/null || true)"
+if [ -n "$factory_tag" ]; then
+  echo "check-harness-drift: FACTORY_REF pin is tag $factory_tag (resolved $factory_sha)."
+fi
+
 drift=0
 while IFS= read -r name; do
   case "$name" in ''|'#'*) continue ;; esac
@@ -132,6 +155,23 @@ while IFS= read -r name; do
     drift=1
   fi
 done <"$manifest"
+
+# HEAL_WORKDIR portability guard (#352), a HARD failure. swarm-identity.sh is
+# consumer-owned (vendor-excluded), so the byte-comparison above never sees it —
+# but a committed literal `/home/<user>/...` HEAL_WORKDIR default kills the
+# healer and the swarm/triage failure hooks on every pool host whose runner home
+# differs (healer.yml is runs-on: swarm, so the value is read on EVERY host). An
+# installer who measured one host can commit such a literal; this surfaces it on
+# every drift run, not only at first enrol. The shared guard lives in the
+# vendored identity-lib.sh (both arrive at the same pin); skip gracefully on a
+# pin that predates it.
+if [ -f "$here/identity-lib.sh" ] && [ -f "$here/swarm-identity.sh" ]; then
+  # shellcheck source=identity-lib.sh
+  . "$here/identity-lib.sh"
+  if command -v identity_check_heal_workdir >/dev/null 2>&1; then
+    identity_check_heal_workdir "$here/swarm-identity.sh" || drift=1
+  fi
+fi
 
 if [ "$drift" -ne 0 ]; then
   echo "check-harness-drift: FAILED — vendored factory copies drifted from $FACTORY_REPO@$factory_ref." >&2

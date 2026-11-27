@@ -17,6 +17,9 @@ slot1="$(mktemp)"; slot2="$(mktemp)"; side="$(mktemp)"; wanted="$(mktemp -u)"
 trap 'rm -f "$slot1" "$slot2" "$side" "$wanted" "$wanted-since"' EXIT
 export HOST_CAPACITY_SLOTS="$slot1 $slot2"
 export HOST_CAPACITY_DRIVE_WANTED="$wanted"
+# Hermetic: never let this host's real registry decide the drive mode (#572).
+# The default-exclusive tests below assume no `drive-exclusive slot` declaration.
+export HOST_REGISTRY_CONF="$wanted-no-registry"
 
 # hold <path> <ready-file> — background-hold a lock, signalling once acquired
 # (mirrors tests/host-capacity-lib-test.sh).
@@ -80,6 +83,19 @@ out="$(bash "$wrapper" --exclusive 5 bash -c '
 locked "$slot1" && fail "exclusive did not release slot 1"
 locked "$slot2" && fail "exclusive did not release slot 2"
 [ ! -e "$wanted" ] || fail "exclusive left the drive-wanted reservation behind after success"
+pass=$((pass+1))
+
+# --- exclusive on a `slot` host (#572): holds ONE pooled slot, leaves the rest ---
+# DRIVE_EXCLUSIVE=slot resolves HOST_CAPACITY_DRIVE_MODE=single-slot, so the
+# exclusive acquire keeps slot 1 and hands slot 2 back to the pool — a worker
+# can co-run beside the drive on a big host.
+out="$(DRIVE_EXCLUSIVE=slot bash "$wrapper" --exclusive 5 bash -c '
+  held=0
+  for s in $HOST_CAPACITY_SLOTS; do flock -n 9 9>"$s" || held=$((held+1)); done
+  echo "held=$held"')"
+[ "$out" = "held=1" ] || fail "exclusive on a slot host must hold exactly one pooled slot, got: $out"
+locked "$slot1" && fail "exclusive (slot mode) did not release slot 1"
+[ ! -e "$wanted" ] || fail "exclusive (slot mode) left the drive-wanted reservation behind"
 pass=$((pass+1))
 
 echo "OK: $pass host-slot-wait tests passed"

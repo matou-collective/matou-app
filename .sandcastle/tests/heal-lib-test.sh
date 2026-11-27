@@ -2,7 +2,7 @@
 # Offline tests for heal-lib.sh. Run: bash .sandcastle/tests/heal-lib-test.sh
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export HEALER_STATE="$(mktemp -d)"
+HEALER_STATE="$(mktemp -d)"; export HEALER_STATE
 trap 'rm -rf "$HEALER_STATE"' EXIT
 . "$here/../heal-lib.sh"
 
@@ -256,6 +256,58 @@ JSON
 out="$(watchdog_detect "$wd_fixture")"
 [ "$out" = "$(printf 'custom\talways-red')" ] || fail "absent .workflow_id must fall back to the job name, got: $out"
 rm -f "$wd_fixture"
+pass=$((pass+1))
+
+# --- watchdog_run_url: the run's web URL for the workflow the detector keyed on
+# (#188). In watchdog mode there is no RUN_URL env, so heal.sh needs the suspect
+# run's own html_url to fetch its job logs; watchdog_run_url folds .workflow_id
+# the same way watchdog_detect does and returns the most-recent run's html_url. ---
+wd_url_fixture="$(mktemp)"
+cat > "$wd_url_fixture" <<'JSON'
+{"workflow_runs":[
+ {"name":"swarm (1)","workflow_id":"swarm.yml","status":"failure","run_number":200,"html_url":"https://git.example/O/R/actions/runs/200/jobs/0"},
+ {"name":"swarm (2)","workflow_id":"swarm.yml","status":"failure","run_number":200,"html_url":"https://git.example/O/R/actions/runs/200/jobs/1"},
+ {"name":"swarm (1)","workflow_id":"swarm.yml","status":"success","run_number":199,"html_url":"https://git.example/O/R/actions/runs/199/jobs/0"},
+ {"name":"seam","workflow_id":"ci.yml","status":"failure","run_number":14671,"html_url":"https://git.example/O/R/actions/runs/14671/jobs/0"}
+]}
+JSON
+# most-recent run (200) for the folded workflow 'swarm', NOT the older 199
+[ "$(watchdog_run_url "$wd_url_fixture" swarm)" = "https://git.example/O/R/actions/runs/200/jobs/0" ] \
+  || fail "watchdog_run_url must return the most recent run's html_url for the folded workflow, got: $(watchdog_run_url "$wd_url_fixture" swarm)"
+# a different workflow resolves to its own run via the folded .workflow_id
+[ "$(watchdog_run_url "$wd_url_fixture" ci)" = "https://git.example/O/R/actions/runs/14671/jobs/0" ] \
+  || fail "watchdog_run_url must fold .workflow_id (ci.yml -> ci), got: $(watchdog_run_url "$wd_url_fixture" ci)"
+# #304: the REAL /actions/tasks payload (the endpoint heal.sh fetches, since
+# /actions/runs does not scale — GOTCHAS 16) carries the web url as `.url`, NOT
+# `.html_url` — so the old html_url-only projection echoed empty for every
+# workflow here and #188 never fired in watchdog mode. A `url`-only row must
+# still resolve.
+cat > "$wd_url_fixture" <<'JSON'
+{"workflow_runs":[
+ {"name":"swarm (1)","workflow_id":"swarm.yml","status":"failure","run_number":24161,"url":"https://git.example/O/R/actions/runs/24161"},
+ {"name":"swarm (1)","workflow_id":"swarm.yml","status":"failure","run_number":24158,"url":"https://git.example/O/R/actions/runs/24158"}
+]}
+JSON
+[ "$(watchdog_run_url "$wd_url_fixture" swarm)" = "https://git.example/O/R/actions/runs/24161" ] \
+  || fail "watchdog_run_url must fall back to .url (the real actions/tasks shape, #304), got: $(watchdog_run_url "$wd_url_fixture" swarm)"
+# html_url still wins when a shape carries BOTH (keeps the older/foreign shape working)
+cat > "$wd_url_fixture" <<'JSON'
+{"workflow_runs":[
+ {"name":"swarm (1)","workflow_id":"swarm.yml","status":"failure","run_number":200,"url":"https://git.example/O/R/actions/runs/200","html_url":"https://git.example/O/R/actions/runs/200/web"}
+]}
+JSON
+[ "$(watchdog_run_url "$wd_url_fixture" swarm)" = "https://git.example/O/R/actions/runs/200/web" ] \
+  || fail "watchdog_run_url must prefer .html_url when a row carries both, got: $(watchdog_run_url "$wd_url_fixture" swarm)"
+# a payload with NEITHER url nor html_url (older/foreign shape) → empty, so the
+# caller notes the log was not fetched (AC4) rather than fetching a bogus URL
+cat > "$wd_url_fixture" <<'JSON'
+{"workflow_runs":[
+ {"name":"swarm (1)","workflow_id":"swarm.yml","status":"failure","run_number":200}
+]}
+JSON
+[ -z "$(watchdog_run_url "$wd_url_fixture" swarm)" ] \
+  || fail "watchdog_run_url must return empty when the payload carries no url at all, got: $(watchdog_run_url "$wd_url_fixture" swarm)"
+rm -f "$wd_url_fixture"
 pass=$((pass+1))
 
 # --- probe_api records curl's real outcome, not a blanket `timeout` (#1462) ---

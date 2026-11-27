@@ -15,8 +15,8 @@ jobs:
     runs-on: swarm
     timeout-minutes: 10
     steps:
-      # Own shallow checkout — triage/swarm reset the shared workdir under
-      # /tmp/matou-swarm.lock; this job must not race them there.
+      # Own shallow checkout — triage/swarm reset the shared workdir while
+      # holding the host-capacity slot lock; this job must not race them there.
       - name: Re-arm parked issues with late chat replies
         env:
           FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
@@ -32,13 +32,17 @@ jobs:
           mkdir -p "$workdir"
           cd "$workdir"
           host="${SERVER_URL#https://}"
-          url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+          # Credential-free origin (#195): no token in the URL or on argv. This
+          # own shallow checkout predates any git-setup.sh persist, so inline
+          # git-cred-lib's token-free helper, reading FORGEJO_TOKEN from the job env.
+          url="https://${host}/${REPO_SLUG}.git"
+          cred='credential.helper=!f(){ [ "$1" = get ] || exit 0; printf "username=swarm\npassword=%s\n" "${FORGEJO_TOKEN:-}"; }; f'
           if [ -d .git ]; then
             git remote set-url origin "$url"
-            git fetch --depth 1 origin main
+            git -c "$cred" fetch --depth 1 origin main
             git reset --hard FETCH_HEAD
           else
-            git clone --depth 1 "$url" .
+            git -c "$cred" clone --depth 1 "$url" .
           fi
           bash .sandcastle/resume-parked-asks.sh
       - name: Alert on failure

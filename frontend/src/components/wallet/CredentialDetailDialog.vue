@@ -4,9 +4,8 @@
       <!-- Header -->
       <div class="dialog-header">
         <div class="header-left">
-          <div class="cred-icon" :class="{ 'matou-icon': isMatouCredential }">
-            <img v-if="isMatouCredential" src="../../assets/images/matou-bird-logo-blue.svg" alt="Mātou" class="matou-logo" />
-            <q-icon v-else :name="iconName" size="22px" />
+          <div class="cred-icon">
+            <CredentialMark :credential="credential" :icon-size="22" />
           </div>
           <div>
             <h2 class="cred-title">{{ title }}</h2>
@@ -150,6 +149,8 @@ import {
   ENDORSEMENT_SCHEMA_SAID,
   EVENT_ATTENDANCE_SCHEMA_SAID,
 } from 'src/composables/useAdminActions';
+import { credentialTitle as resolveCredentialTitle } from 'src/lib/credentialAppearance';
+import CredentialMark from './CredentialMark.vue';
 
 const props = defineProps<{
   credential: WalletCredential;
@@ -194,20 +195,12 @@ const isEndorsement = computed(() => props.credential.schemaSaid === ENDORSEMENT
 const isEventAttendance = computed(() => props.credential.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID);
 const isMembership = computed(() => !isEndorsement.value && !isEventAttendance.value);
 
-const isMatouCredential = computed(() => {
-  return (props.credential.schemaTitle || '').toLowerCase().includes('matou');
-});
-
-const iconName = computed(() => {
-  if (isEndorsement.value) return 'person_add';
-  if (isEventAttendance.value) return 'event_available';
-  return 'groups';
-});
-
 const title = computed(() => {
-  if (isEndorsement.value) return 'Membership Endorsement';
-  if (isEventAttendance.value) return props.credential.eventName || 'Event Attendance';
-  return props.credential.schemaTitle || props.credential.role || 'Credential';
+  let legacy: string;
+  if (isEndorsement.value) legacy = 'Membership Endorsement';
+  else if (isEventAttendance.value) legacy = props.credential.eventName || 'Event Attendance';
+  else legacy = props.credential.schemaTitle || props.credential.role || 'Credential';
+  return resolveCredentialTitle(props.credential, legacy);
 });
 
 const statusClass = computed(() => {
@@ -267,7 +260,7 @@ async function copy(text: string, field = 'said') {
 }
 
 .credential-dialog {
-  background: var(--matou-card, #fff);
+  background: var(--matou-card);
   border-radius: 0.75rem;
   width: 90%;
   max-width: 520px;
@@ -281,7 +274,7 @@ async function copy(text: string, field = 'said') {
   justify-content: space-between;
   align-items: flex-start;
   padding: 1.25rem 1.5rem;
-  border-bottom: 1px solid var(--matou-border, #e5e7eb);
+  border-bottom: 1px solid var(--matou-border);
 }
 
 .header-left {
@@ -294,29 +287,20 @@ async function copy(text: string, field = 'said') {
   width: 42px;
   height: 42px;
   border-radius: 0.625rem;
-  background: linear-gradient(135deg, var(--matou-primary, #1e5f74), var(--matou-accent, #4a9d9c));
+  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
   display: flex;
   align-items: center;
   justify-content: center;
   color: white;
   flex-shrink: 0;
-}
-
-.cred-icon.matou-icon {
-  background: white;
-  border: 1px solid var(--matou-border, #e5e7eb);
-}
-
-.matou-logo {
-  width: 26px;
-  height: 26px;
+  overflow: hidden;
 }
 
 .cred-title {
   font-size: 1.0625rem;
   font-weight: 600;
   margin: 0 0 0.375rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
 }
 
 .close-btn {
@@ -324,7 +308,7 @@ async function copy(text: string, field = 'said') {
   border: none;
   font-size: 1.5rem;
   cursor: pointer;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   padding: 0;
   line-height: 1;
 }
@@ -339,7 +323,7 @@ async function copy(text: string, field = 'said') {
 .schema-description {
   margin: 0;
   font-size: 0.8125rem;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   line-height: 1.5;
 }
 
@@ -354,12 +338,12 @@ async function copy(text: string, field = 'said') {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.025em;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
 }
 
 .attr-value {
   font-size: 0.875rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -374,8 +358,8 @@ async function copy(text: string, field = 'said') {
 .chip {
   display: inline-block;
   padding: 0.2rem 0.625rem;
-  background: #e0f2f1;
-  color: #1a4f5e;
+  background: color-mix(in srgb, var(--matou-primary) 12%, transparent);
+  color: var(--matou-primary);
   border-radius: 999px;
   font-size: 0.75rem;
   font-weight: 500;
@@ -428,7 +412,7 @@ async function copy(text: string, field = 'said') {
 .technical-section {
   margin-top: 0.5rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--matou-border, #e5e7eb);
+  border-top: 1px solid var(--matou-border);
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -437,7 +421,7 @@ async function copy(text: string, field = 'said') {
 .section-title {
   font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   margin: 0;
 }
 
@@ -452,15 +436,15 @@ async function copy(text: string, field = 'said') {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.025em;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
 }
 
 .tech-value-row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  background: var(--matou-input-background, #f0f7f9);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  background: var(--matou-input-background);
+  border: 1px solid var(--matou-border);
   border-radius: 0.5rem;
   padding: 0.5rem 0.75rem;
 }
@@ -468,7 +452,7 @@ async function copy(text: string, field = 'said') {
 .tech-value {
   font-family: monospace;
   font-size: 0.75rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -479,7 +463,7 @@ async function copy(text: string, field = 'said') {
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--matou-primary, #1e5f74);
+  color: var(--matou-primary);
   padding: 0.25rem;
   border-radius: 0.25rem;
   display: flex;
@@ -490,14 +474,14 @@ async function copy(text: string, field = 'said') {
 }
 
 .copy-btn:hover {
-  background: rgba(26, 79, 94, 0.1);
+  background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
 }
 
 /* Revoke section */
 .revoke-section {
   margin-top: 0.5rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--matou-border, #e5e7eb);
+  border-top: 1px solid var(--matou-border);
 }
 
 .revoke-btn {
@@ -533,9 +517,9 @@ async function copy(text: string, field = 'said') {
   flex: 1;
   padding: 0.5rem 1rem;
   background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  border: 1px solid var(--matou-border);
   border-radius: 0.5rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;

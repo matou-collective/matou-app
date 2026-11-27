@@ -9,6 +9,7 @@
 import { secureStorage } from 'src/lib/secureStorage';
 import { getBackendUrl, isCapacitor } from 'src/lib/platform';
 import { getConfigUrl, getEnv } from 'src/lib/clientConfig';
+import { BACKEND_KIND_IDSS } from 'src/lib/descriptor';
 
 // Config server URL from clientConfig (respects VITE_ENV)
 const CONFIG_SERVER_URL = getConfigUrl();
@@ -61,6 +62,62 @@ export interface OrgConfig {
   // any-sync admin space ID
   adminSpaceId?: string;
   generated: string;
+}
+
+/**
+ * A raw config document as served by /api/v1/org/config or /api/config. On an
+ * IDSS gateway this document is the community backend descriptor (ADR 0226) —
+ * a `community` block plus `admins[]`, with no `organization` — rather than the
+ * OrgConfig shape the wallet historically read. {@link deriveIdssOrgConfig}
+ * maps it onto OrgConfig.
+ */
+interface RawIdssDescriptor {
+  backend_kind?: string;
+  organization?: unknown;
+  community?: { aid?: string; name?: string; oobi?: string; registry?: string };
+  admins?: Array<{ aid?: string; name?: string; oobi?: string }>;
+  generated?: string;
+}
+
+/**
+ * Derive an OrgConfig from an IDSS community backend descriptor
+ * (ADR 0226 decision 3): the community is founded by IDSS, so the org identity
+ * is the descriptor's `community` block and the one community ledger is
+ * `community.registry` (ADR 0235). Returns null when the document is not an
+ * IDSS descriptor, already carries an `organization`, or names no community AID
+ * — leaving the legacy {@link normalizeOrgConfig} path in charge.
+ */
+export function deriveIdssOrgConfig(raw: unknown): OrgConfig | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const doc = raw as RawIdssDescriptor;
+  if (doc.backend_kind !== BACKEND_KIND_IDSS) return null;
+  if (doc.organization) return null;
+  const community = doc.community;
+  if (!community?.aid) return null;
+  const name = community.name ?? '';
+  return {
+    organization: { aid: community.aid, name, oobi: community.oobi ?? '' },
+    admins: Array.isArray(doc.admins)
+      ? doc.admins
+          .filter((a): a is { aid: string; name?: string; oobi?: string } => !!a?.aid)
+          .map((a) => ({
+            aid: a.aid,
+            name: a.name ?? '',
+            ...(a.oobi ? { oobi: a.oobi } : {}),
+          }))
+      : [],
+    registry: { id: community.registry ?? '', name },
+    generated: doc.generated ?? new Date().toISOString(),
+  };
+}
+
+/**
+ * Map a raw config document to an OrgConfig: an IDSS descriptor is derived
+ * (see {@link deriveIdssOrgConfig}); any other shape goes through the legacy
+ * admins-array normalisation.
+ */
+function toOrgConfig(raw: unknown): OrgConfig {
+  return deriveIdssOrgConfig(raw) ?? normalizeOrgConfig(raw as OrgConfig);
 }
 
 /**
@@ -136,8 +193,8 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
     });
 
     if (response.ok) {
-      const rawConfig = await response.json() as OrgConfig;
-      const config = normalizeOrgConfig(rawConfig);
+      const rawConfig = await response.json() as unknown;
+      const config = toOrgConfig(rawConfig);
       if (isUsableConfig(config)) {
         orgConfigCache = config;
         orgConfigFetchedAt = Date.now();
@@ -177,8 +234,8 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
     });
 
     if (response.ok) {
-      const rawConfig = await response.json() as OrgConfig;
-      const config = normalizeOrgConfig(rawConfig);
+      const rawConfig = await response.json() as unknown;
+      const config = toOrgConfig(rawConfig);
       if (!isUsableConfig(config)) {
         console.warn('[Config] Config server returned incomplete config (missing registry)');
         return { status: 'not_configured' };

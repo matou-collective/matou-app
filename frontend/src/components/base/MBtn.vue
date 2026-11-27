@@ -86,7 +86,7 @@ const buttonClasses = computed(() => {
     color: var(--matou-primary-foreground) !important;
 
     &:hover:not(.disabled) {
-      background-color: rgba(30, 95, 116, 0.9) !important;
+      background-color: color-mix(in srgb, var(--matou-primary) 90%, transparent) !important;
     }
   }
 
@@ -116,7 +116,7 @@ const buttonClasses = computed(() => {
     color: var(--matou-secondary-foreground) !important;
 
     &:hover:not(.disabled) {
-      background-color: rgba(232, 244, 248, 0.8) !important;
+      background-color: color-mix(in srgb, var(--matou-secondary) 80%, transparent) !important;
     }
   }
 

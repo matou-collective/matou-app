@@ -31,7 +31,8 @@
         <div class="sidebar-nav-bottom">
           <!-- Community Settings gear — shown only for holders of
                open_community_settings (founder by default); sits directly above
-               "Report an issue" (#318). -->
+               "Report an issue" (#318), which sits above "Suggest an
+               improvement" — two doors into the one dialog. -->
           <button
             v-if="rolePolicyStore.can('open_community_settings')"
             class="nav-item community-settings-btn"
@@ -40,9 +41,13 @@
             <Settings class="nav-icon" />
             <span>Community Settings</span>
           </button>
-          <button class="nav-item report-issue-btn" @click="showReportDialog = true">
+          <button class="nav-item report-issue-btn" @click="openReport('bug')">
             <Bug class="nav-icon" />
             <span>Report an issue</span>
+          </button>
+          <button class="nav-item report-issue-btn" @click="openReport('improvement')">
+            <Lightbulb class="nav-icon" />
+            <span>Suggest an improvement</span>
           </button>
         </div>
       </nav>
@@ -70,7 +75,8 @@
     <!-- Mobile bottom tab bar (≤767px) — sidebar is hidden there, so this is
          the only navigation. Shows the primary navItems plus a "More" tab; the
          overflow navItems and the profile link live behind the More sheet.
-         "Report an issue" lives on Account settings on mobile. -->
+         "Report an issue" and "Suggest an improvement" also live on Account
+         settings on mobile. -->
     <nav class="bottom-nav">
       <button
         v-for="item in primaryNavItems"
@@ -134,12 +140,21 @@
           </button>
           <button
             class="more-sheet-item more-sheet-item-separated"
-            @click="showMoreSheet = false; showReportDialog = true"
+            @click="showMoreSheet = false; openReport('bug')"
           >
             <span class="more-sheet-icon-wrap">
               <Bug class="more-sheet-icon" />
             </span>
             <span class="more-sheet-label">Report an issue</span>
+          </button>
+          <button
+            class="more-sheet-item"
+            @click="showMoreSheet = false; openReport('improvement')"
+          >
+            <span class="more-sheet-icon-wrap">
+              <Lightbulb class="more-sheet-icon" />
+            </span>
+            <span class="more-sheet-label">Suggest an improvement</span>
           </button>
         </div>
       </div>
@@ -152,7 +167,7 @@
       :community-profile="profileViewer.communityProfile"
       @close="profileViewer.close()"
     />
-    <ReportIssueDialog v-model="showReportDialog" :reporter-name="userName" />
+    <ReportIssueDialog v-model="showReportDialog" :type="reportType" :reporter-name="userName" />
   </div>
 </template>
 
@@ -167,6 +182,7 @@ import {
   MessageSquare,
   Hammer,
   Bug,
+  Lightbulb,
   Menu,
   Settings,
 } from 'lucide-vue-next';
@@ -185,11 +201,14 @@ import { useCommentScope } from 'src/composables/useCommentScope';
 import { useKeyboardOpen } from 'src/composables/useKeyboardOpen';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useKERINotificationService } from 'src/composables/useKERINotificationService';
+import { useGrantAdmission } from 'src/composables/useGrantAdmission';
+import { useRevocationWatch } from 'src/composables/useRevocationWatch';
 import { initNotifications, registerNotificationClickHandler } from 'src/lib/notifications';
 import { fetchOrgConfig } from 'src/api/config';
 import { getFileUrl } from 'src/lib/api/client';
 import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
+import type { IssueType } from 'src/lib/issueReport';
 import { useProfileViewer } from 'stores/profileViewer';
 import { KIT } from 'src/generated/kit';
 import kitLogo from 'src/assets/kit/logo.png';
@@ -215,6 +234,12 @@ const identityStore = useIdentityStore();
 const scope = useCommentScope();
 const profileViewer = useProfileViewer();
 const showReportDialog = ref(false);
+const reportType = ref<IssueType>('bug');
+
+function openReport(type: IssueType) {
+  reportType.value = type;
+  showReportDialog.value = true;
+}
 
 // Hide the mobile bottom tab bar while the soft keyboard is open so it doesn't
 // float above the keyboard and eat vertical space (#126). Web/Electron never
@@ -348,6 +373,10 @@ watch(lastEvent, (event) => {
   }
 });
 const notificationService = useKERINotificationService();
+// Credentials the community issues after joining are admitted on that poll (#685).
+useGrantAdmission();
+// …and the ones it revokes are read from its key history, once a minute (#687).
+useRevocationWatch();
 
 // User info — prefer SharedProfile from community space, fallback to onboarding store
 const mySharedProfile = computed(() => {
@@ -384,6 +413,8 @@ onMounted(() => {
     if (data.route === 'chat' && data.channelId) {
       router.push({ name: 'chat' }).catch(() => {});
       chatStore.selectChannel(data.channelId);
+    } else if (data.route === 'wallet') {
+      router.push({ name: 'wallet' }).catch(() => {});
     }
   });
   initNotifications();
@@ -400,9 +431,11 @@ onMounted(() => {
   commentCursorsStore.fetch().catch(() => {});
 
   // Pre-fetch projects, contributions, notices so unread badges render
-  // before the user navigates into those sections.
+  // before the user navigates into those sections. Contributions rides on
+  // projects (#620): with projects off the module has no nav entry or route,
+  // so skip its fetch — nothing would count its unread badge.
   projectsStore.fetchProjects().catch(() => {});
-  contributionsStore.fetchContributions().catch(() => {});
+  if (__KIT_PROJECTS__) contributionsStore.fetchContributions().catch(() => {});
   activityStore.loadNotices().catch(() => {});
   // Role policy drives the admin-only Roles nav entry. callerCapabilities
   // depend on X-User-AID, which is only sent once the identity store has an
@@ -583,7 +616,7 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--matou-sidebar-border);
 }
 
-// The bottom cluster (Community Settings + Report an issue) is pushed to the
+// The bottom cluster (Community Settings + the two report doors) is pushed to the
 // foot of the nav column so it keeps its place whether or not the gear shows.
 .sidebar-nav-bottom {
   margin-top: auto;
@@ -838,8 +871,9 @@ onBeforeUnmount(() => {
     width: 100%;
     // On mobile there is no top sidebar/header, so page content starts at the
     // very top of an edge-to-edge WebView — clear the status bar with the top
-    // safe-area inset (0 on web/Electron).
-    padding-top: env(safe-area-inset-top);
+    // safe-area inset (0 on web/Electron, and 0 while the update notice above
+    // the router view has already cleared the bar — App.vue's token).
+    padding-top: var(--matou-safe-area-top);
     // Keep content clear of the fixed bottom bar (bar height + safe area).
     padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
   }

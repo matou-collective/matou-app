@@ -11,15 +11,57 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
 
-# git shim — record every `git push` argv line; everything else is a no-op.
+# git shim — record every `git push` argv line; the rebase-rescue ladder (#207)
+# drives rebase/push/merge-base outcomes off env knobs; everything else is a
+# benign no-op (fetch, add, status, rebase --abort).
 cat > "$tmp/bin/git" <<'SH'
 #!/usr/bin/env bash
-if [ "${1:-}" = push ]; then printf '%s\n' "$*" >> "$GIT_PUSHES"; fi
-# the empty-shell guard's probe (matou-app#145): $AHEAD commits beyond main
-if [ "${1:-}" = rev-list ]; then printf '%s\n' "${AHEAD:-1}"; fi
-exit 0
+case "${1:-}" in
+  push)
+    printf '%s\n' "$*" >> "$GIT_PUSHES"
+    case "$*" in
+      *HEAD:main|*HEAD:refs/heads/main)
+        # #346: a failed push to main can carry stderr the ladder classifies
+        # (a local hook refusal vs a transport fatal); emit $MAIN_PUSH_STDERR.
+        [ -n "${MAIN_PUSH_STDERR:-}" ] && printf '%s\n' "$MAIN_PUSH_STDERR" >&2
+        exit "${MAIN_PUSH_RC:-0}" ;;                                   # clean push / initial attempt
+      *refs/heads/sandcastle/rescue-*)  exit "${RESCUE_PUSH_RC:-0}" ;; # the park/PR branch push
+      *) exit 0 ;;                                                     # agent/issue-<N>, …
+    esac ;;
+  # the empty-shell guard's probe (matou-app#145): $AHEAD commits beyond main
+  rev-list)   printf '%s\n' "${AHEAD:-1}"; exit 0 ;;
+  rebase)     [ "${2:-}" = --abort ] && exit 0; exit "${REBASE_RC:-0}" ;;  # conflict iff REBASE_RC!=0
+  merge-base) exit "${ANCESTOR_RC:-1}" ;;        # --is-ancestor: default NOT an ancestor (HEAD ahead)
+  rev-parse)  echo "deadbee"; exit 0 ;;
+  cat-file)   exit "${CATFILE_RC:-0}" ;;          # #372: -e object test; default 0 = the commit EXISTS
+  diff)
+    case "$*" in
+      *--quiet*) exit "${DIFF_QUIET_RC:-1}" ;;    # #372: --quiet; default 1 = commit DIFFERS from main (real diff)
+      *)         printf '%s' "${DIFF_OUT:-}"; exit 0 ;;
+    esac ;;
+  *)          exit 0 ;;
+esac
 SH
 chmod +x "$tmp/bin/git"
+
+# claude shim — the rebase resolver (#207). Record its argv (so the test proves
+# the allowlist and the dropped --dangerously-skip-permissions) and, when asked,
+# print a usage-limit/auth refusal line that landing_resolve_classified reads.
+cat > "$tmp/bin/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CLAUDE_ARGV:-/dev/null}"
+[ -n "${CLAUDE_REFUSAL:-}" ] && printf '%s\n' "$CLAUDE_REFUSAL"
+exit 0
+SH
+chmod +x "$tmp/bin/claude"
+
+# notify shim — capture every landing alert instead of posting it.
+cat > "$tmp/bin/notify" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$NOTIFY_LOG"
+exit 0
+SH
+chmod +x "$tmp/bin/notify"
 
 # curl shim — the two Forgejo calls pr mode makes: GET /pulls?state=open (open
 # PR set, from $OPEN_PULLS or empty) and POST /pulls (create, returns #101 and
@@ -47,9 +89,15 @@ case "$url" in
     else echo "{\"number\":$prn,\"head\":{\"ref\":\"agent/issue-7\",\"sha\":\"headsha\"},\"mergeable\":${PR_MERGEABLE:-true}}"; fi ;;
   */pulls)             echo "PR_CREATED" >> "$CALLS_LOG"; echo '{"number":101,"head":{"ref":"agent/issue-7"}}' ;;
   */issues/*/labels)   echo "LABELED" >> "$CALLS_LOG"; echo 201 ;;
-  */issues/*/comments) echo 201 ;;
+  */issues/*/comments)
+    # GET -> the PR's comment set (for the gates-passed marker check, #206),
+    # from $PR_COMMENTS or empty; POST (a write) -> 201.
+    if [ "$method" = GET ]; then cat "${PR_COMMENTS:-/dev/null}" 2>/dev/null || echo '[]'
+    else echo 201; fi ;;
+  */issues/*/blocks*)        cat "${BLOCKS_JSON:-/dev/null}" 2>/dev/null || echo '[]' ;;   # #359: what a landed ticket blocks
+  */issues/*/dependencies*)  cat "${DEPS_JSON:-/dev/null}" 2>/dev/null || echo '[]' ;;     # #359: a dependant's own blockers
   */issues/[0-9]*)     echo "{\"labels\":${ISSUE_LABELS:-[]},\"state\":\"${ISSUE_STATE:-open}\"}" ;;
-  */labels*)           echo '[{"id":48,"name":"agent-blocked"}]' ;;
+  */labels*)           echo "$LABELS_JSON" ;;
   */api/v1/repos/*)    echo '{"default_merge_style":"merge"}' ;;   # bare repo root — merge-style probe
   *) echo "fake curl: unhandled $url" >&2; exit 22 ;;
 esac
@@ -59,7 +107,15 @@ chmod +x "$tmp/bin/curl"
 export PATH="$tmp/bin:$PATH"
 export FORGEJO_TOKEN=t FORGEJO_API="http://fj.test/api/v1/repos/Matou/matou-app"
 export GIT_PUSHES="$tmp/pushes.log" CALLS_LOG="$tmp/calls.log" BODIES_LOG="$tmp/bodies.log"
-: > "$GIT_PUSHES"; : > "$CALLS_LOG"; : > "$BODIES_LOG"
+# #207: route every landing alert to the notify shim (read at call time by
+# _landing_notify) rather than Mattermost; captured in $NOTIFY_LOG.
+export LANDING_NOTIFY="$tmp/bin/notify" NOTIFY_LOG="$tmp/notify.log" CLAUDE_ARGV="$tmp/argv.log"
+# The tracker's label set the curl shim serves (#114 blocked path reads id 48;
+# the #283 reconcile overrides it to add ready-for-session). Default here so the
+# single-quoted JSON keeps its real double quotes (a `<<'SH'` heredoc would turn
+# any escaped quote literal).
+export LABELS_JSON='[{"id":48,"name":"agent-blocked"}]'
+: > "$GIT_PUSHES"; : > "$CALLS_LOG"; : > "$BODIES_LOG"; : > "$NOTIFY_LOG"; : > "$CLAUDE_ARGV"
 
 # shellcheck source=../landing-lib.sh
 . "$here/../landing-lib.sh"
@@ -86,7 +142,11 @@ check "push mode pushes HEAD:refs/heads/main" \
   'grep -q "push origin HEAD:refs/heads/main" "$GIT_PUSHES"'
 check "push mode never pushes an agent branch" \
   '! grep -q "agent/issue-7" "$GIT_PUSHES"'
-check "push mode makes no Forgejo calls" '[ ! -s "$CALLS_LOG" ]'
+# idss ADR 0267: landing is resolved PER TICKET, so a push-default repo reads the
+# ticket's labels once (is it `landing-pr`?) — that ONE GET is the feature. It
+# still opens no PR and writes nothing.
+check "push mode makes exactly one Forgejo call — the ticket's label read — and no write" \
+  '[ "$(wc -l < "$CALLS_LOG")" -eq 1 ] && grep -q "^GET .*/issues/7$" "$CALLS_LOG"'
 
 # --- pr mode, first run: pushes agent/issue-7 and opens ONE PR (closes #7) ---
 reset
@@ -127,6 +187,21 @@ reset
 ( unset SWARM_POLICY_LANDING; AHEAD=0 landing_push 7 ) >/dev/null
 check "push mode ignores the empty-shell guard" \
   'grep -q "push origin HEAD:refs/heads/main" "$GIT_PUSHES"'
+
+# --- #382: the landing-pending MARKER must not be read as a landing-authority
+# label. It shares the `landing-` prefix but is the close-before-land window mark
+# (#359); landing_ticket_label must ignore it, so landing_mode_for resolves a
+# ticket that carries it instead of rc-1/skipping (the #373 "cannot resolve how it
+# lands; skipped" 17× loop). The curl shim serves the issue's labels from
+# $ISSUE_LABELS.
+check "#382 landing_ticket_label ignores the landing-pending marker (empty when it is the only landing-* label)" \
+  '[ -z "$(ISSUE_LABELS='"'"'[{"name":"landing-pending"}]'"'"' landing_ticket_label 7)" ]'
+check "#382 landing_ticket_label still returns a real landing-* authority label past landing-pending" \
+  '[ "$(ISSUE_LABELS='"'"'[{"name":"landing-pending"},{"name":"landing-pr"}]'"'"' landing_ticket_label 7)" = "landing-pr" ]'
+check "#382 landing_mode_for RESOLVES (rc 0, push default) a ticket carrying only landing-pending" \
+  '( unset SWARM_POLICY_LANDING; m="$(ISSUE_LABELS='"'"'[{"name":"landing-pending"}]'"'"' landing_mode_for 7)"; [ "$?" = 0 ] && [ "$m" = push ] )'
+check "#382 landing_mode_for still honours a real landing-pr override alongside landing-pending" \
+  '( unset SWARM_POLICY_LANDING; [ "$(ISSUE_LABELS='"'"'[{"name":"landing-pending"},{"name":"landing-pr"}]'"'"' landing_mode_for 7)" = pr ] )'
 
 # landing_open_pr_for — exit 0 + number when open, exit 1 when none
 check "landing_open_pr_for finds the open PR" \
@@ -184,6 +259,11 @@ printf '%s\n' '[{"number":88,"head":{"ref":"agent/issue-7"}}]' > "$tmp/open88.js
 printf '%s\n' '{"state":"success","statuses":[{"status":"success","context":"ci/build"}]}' > "$tmp/green.json"
 printf '%s\n' '{"state":"pending","statuses":[{"status":"pending","context":"ci/build"}]}' > "$tmp/pending.json"
 printf '%s\n' '{"state":"failure","statuses":[{"status":"success","context":"ci/lint"},{"status":"failure","context":"ci/test"}]}' > "$tmp/red.json"
+# #206: an agent merge requires close-report's gates-passed marker on the PR.
+# $marked carries it (fence-aware HTML comment); $unmarked is a PR with ordinary
+# comments but no marker (an orphan whose worker never ran a verified close-report).
+printf '%s\n' '[{"body":"<!-- close-report: gates-passed --> cleared to merge"}]' > "$tmp/marked.json"
+printf '%s\n' '[{"body":"just a normal review note"}]' > "$tmp/unmarked.json"
 
 # MERGE_AUTHORITY=human → never merges, whatever the checks say
 reset
@@ -191,13 +271,24 @@ out="$( SWARM_POLICY_MERGE_AUTHORITY=human OPEN_PULLS=$tmp/open88.json STATUS_JS
 check "human authority: landing_merge_if_green reports not-authorized" '[ "$out" = "not-authorized" ]'
 check "human authority: no merge POST is made" '! grep -q "^MERGED$" "$CALLS_LOG"'
 
-# agent-after-green + green → merged, one merge POST, no agent-blocked label
+# agent-after-green + green + gates-passed marker → merged, one merge POST, no label
+reset
+out="$( SWARM_POLICY_MERGE_AUTHORITY=agent-after-green OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json PR_COMMENTS=$tmp/marked.json landing_merge_if_green 7 )"
+check "green + marker: landing_merge_if_green reports 'merged 88'" '[ "$out" = "merged 88" ]'
+check "green + marker: exactly one merge POST to the PR" '[ "$(grep -c "^MERGED$" "$CALLS_LOG")" = "1" ]'
+check "green + marker: the merge hits pulls/88/merge" 'grep -q "POST .*/pulls/88/merge" "$CALLS_LOG"'
+check "green + marker: no agent-blocked label is written" '! grep -q "^LABELED$" "$CALLS_LOG"'
+
+# agent-after-green + green but NO gates-passed marker → NOT merged (#206 acceptance)
+reset
+out="$( SWARM_POLICY_MERGE_AUTHORITY=agent-after-green OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json PR_COMMENTS=$tmp/unmarked.json landing_merge_if_green 7 )"
+check "green, no marker: reports no-close-report" '[ "$out" = "no-close-report" ]'
+check "green, no marker: the PR is NOT merged" '! grep -q "^MERGED$" "$CALLS_LOG"'
+# with no comments at all (the GET returns []) the same holds — fail closed
 reset
 out="$( SWARM_POLICY_MERGE_AUTHORITY=agent-after-green OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json landing_merge_if_green 7 )"
-check "green: landing_merge_if_green reports 'merged 88'" '[ "$out" = "merged 88" ]'
-check "green: exactly one merge POST to the PR" '[ "$(grep -c "^MERGED$" "$CALLS_LOG")" = "1" ]'
-check "green: the merge hits pulls/88/merge" 'grep -q "POST .*/pulls/88/merge" "$CALLS_LOG"'
-check "green: no agent-blocked label is written" '! grep -q "^LABELED$" "$CALLS_LOG"'
+check "green, no comments: fails closed to no-close-report" '[ "$out" = "no-close-report" ]'
+check "green, no comments: no merge POST" '! grep -q "^MERGED$" "$CALLS_LOG"'
 
 # agent-after-green + pending → untouched, no merge, no label
 reset
@@ -229,7 +320,7 @@ check "landing_open_agent_issues lists only agent/issue-<N> PRs' numbers" '[ "$o
 
 # --- landing_merge_reconcile — fans merge-if-green over EVERY open agent PR --
 reset
-out="$( SWARM_POLICY_MERGE_AUTHORITY=agent-after-green OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json landing_merge_reconcile )"
+out="$( SWARM_POLICY_MERGE_AUTHORITY=agent-after-green OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json PR_COMMENTS=$tmp/marked.json landing_merge_reconcile )"
 check "landing_merge_reconcile emits '<N> <result>' for the open agent PR" '[ "$out" = "7 merged 88" ]'
 reset
 out="$( SWARM_POLICY_MERGE_AUTHORITY=human OPEN_PULLS=$tmp/open88.json landing_merge_reconcile )"
@@ -277,19 +368,30 @@ out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=agent-after-green \
 check "sweep SKIPS an issue with a live claim (no line emitted)" '[ -z "$out" ]'
 check "sweep makes NO merge on a claimed issue" '! grep -q "^MERGED$" "$CALLS_LOG"'
 
-# green + UNCLAIMED -> merged, and an audit comment records the missing close-report
+# green + UNCLAIMED but NO gates-passed marker (the orphan whose worker was
+# killed before close-report) -> NOT merged (#206). The sweep still emits a line
+# so the caller knows work exists, but a bare green orphan is never auto-merged.
 reset
 out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=agent-after-green \
-        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json \
+        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json PR_COMMENTS=$tmp/unmarked.json \
         ISSUE_LABELS='[{"name":"ready-for-agent"}]' landing_sweep_orphans )"
-check "sweep merges a green UNCLAIMED orphan PR" '[ "$out" = "7 merged 88" ]'
+check "sweep does NOT merge a green orphan lacking the gates-passed marker" '[ "$out" = "7 no-close-report" ]'
+check "sweep makes NO merge POST on an unmarked orphan" '! grep -q "^MERGED$" "$CALLS_LOG"'
+
+# green + UNCLAIMED + gates-passed marker -> merged (a verified PR whose merge was
+# left for a later pass), with an audit comment naming the sweep
+reset
+out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=agent-after-green \
+        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json PR_COMMENTS=$tmp/marked.json \
+        ISSUE_LABELS='[{"name":"ready-for-agent"}]' landing_sweep_orphans )"
+check "sweep merges a green marked UNCLAIMED PR" '[ "$out" = "7 merged 88" ]'
 check "sweep POSTs the merge to pulls/88/merge" 'grep -q "POST .*/pulls/88/merge" "$CALLS_LOG"'
 check "sweep leaves an audit comment naming the sweep" 'grep -q "idle landing sweep (#114)" "$BODIES_LOG"'
 
-# green but DRIFTED (merge POST fails, PR no longer mergeable) -> close the PR so #N re-arms
+# green + marked but DRIFTED (merge POST fails, PR no longer mergeable) -> close the PR so #N re-arms
 reset
 out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=agent-after-green \
-        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json MERGE_CODE=405 PR_MERGEABLE=false \
+        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json PR_COMMENTS=$tmp/marked.json MERGE_CODE=405 PR_MERGEABLE=false \
         ISSUE_LABELS='[{"name":"ready-for-agent"}]' landing_sweep_orphans )"
 check "sweep reports closed-drifted for a green-but-unmergeable PR" '[ "$out" = "7 closed-drifted 88" ]'
 check "sweep PATCH-closes the drifted PR #88" 'grep -q "PR_CLOSED 88" "$CALLS_LOG"'
@@ -298,7 +400,7 @@ check "the drift-close comment names the re-arm" 'grep -q "re-arms for a fresh w
 # a TRANSIENT merge failure (branch still mergeable) is NOT closed — retried next tick
 reset
 out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=agent-after-green \
-        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json MERGE_CODE=500 PR_MERGEABLE=true \
+        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json PR_COMMENTS=$tmp/marked.json MERGE_CODE=500 PR_MERGEABLE=true \
         ISSUE_LABELS='[{"name":"ready-for-agent"}]' landing_sweep_orphans )"
 check "a transient merge failure (still mergeable) is left as merge-failed" '[ "$out" = "7 merge-failed 88 500" ]'
 check "no PR close on a transient merge failure" '! grep -q "PR_CLOSED" "$CALLS_LOG"'
@@ -311,6 +413,657 @@ out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=agent-after-green \
         ISSUE_LABELS='[{"name":"ready-for-agent"}]' landing_sweep_orphans )"
 check "sweep emits a line for a PENDING unclaimed PR (work still exists)" '[ "$out" = "7 pending" ]'
 check "sweep makes no merge on a pending PR" '! grep -q "^MERGED$" "$CALLS_LOG"'
+
+# ===========================================================================
+# #207 — the push-mode rebase-conflict ladder (landing_push_main_with_rescue). A
+# conflict-resolved HEAD must NEVER go straight to main: re-test on the pinned
+# suite, route GREEN → a rescue PR, RED → a park; a limit/auth refusal defers
+# quietly. push / rebase / claude / notify are all shimmed.
+# ===========================================================================
+# A drivable completion seam for the resolver: $REBASE_IN_PROGRESS says whether
+# the headless claude actually finished the rebase.
+landing_rebase_in_progress() { [ "${REBASE_IN_PROGRESS:-}" = 1 ]; }
+clear207() { : > "$GIT_PUSHES"; : > "$CALLS_LOG"; : > "$BODIES_LOG"; : > "$NOTIFY_LOG"; : > "$CLAUDE_ARGV"; }
+
+# --- clean push: the first push to main succeeds -> lands, no rebase, no claude
+clear207
+rc=0; ( MAIN_PUSH_RC=0 landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+check "#207 clean push lands HEAD on main (rc 0)" '[ "$rc" = 0 ]'
+check "#207 clean push pushes HEAD:main" 'grep -q "push origin HEAD:main" "$GIT_PUSHES"'
+check "#207 clean push invokes no resolver, parks nothing, opens no PR" \
+  '[ ! -s "$CLAUDE_ARGV" ] && ! grep -q "rescue-" "$GIT_PUSHES" && ! grep -q "^PR_CREATED$" "$CALLS_LOG"'
+
+# --- #2119: the SHA-preserving-promote flag. run-swarm.sh's success-path #283
+# reconcile may run ONLY when the promote was a clean fast-forward or a no-op
+# (`git push origin HEAD:main` succeeded on the FIRST try, SHAs preserved) — a
+# rebase landing rewrites the worker SHAs onto main, so a by-SHA reachability
+# check would false-reopen genuinely-landed work. landing_push_main_with_rescue
+# publishes that signal as LANDING_PROMOTE_CLEAN. Called OUTSIDE a subshell (the
+# real callers are too) so the test reads the global it sets; the function owns
+# the var — it clears a stale value on entry and sets 1 only on first-try success.
+clear207
+LANDING_PROMOTE_CLEAN=stale
+MAIN_PUSH_RC=0 landing_push_main_with_rescue coa >/dev/null 2>&1 || true
+check "#2119 a first-try push to main marks the promote SHA-preserving (LANDING_PROMOTE_CLEAN=1)" \
+  '[ "$LANDING_PROMOTE_CLEAN" = 1 ]'
+
+clear207
+LANDING_PROMOTE_CLEAN=stale
+MAIN_PUSH_RC=1 REBASE_RC=0 landing_push_main_with_rescue coa >/dev/null 2>&1 || true
+check "#2119 a rebase landing clears LANDING_PROMOTE_CLEAN (reconcile must skip it)" \
+  '[ -z "$LANDING_PROMOTE_CLEAN" ]'
+
+# --- conflict -> PR: push-to-main fails, rebase conflicts, claude resolves, GREEN
+clear207
+rc=0; ( MAIN_PUSH_RC=1 REBASE_RC=1 REBASE_IN_PROGRESS=0 LANDING_TEST_CMD=true \
+        OPEN_PULLS="$tmp/no-pulls.json" landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+check "#207 conflict+green opens a rescue PR" 'grep -q "^PR_CREATED$" "$CALLS_LOG"'
+check "#207 conflict+green pushes the rescue branch" \
+  'grep -q "push origin HEAD:refs/heads/sandcastle/rescue-" "$GIT_PUSHES"'
+check "#207 conflict+green NEVER pushes the conflict HEAD to main (only the initial failed attempt)" \
+  '[ "$(grep -c "push origin HEAD:main" "$GIT_PUSHES")" = "1" ]'
+check "#207 conflict+green's PR carries the #207 rescue title" 'grep -q "Rebase-conflict rescue" "$BODIES_LOG"'
+check "#207 conflict+green notifies the PR route" 'grep -q "resolved → PR" "$NOTIFY_LOG"'
+check "#207 conflict+green fails the land so main is untouched (rc 1)" '[ "$rc" = 1 ]'
+
+# --- conflict + RED tests -> parked on rescue, paged, NOT pushed, NO PR
+clear207
+rc=0; ( MAIN_PUSH_RC=1 REBASE_RC=1 REBASE_IN_PROGRESS=0 LANDING_TEST_CMD=false \
+        landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+check "#207 conflict+red parks on a rescue branch" \
+  'grep -q "push origin HEAD:refs/heads/sandcastle/rescue-" "$GIT_PUSHES"'
+check "#207 conflict+red opens NO PR" '! grep -q "^PR_CREATED$" "$CALLS_LOG"'
+check "#207 conflict+red never pushes the resolved HEAD to main" \
+  '[ "$(grep -c "push origin HEAD:main" "$GIT_PUSHES")" = "1" ]'
+check "#207 conflict+red pages a FAILED re-test" 'grep -q "FAILED its re-test" "$NOTIFY_LOG"'
+check "#207 conflict+red fails the land (rc 1)" '[ "$rc" = 1 ]'
+
+# --- limit refusal -> quiet DEFER, nothing pushed, no PR, no rescue branch
+clear207
+rc=0; ( MAIN_PUSH_RC=1 REBASE_RC=1 REBASE_IN_PROGRESS=1 \
+        CLAUDE_REFUSAL="You've hit your weekly limit · resets Aug 1" \
+        landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+check "#207 limit refusal pushes nothing to main beyond the initial attempt" \
+  '[ "$(grep -c "push origin HEAD:main" "$GIT_PUSHES")" = "1" ]'
+check "#207 limit refusal parks on NO rescue branch (defer, not a page)" '! grep -q "rescue-" "$GIT_PUSHES"'
+check "#207 limit refusal opens no PR" '! grep -q "^PR_CREATED$" "$CALLS_LOG"'
+check "#207 limit refusal defers quietly (hourglass, never a rotating_light page)" \
+  'grep -q "deferred — Claude usage limit" "$NOTIFY_LOG" && ! grep -q "rotating_light" "$NOTIFY_LOG"'
+check "#207 limit refusal fails the land (rc 1)" '[ "$rc" = 1 ]'
+
+# --- no pinned test command -> cannot verify -> park, never land (fail closed)
+clear207
+rc=0; ( MAIN_PUSH_RC=1 REBASE_RC=1 REBASE_IN_PROGRESS=0 landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+check "#207 unset LANDING_TEST_CMD parks on a rescue branch, never main (fail closed)" \
+  'grep -q "push origin HEAD:refs/heads/sandcastle/rescue-" "$GIT_PUSHES" && [ "$(grep -c "push origin HEAD:main" "$GIT_PUSHES")" = "1" ]'
+check "#207 unset LANDING_TEST_CMD opens no PR" '! grep -q "^PR_CREATED$" "$CALLS_LOG"'
+
+# --- resolver ran but could NOT finish the rebase (not a limit) -> honest park.
+# #364: the resolver must have RUN (produced output) — an EMPTY log + rebase still
+# mid-flight is now the could-not-START `unusable` signature (a defer), so a genuine
+# "ran but gave up" case emits narration (CLAUDE_REFUSAL text that matches no limit/
+# auth/usage signature) to stay a `failed` park, not a quiet defer.
+clear207
+rc=0; ( MAIN_PUSH_RC=1 REBASE_RC=1 REBASE_IN_PROGRESS=1 ANCESTOR_RC=1 \
+        CLAUDE_REFUSAL="I attempted the merge but the conflict is beyond what I can reconcile." \
+        landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+check "#207 resolver-failed falls through to the honest rescue park" \
+  'grep -q "push origin HEAD:refs/heads/sandcastle/rescue-" "$GIT_PUSHES"'
+check "#207 resolver-failed opens no PR, never pushes the HEAD to main" \
+  '! grep -q "^PR_CREATED$" "$CALLS_LOG" && [ "$(grep -c "push origin HEAD:main" "$GIT_PUSHES")" = "1" ]'
+check "#207 resolver-failed fails the land (rc 1)" '[ "$rc" = 1 ]'
+
+# --- #383: a FAILED resolve KEEPS the resolver's log in the run's evidence dir.
+# Every path above rm -f'd the log, so all three policy-generators strands
+# (2026-11-20) were undiagnosable — nobody could read WHY landing_resolve_classified
+# gave up. On a `failed` resolve the log is preserved and the park alarm names where.
+clear207
+rm -rf "$tmp/evidence"
+rc=0; ( MAIN_PUSH_RC=1 REBASE_RC=1 REBASE_IN_PROGRESS=1 ANCESTOR_RC=1 \
+        LANDING_RESOLVE_LOG_DIR="$tmp/evidence" \
+        CLAUDE_REFUSAL="I attempted the merge but the conflict is beyond what I can reconcile." \
+        landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+check "#383 a failed resolve keeps the resolver log in the evidence dir" \
+  '[ -n "$(ls "$tmp/evidence"/landing-resolve-* 2>/dev/null)" ]'
+check "#383 the kept resolver log carries the resolver's output" \
+  'grep -q "beyond what I can reconcile" "$tmp/evidence"/landing-resolve-* 2>/dev/null'
+check "#383 the park alarm names where the resolver log was kept" \
+  'grep -q "log is kept at" "$NOTIFY_LOG"'
+check "#383 a kept-log failed resolve still parks on a rescue branch (unchanged)" \
+  'grep -q "push origin HEAD:refs/heads/sandcastle/rescue-" "$GIT_PUSHES"'
+
+# A REFUSED resolve (usage limit / auth) is self-explaining — its log is still
+# removed; ONLY the undiagnosable `failed` case is kept (#383).
+clear207
+rm -rf "$tmp/evidence"
+rc=0; ( MAIN_PUSH_RC=1 REBASE_RC=1 REBASE_IN_PROGRESS=1 \
+        LANDING_RESOLVE_LOG_DIR="$tmp/evidence" \
+        CLAUDE_REFUSAL="You've hit your weekly limit · resets Aug 1" \
+        landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+check "#383 a refused (limit) resolve keeps NO log (only a failed resolve is kept)" \
+  '[ -z "$(ls "$tmp/evidence"/landing-resolve-* 2>/dev/null)" ]'
+
+# --- the resolver's invocation: a bounded allowlist, NO --dangerously-skip-permissions
+check "#207 resolver passes --allowedTools" 'grep -q -- "--allowedTools" "$CLAUDE_ARGV"'
+check "#207 resolver passes --permission-mode acceptEdits" 'grep -q -- "--permission-mode acceptEdits" "$CLAUDE_ARGV"'
+check "#207 resolver NEVER passes --dangerously-skip-permissions" \
+  '! grep -q "dangerously-skip-permissions" "$CLAUDE_ARGV"'
+
+# ===========================================================================
+# #364 — the resolver's argv was broken on EVERY consumer: the prompt rode as a
+# TRAILING positional after the VARIADIC --allowedTools, which swallowed it, so the
+# CLI saw no prompt and exited in <1s — the #207 resolver NEVER ran once. And the
+# argv usage-error was classified `failed`, so it PAGED a park instead of deferring.
+# The old test (run-swarm-landing case 6) ran with NO claude on PATH, so it never
+# exercised the argv at all (GOTCHAS #314's shape: green where written, dead where
+# it matters). Here a stub claude PARSES ITS OWN ARGV the way the CLI does — a
+# prompt after --allowedTools is swallowed → usage error, exit 1 — so the test reds
+# if the prompt ever drifts back behind --allowedTools.
+# ===========================================================================
+# Stub claude: resolve ONLY when the prompt reaches it BEFORE --allowedTools.
+cat > "$tmp/bin/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CLAUDE_ARGV:-/dev/null}"
+# emulate the variadic --allowedTools: a positional AFTER it is swallowed.
+idx=0; allowed_idx=-1; prompt_idx=-1
+for a in "$@"; do
+  [ "$a" = "--allowedTools" ] && allowed_idx=$idx
+  case "$a" in *"mid-rebase with conflicts"*) prompt_idx=$idx ;; esac
+  idx=$((idx + 1))
+done
+if [ "$prompt_idx" -lt 0 ] || { [ "$allowed_idx" -ge 0 ] && [ "$prompt_idx" -gt "$allowed_idx" ]; }; then
+  echo "Error: Input must be provided either through stdin or as a prompt argument when using --print" >&2
+  exit 1
+fi
+: > "${RESOLVE_DONE:?}"   # a valid invocation advances the rebase to completion
+exit 0
+SH
+chmod +x "$tmp/bin/claude"
+export RESOLVE_DONE="$tmp/resolve-done"
+# the real completion seam now reads whether the stub actually resolved — NOT an env
+# knob — so only a correctly-delivered prompt can produce a `resolved` verdict.
+landing_rebase_in_progress() { [ ! -e "${RESOLVE_DONE:-/nonexistent}" ]; }
+
+# --- the fixed argv: prompt before --allowedTools -> the resolver RUNS and resolves
+clear207; rm -f "$RESOLVE_DONE"
+rc=0; ( MAIN_PUSH_RC=1 REBASE_RC=1 LANDING_TEST_CMD=true \
+        OPEN_PULLS="$tmp/no-pulls.json" landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+check "#364 the prompt reaches claude BEFORE --allowedTools (not swallowed)" \
+  'grep -q -- "-p .*mid-rebase with conflicts" "$CLAUDE_ARGV"'
+check "#364 a valid invocation resolves the conflict (the resolver actually runs)" \
+  '[ -e "$RESOLVE_DONE" ]'
+check "#364 conflict+resolved+green routes to a rescue PR" 'grep -q "^PR_CREATED$" "$CALLS_LOG"'
+check "#364 conflict+resolved never pushes the resolved HEAD to main" \
+  '[ "$(grep -c "push origin HEAD:main" "$GIT_PUSHES")" = "1" ]'
+
+# --- #374: the resolver prompt describes the POST-#196/#287 STATUS.md shape.
+# It used to tell the resolver to "keep both milestone-log entries" and "merge
+# the one-line header" — neither of which exists since #196/#287 (the milestone
+# log moved to docs/journal/; docs-budget-test asserts NO dated header line). A
+# resolver told to merge a file that no longer looks like that, under a byte
+# budget with ~2 bytes spare, parked and paged. The prompt now names the real
+# surface (per-ticket rows, docs/journal/) and the budget it must stay under.
+check "#374 the resolver prompt no longer names the removed STATUS.md milestone-log" \
+  '! grep -qi "milestone-log\|milestone log" "$CLAUDE_ARGV"'
+check "#374 the resolver prompt points STATUS.md history at the per-change journal" \
+  'grep -qi "journal" "$CLAUDE_ARGV"'
+check "#374 the resolver prompt tells it to stay under the byte budget" \
+  'grep -qi "budget" "$CLAUDE_ARGV"'
+# #47: the prompt must state the doctrine in its own words — NO vendor-excluded
+# doc path (docs/**) in the live string, or it 404s in every consumer.
+check "#374 the resolver prompt names no docs/ path (judgement-call-prompts #47)" \
+  '! grep -q "docs/" "$CLAUDE_ARGV"'
+
+# --- the OLD broken argv would be swallowed: prove the stub rejects it so a revert
+#     to the trailing-positional order can never silently pass again.
+clear207; rm -f "$RESOLVE_DONE"
+"$tmp/bin/claude" -p --model m --permission-mode acceptEdits \
+  --allowedTools Edit,Write "This git checkout is mid-rebase with conflicts. do it" >/dev/null 2>"$tmp/old-argv.err" && rc=0 || rc=$?
+check "#364 the stub REJECTS a prompt that follows --allowedTools (the pre-fix bug)" \
+  '[ "$rc" = 1 ] && [ ! -e "$RESOLVE_DONE" ]'
+check "#364 a swallowed prompt emits the CLI's usage error" \
+  'grep -q "Input must be provided" "$tmp/old-argv.err"'
+
+# --- the unusable detector (pure, over a pre-written log): an argv/usage-error log
+#     or a bad-model log reads UNUSABLE; an EMPTY log + rebase still mid-flight reads
+#     unusable (silent death); a genuine narration stays NOT-unusable so the
+#     classifier's `failed` default (park+page) holds (positive-only, #346 discipline).
+#     Driven against landing_resolve_unusable directly — landing_resolve_classified
+#     RE-RUNS the resolver and would overwrite the log we hand it.
+landing_rebase_in_progress() { return 0; }   # rebase still mid-flight (nothing resolved)
+usage_log="$tmp/usage.log"
+printf 'Error: Input must be provided either through stdin or as a prompt argument when using --print\n' > "$usage_log"
+check "#364 unusable: a usage-error log (the pre-fix argv bug) reads unusable" \
+  'landing_resolve_unusable "$usage_log"'
+bad_model_log="$tmp/badmodel.log"
+printf 'error: Invalid model: claude-nope\n' > "$bad_model_log"
+check "#364 unusable: a bad --model log reads unusable" \
+  'landing_resolve_unusable "$bad_model_log"'
+empty_log="$tmp/empty.log"; : > "$empty_log"
+check "#364 unusable: an EMPTY log + rebase still mid-flight reads unusable (silent death)" \
+  'landing_resolve_unusable "$empty_log"'
+real_fail_log="$tmp/realfail.log"; printf 'I tried but the conflict is too tangled to resolve.\n' > "$real_fail_log"
+check "#364 unusable: a genuine unresolved narration is NOT unusable (failed default preserved)" \
+  '! landing_resolve_unusable "$real_fail_log"'
+# and an empty log with the rebase ALREADY DONE is not unusable either (it resolved).
+landing_rebase_in_progress() { return 1; }
+check "#364 unusable: an empty log with the rebase complete is NOT unusable" \
+  '! landing_resolve_unusable "$empty_log"'
+
+# --- claude ABSENT -> unusable -> quiet DEFER (hourglass), never a rescue park/page.
+# Keep $tmp/bin on PATH (the git + notify shims live there) but REMOVE the claude
+# shim; /usr/bin:/bin carry no claude, so `command -v claude` fails (case 6's
+# convention). The block-end below recreates the default claude shim.
+rm -f "$tmp/bin/claude"
+clear207; SWARM_EXIT_REASON=""; rc=0
+( PATH="$tmp/bin:/usr/bin:/bin" MAIN_PUSH_RC=1 REBASE_RC=1 landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+# run again un-subshelled to read the reason the function set
+clear207; SWARM_EXIT_REASON=""
+PATH="$tmp/bin:/usr/bin:/bin" MAIN_PUSH_RC=1 REBASE_RC=1 landing_push_main_with_rescue coa >/dev/null 2>&1 || true
+check "#364 claude absent fails the land (rc 1)" '[ "$rc" = 1 ]'
+check "#364 claude absent defers quietly (resolver-unusable, NOT push-parked-on-rescue)" \
+  '[ "$SWARM_EXIT_REASON" = "rebase-rescue-resolver-unusable" ]'
+check "#364 claude absent parks NO rescue branch (defer, not a page)" \
+  '! grep -q "rescue-" "$GIT_PUSHES"'
+check "#364 claude absent opens no PR" '! grep -q "^PR_CREATED$" "$CALLS_LOG"'
+check "#364 claude absent is a quiet defer (could-not-START), never a rotating_light page" \
+  'grep -q "could not START" "$NOTIFY_LOG" && ! grep -q "rotating_light" "$NOTIFY_LOG"'
+
+# restore the default claude shim + the env-knob completion seam for later cases.
+cat > "$tmp/bin/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CLAUDE_ARGV:-/dev/null}"
+[ -n "${CLAUDE_REFUSAL:-}" ] && printf '%s\n' "$CLAUDE_REFUSAL"
+exit 0
+SH
+chmod +x "$tmp/bin/claude"
+landing_rebase_in_progress() { [ "${REBASE_IN_PROGRESS:-}" = 1 ]; }
+
+# ===========================================================================
+# #346 — a LOCAL pre-push hook refusal must NOT be alarmed as a transport fault
+# (push-rescue-unreachable). landing_classify_push_failure tells the three cases
+# apart from the captured push output; the hook case short-circuits the ladder,
+# parks with --no-verify, and names the hook + its output. The forge is up.
+# ===========================================================================
+# --- the classifier (pure): transport fatals, server ref-rejections, hook refusal
+check "#346 classify: a transport fatal reads transport" \
+  '[ "$(landing_classify_push_failure "fatal: unable to access '\''https://git.x/r'\'': Could not resolve host: git.x")" = transport ]'
+check "#346 classify: a connection refusal reads transport" \
+  '[ "$(landing_classify_push_failure "ssh: connect to host git.x port 22: Connection refused
+fatal: Could not read from remote repository.")" = transport ]'
+check "#346 classify: a stale-main rejection reads rejected" \
+  '[ "$(landing_classify_push_failure " ! [rejected]        HEAD -> main (fetch first)
+error: failed to push some refs to '\''origin'\''")" = rejected ]'
+check "#346 classify: a non-fast-forward reads rejected" \
+  '[ "$(landing_classify_push_failure "error: failed to push some refs
+hint: Updates were rejected because the tip of your current branch is behind")" = rejected ]'
+check "#346 classify: a local hook refusal (no transport, no ref-reject) reads hook" \
+  '[ "$(landing_classify_push_failure "✖ TypeScript gate failed (exit 3)
+error: failed to push some refs to '\''origin'\''")" = hook ]'
+check "#346 classify: empty/unknown output defaults to rejected (ladder preserved)" \
+  '[ "$(landing_classify_push_failure "")" = rejected ]'
+
+# --- hook refusal, forge up, park succeeds -> distinct reason + hook-named alarm
+HOOK_ERR="✖ TypeScript gate failed (exit 3)
+error: failed to push some refs to 'origin'"
+clear207; SWARM_EXIT_REASON=""
+rc=0; ( MAIN_PUSH_RC=1 MAIN_PUSH_STDERR="$HOOK_ERR" landing_push_main_with_rescue coa ) >/dev/null 2>&1 || rc=$?
+# run again un-subshelled to read the reason the function set
+clear207; SWARM_EXIT_REASON=""
+MAIN_PUSH_RC=1 MAIN_PUSH_STDERR="$HOOK_ERR" landing_push_main_with_rescue coa >/dev/null 2>&1 || true
+check "#346 hook refusal fails the land (rc 1)" '[ "$rc" = 1 ]'
+check "#346 hook refusal sets the distinct reason (NOT push-rescue-unreachable)" \
+  '[ "$SWARM_EXIT_REASON" = "push-refused-by-local-hook" ]'
+check "#346 hook refusal runs NO rebase resolver (short-circuits the ladder)" '[ ! -s "$CLAUDE_ARGV" ]'
+check "#346 hook refusal attempts only ONE push to main, then the rescue park" \
+  '[ "$(grep -c "push origin HEAD:main" "$GIT_PUSHES")" = "1" ]'
+check "#346 hook refusal parks on a rescue branch with the hook bypassed (--no-verify)" \
+  'grep -q "push --no-verify origin HEAD:refs/heads/sandcastle/rescue-" "$GIT_PUSHES"'
+check "#346 hook refusal names the LOCAL pre-push hook and denies a transport fault" \
+  'grep -q "LOCAL pre-push hook" "$NOTIFY_LOG" && grep -q "forge was reachable" "$NOTIFY_LOG"'
+check "#346 hook refusal surfaces the hook's own output in the alarm" \
+  'grep -q "TypeScript gate failed" "$NOTIFY_LOG"'
+check "#346 hook refusal never claims the forge is unreachable" \
+  '! grep -q "forge is unreachable" "$NOTIFY_LOG"'
+
+# --- hook refusal, forge up, but the park push itself fails -> no false branch claim
+clear207; SWARM_EXIT_REASON=""
+MAIN_PUSH_RC=1 MAIN_PUSH_STDERR="$HOOK_ERR" RESCUE_PUSH_RC=1 \
+  landing_push_main_with_rescue coa >/dev/null 2>&1 || true
+check "#346 hook refusal + failed park sets the rescue-unreachable-flavoured reason" \
+  '[ "$SWARM_EXIT_REASON" = "push-refused-by-local-hook-rescue-unreachable" ]'
+check "#346 hook refusal + failed park asserts the commits are in the workdir, not a branch" \
+  'grep -q "ONLY in the runner workdir" "$NOTIFY_LOG" && ! grep -q "parked on .sandcastle/rescue" "$NOTIFY_LOG"'
+
+# --- a GENUINE transport failure is unchanged: it still reaches the transport
+#     ladder (never the hook short-circuit). Forge down, nothing stale, park down.
+clear207; SWARM_EXIT_REASON=""
+MAIN_PUSH_RC=1 MAIN_PUSH_STDERR="fatal: unable to access 'https://git.x/r': Could not resolve host: git.x" \
+  REBASE_RC=0 ANCESTOR_RC=1 RESCUE_PUSH_RC=1 \
+  landing_push_main_with_rescue coa >/dev/null 2>&1 || true
+check "#346 a transport failure still reaches the transport reason (push-rescue-unreachable), never the hook reason" \
+  '[ "$SWARM_EXIT_REASON" = "push-rescue-unreachable" ]'
+
+# ===========================================================================
+# #193 — the push-mode HOST-LAND boundary. The worker pushes a per-run worker
+# branch; the HOST promotes it to main ONLY after verify. When verify flagged a
+# protected-path breach (VERIFY_PP_VIOLATION=1), the land seam must NOT push main
+# — it parks HEAD on a rescue branch and reds the run. git/push/notify shimmed.
+# landing_stage calls verdict_stage (verdict-lib is NOT sourced here); no-op it.
+# ===========================================================================
+verdict_stage() { :; }
+clear207; SWARM_EXIT_REASON=""; rc=0
+VERIFY_PP_VIOLATION=1 SWARM_POLICY_LANDING=push landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || rc=$?
+check "#193 breach: the land seam fails the run (rc 1)" '[ "$rc" = 1 ]'
+check "#193 breach: NOTHING is pushed to main" '! grep -q "push origin HEAD:main" "$GIT_PUSHES"'
+check "#193 breach: the worker's commits are PARKED on a rescue branch (never lost)" \
+  'grep -q "push origin HEAD:refs/heads/sandcastle/rescue-" "$GIT_PUSHES"'
+check "#193 breach: the exit reason names the protected-path violation" \
+  '[ "$SWARM_EXIT_REASON" = "protected-path-violation" ]'
+check "#193 breach: the refusal alarms so a human triages" 'grep -q "did NOT land" "$NOTIFY_LOG"'
+# no breach flagged -> the guard is transparent (a clean push-mode land proceeds)
+clear207; SWARM_EXIT_REASON=""
+VERIFY_PP_VIOLATION="" SWARM_POLICY_LANDING=push MAIN_PUSH_RC=0 \
+  landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || true
+check "#193 no breach: the land seam pushes HEAD to main as usual" \
+  'grep -q "push origin HEAD:main" "$GIT_PUSHES"'
+check "#193 no breach: no rescue branch is parked on a clean land" \
+  '! grep -q "refs/heads/sandcastle/rescue-" "$GIT_PUSHES"'
+
+# ===========================================================================
+# #347 — a push run with NO commits of its own must NEVER push to main. Two runs
+# sharing one workdir (the shared checkout) left a run whose worker committed
+# nothing with a SIBLING run's commit on HEAD, which it then pushed — landing
+# another run's work under its own name. start_sha..HEAD empty (AHEAD=0) is the
+# provable "nothing of ours" signal: the land seam refuses the push, cleanly.
+# ===========================================================================
+clear207; SWARM_EXIT_REASON=""; rc=0
+VERIFY_PP_VIOLATION="" SWARM_POLICY_LANDING=push AHEAD=0 \
+  landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || rc=$?
+check "#347 no-own-commits: the push run does NOT push main" \
+  '! grep -q "push origin HEAD:main" "$GIT_PUSHES"'
+check "#347 no-own-commits: nothing is parked on a rescue branch either (nothing to land)" \
+  '! grep -q "refs/heads/sandcastle/rescue-" "$GIT_PUSHES"'
+check "#347 no-own-commits: the land seam returns clean (a no-op, not a red)" '[ "$rc" = 0 ]'
+# control: a push run WITH its own commits (AHEAD=1, the shim default) still lands.
+clear207; SWARM_EXIT_REASON=""
+VERIFY_PP_VIOLATION="" SWARM_POLICY_LANDING=push MAIN_PUSH_RC=0 AHEAD=1 \
+  landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || true
+check "#347 control: a push run WITH its own commits still pushes main" \
+  'grep -q "push origin HEAD:main" "$GIT_PUSHES"'
+
+# --- #2119: the land-SUCCESS reconcile. A first-try promote can be a NO-OP
+# "Everything up-to-date" (the worker commit never reached the runner HEAD): the
+# push returns 0, landing_stage returns 0, main never advanced, and the two
+# failure-path reconciles in run-swarm.sh never run. landing_stage must re-run
+# the #283 reconcile on that success path, gated on the SHA-preserving
+# LANDING_PROMOTE_CLEAN flag, reading the exported EXECUTE_ATTEMPTS_FILE.
+# LABELS_JSON carries ready-for-session so the reopen can re-queue the issue.
+s2119_setup() {
+  clear207; SWARM_EXIT_REASON=""
+  export LABELS_JSON='[{"id":48,"name":"agent-blocked"},{"id":70,"name":"ready-for-session"}]'
+  export EXECUTE_ATTEMPTS_FILE="$tmp/s2119-attempts.log"
+  printf 'SANDCASTLE_ATTEMPT issue=7 outcome=success commits=deadbee\n' > "$EXECUTE_ATTEMPTS_FILE"
+}
+
+# stranded: a clean no-op promote (MAIN_PUSH_RC=0 sets the flag) + commits NOT on
+# main (ANCESTOR_RC=1) + the issue reads closed -> landing_stage reopens it.
+s2119_setup
+VERIFY_PP_VIOLATION="" SWARM_POLICY_LANDING=push MAIN_PUSH_RC=0 ANCESTOR_RC=1 ISSUE_STATE=closed \
+  landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || true
+check "#2119 a no-op promote on the SUCCESS path reopens the stranded close (PATCH /issues/7)" \
+  'grep -qE "PATCH .*/issues/7$" "$CALLS_LOG"'
+check "#2119 the success-path reopen names the stranded commit" 'grep -q "deadbee" "$BODIES_LOG"'
+
+# landed: the SAME success path but the commits ARE on main (ANCESTOR_RC=0) ->
+# a clean fast-forward genuinely landed, so nothing is reopened (no false green).
+s2119_setup
+VERIFY_PP_VIOLATION="" SWARM_POLICY_LANDING=push MAIN_PUSH_RC=0 ANCESTOR_RC=0 ISSUE_STATE=closed \
+  landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || true
+check "#2119 a land whose commits ARE on main is NOT reopened on the success path" \
+  '! grep -qE "PATCH .*/issues/7$" "$CALLS_LOG"'
+
+# pr mode: landing_stage returns 0 via the PR path and never sets the flag, so
+# the success-path reconcile is skipped even with a stranded attempt line.
+s2119_setup
+SWARM_POLICY_LANDING=pr ANCESTOR_RC=1 ISSUE_STATE=closed \
+  landing_stage coa '[{"number":7}]' start >/dev/null 2>&1 || true
+check "#2119 pr mode never runs the success-path reconcile (flag unset)" \
+  '! grep -qE "PATCH .*/issues/7$" "$CALLS_LOG"'
+unset EXECUTE_ATTEMPTS_FILE
+export LABELS_JSON='[{"id":48,"name":"agent-blocked"}]'
+
+# ===========================================================================
+# #283 — the false-green reconcile. A push-mode close-report closes its issue
+# against the PUSHED worker branch INSIDE the sandbox, before the HOST lands main.
+# When the host's land rolls back (a protected-path breach, a push that parked),
+# main never carries the commits yet the issue reads `closed` with a success
+# comment. landing_reopen_stranded_closes must REOPEN only the genuinely stranded
+# close (commits NOT on main) and only while it still reads `closed`. git/curl
+# shimmed; merge-base --is-ancestor exits ANCESTOR_RC (default 1 = NOT on main).
+# ===========================================================================
+reopen_setup() { # reopen_setup — a fresh attempts file + the ready-for-session/landing-pending labels on the tracker
+  reset
+  export LABELS_JSON='[{"id":48,"name":"agent-blocked"},{"id":70,"name":"ready-for-session"},{"id":71,"name":"landing-pending"}]'
+  ATTEMPTS="$tmp/attempts.log"
+}
+
+# stranded: commits NOT on main (ANCESTOR_RC=1) AND the issue reads closed ->
+# reopen (PATCH state:open), relabel ready-for-session, comment, echo "<N> reopened".
+reopen_setup
+printf 'SANDCASTLE_ATTEMPT issue=444 outcome=success commits=deadbee\n' > "$ATTEMPTS"
+out="$(ISSUE_STATE=closed ANCESTOR_RC=1 SWARM_EXIT_REASON=protected-path-violation \
+  landing_reopen_stranded_closes "$ATTEMPTS" coa origin/main 2>/dev/null)"
+check "#283 stranded close reopens its issue (PATCH state:open)" \
+  'grep -qE "PATCH .*/issues/444$" "$CALLS_LOG"'
+check "#283 the reopen PATCH body carries state:open" \
+  'grep -q "\"state\":\"open\"" "$BODIES_LOG"'
+check "#283 the reopened issue is relabelled ready-for-session" \
+  'grep -q "^LABELED$" "$CALLS_LOG" && grep -q "\"labels\":\[70\]" "$BODIES_LOG"'
+check "#283 the reopen comment names the false-green seam and the stranded commit" \
+  'grep -q "did NOT land" "$BODIES_LOG" && grep -q "deadbee" "$BODIES_LOG"'
+check "#283 the reconcile echoes the reopened issue" '[ "$out" = "444 reopened" ]'
+# #382: a reopened stranded close drops the landing-pending marker (id 71) BEFORE
+# re-labelling, so the reopened ticket is immediately pickable (its name no longer
+# makes the landing-mode resolver skip it, and list-ready-tasks stops counting it
+# as a still-unmet dependency).
+check "#382 a reopened stranded close drops landing-pending (DELETE label 71)" \
+  'grep -qE "DELETE .*/issues/444/labels/71$" "$CALLS_LOG"'
+
+# --- #366: the reopen drops THIS run's own swarm claim. The run doing the
+# reconcile is the run that posted the claim, and it is over; left behind, the
+# claim outranks every session-runner for the claim TTL (dev-factory #359 sat
+# ready-for-session, unclaimable, for 2h05m). Only an exact run= match on a SWARM
+# claim goes: a peer run, a session claim with the same number (its run= is a
+# pid), a longer number with the same prefix, and prose that quotes a claim stay.
+cat > "$tmp/claims.json" <<'JSON'
+[{"id":9001,"body":"swarm-claim host=mac run=28842\n(automated multi-host claim — lowest live claim id works this ticket)"},
+ {"id":9002,"body":"swarm-claim host=elite run=28843\n(automated multi-host claim)"},
+ {"id":9003,"body":"swarm-claim host=ws run=28842 session-ttl=7500\n(automated multi-host claim)"},
+ {"id":9004,"body":"a note quoting swarm-claim host=mac run=28842"},
+ {"id":9005,"body":"swarm-claim host=mac run=288421\n(automated multi-host claim)"}]
+JSON
+reopen_setup
+printf 'SANDCASTLE_ATTEMPT issue=444 outcome=success commits=deadbee\n' > "$ATTEMPTS"
+PR_COMMENTS="$tmp/claims.json" SWARM_RUN_ID=28842 ISSUE_STATE=closed ANCESTOR_RC=1 \
+  landing_reopen_stranded_closes "$ATTEMPTS" coa origin/main >/dev/null 2>&1
+check "#366 a reopened stranded close has this run's swarm claim deleted" \
+  'grep -qE "^DELETE .*/issues/comments/9001$" "$CALLS_LOG"'
+check "#366 a peer run's claim is left alone" \
+  '! grep -qE "^DELETE .*/issues/comments/9002$" "$CALLS_LOG"'
+check "#366 a session claim with the same number is left alone (its run= is a pid)" \
+  '! grep -qE "^DELETE .*/issues/comments/9003$" "$CALLS_LOG"'
+check "#366 prose quoting a claim, and a longer run number, are left alone" \
+  '! grep -qE "^DELETE .*/issues/comments/900[45]$" "$CALLS_LOG"'
+check "#366 exactly one comment is deleted" \
+  '[ "$(grep -cE "^DELETE .*/issues/comments/" "$CALLS_LOG")" = 1 ]'
+
+# no run id (unset or 0) -> the reopen still happens, nothing is deleted.
+for rid in "" 0; do
+  reopen_setup
+  printf 'SANDCASTLE_ATTEMPT issue=444 outcome=success commits=deadbee\n' > "$ATTEMPTS"
+  PR_COMMENTS="$tmp/claims.json" SWARM_RUN_ID="$rid" ISSUE_STATE=closed ANCESTOR_RC=1 \
+    landing_reopen_stranded_closes "$ATTEMPTS" coa origin/main >/dev/null 2>&1
+  check "#366 with run id '$rid' the reopen happens and no claim is deleted" \
+    'grep -qE "PATCH .*/issues/444$" "$CALLS_LOG" && ! grep -qE "^DELETE .*/issues/comments/" "$CALLS_LOG"'
+done
+
+# a close that DID land is not reopened, so its claim is not touched either.
+reopen_setup
+printf 'SANDCASTLE_ATTEMPT issue=444 outcome=success commits=deadbee\n' > "$ATTEMPTS"
+PR_COMMENTS="$tmp/claims.json" SWARM_RUN_ID=28842 ISSUE_STATE=closed ANCESTOR_RC=0 \
+  landing_reopen_stranded_closes "$ATTEMPTS" coa origin/main >/dev/null 2>&1
+check "#366 a close that landed keeps its claim (nothing reopened, nothing deleted)" \
+  '! grep -qE "^DELETE .*/issues/comments/" "$CALLS_LOG"'
+
+# landed: the SAME closed issue but its commits ARE on main (ANCESTOR_RC=0) ->
+# the close genuinely landed, so it is LEFT closed (no reopen, no echo).
+reopen_setup
+printf 'SANDCASTLE_ATTEMPT issue=444 outcome=success commits=deadbee\n' > "$ATTEMPTS"
+out="$(ISSUE_STATE=closed ANCESTOR_RC=0 landing_reopen_stranded_closes "$ATTEMPTS" coa origin/main 2>/dev/null)"
+check "#283 a close whose commits landed on main is NOT reopened" \
+  '! grep -qE "PATCH .*/issues/444$" "$CALLS_LOG" && [ -z "$out" ]'
+
+# already open: stranded commits but the issue is not closed -> never re-PATCH.
+reopen_setup
+printf 'SANDCASTLE_ATTEMPT issue=444 outcome=success commits=deadbee\n' > "$ATTEMPTS"
+out="$(ISSUE_STATE=open ANCESTOR_RC=1 landing_reopen_stranded_closes "$ATTEMPTS" coa origin/main 2>/dev/null)"
+check "#283 an already-open issue is left untouched" \
+  '! grep -qE "PATCH .*/issues/444$" "$CALLS_LOG" && [ -z "$out" ]'
+
+# a non-success attempt (refused/parked) is never reopened.
+reopen_setup
+printf 'SANDCASTLE_ATTEMPT issue=444 outcome=refused commits=deadbee\n' > "$ATTEMPTS"
+out="$(ISSUE_STATE=closed ANCESTOR_RC=1 landing_reopen_stranded_closes "$ATTEMPTS" coa origin/main 2>/dev/null)"
+check "#283 a non-success attempt line is ignored" \
+  '! grep -qE "PATCH .*/issues/444$" "$CALLS_LOG" && [ -z "$out" ]'
+
+# an absent/empty attempts file -> a clean no-op, rc 0.
+reset; rc=0
+landing_reopen_stranded_closes "$tmp/does-not-exist" coa origin/main >/dev/null 2>&1 || rc=$?
+check "#283 an absent attempts file is a clean no-op (rc 0)" '[ "$rc" = 0 ]'
+
+# --- #372: a re-worked ALREADY-LANDED ticket is NOT reopened. Its success close
+# records a commit that is not on main (ANCESTOR_RC=1) yet carries nothing new —
+# the fix is already byte-identical on main under a different SHA, so the "land"
+# was a correct no-op. Two shapes of this no-op, each a distinct guard:
+#   (a) the claimed commit no longer EXISTS as an object (CATFILE_RC=1) — it was
+#       never a real tip on a surviving branch, so it cannot be stranded;
+#   (b) the claimed commit exists but its diff vs main is EMPTY (DIFF_QUIET_RC=0)
+#       — its tree is byte-identical to main, nothing to strand.
+# Both must skip the reopen and echo nothing, while the genuinely-stranded default
+# (CATFILE_RC=0 + DIFF_QUIET_RC=1, asserted above) still reopens.
+reopen_setup
+printf 'SANDCASTLE_ATTEMPT issue=444 outcome=success commits=354f9df\n' > "$ATTEMPTS"
+out="$(ISSUE_STATE=closed ANCESTOR_RC=1 CATFILE_RC=1 \
+  landing_reopen_stranded_closes "$ATTEMPTS" coa origin/main 2>/dev/null)"
+check "#372 a close whose claimed commit no longer exists is NOT reopened" \
+  '! grep -qE "PATCH .*/issues/444$" "$CALLS_LOG" && [ -z "$out" ]'
+
+reopen_setup
+printf 'SANDCASTLE_ATTEMPT issue=444 outcome=success commits=354f9df\n' > "$ATTEMPTS"
+out="$(ISSUE_STATE=closed ANCESTOR_RC=1 CATFILE_RC=0 DIFF_QUIET_RC=0 \
+  landing_reopen_stranded_closes "$ATTEMPTS" coa origin/main 2>/dev/null)"
+check "#372 a close whose commit has an empty diff vs main is NOT reopened" \
+  '! grep -qE "PATCH .*/issues/444$" "$CALLS_LOG" && [ -z "$out" ]'
+
+# the genuinely-stranded default (commit exists + real diff vs main) must STILL
+# reopen under the #372 guards — the guards only ADD skip branches, never remove
+# a real stranded reopen (#372 acceptance: existing #283 behaviour unchanged).
+reopen_setup
+printf 'SANDCASTLE_ATTEMPT issue=444 outcome=success commits=realone\n' > "$ATTEMPTS"
+out="$(ISSUE_STATE=closed ANCESTOR_RC=1 CATFILE_RC=0 DIFF_QUIET_RC=1 \
+  landing_reopen_stranded_closes "$ATTEMPTS" coa origin/main 2>/dev/null)"
+check "#372 a genuinely stranded close (exists + real diff) still reopens" \
+  'grep -qE "PATCH .*/issues/444$" "$CALLS_LOG" && [ "$out" = "444 reopened" ]'
+
+# ===========================================================================
+# #359 — the SUCCESS-path promote. landing_promote_landed is the inverse of the
+# #283 reopen: for a close that genuinely landed it clears the landing-pending mark
+# (gap A) and re-arms the agent-blocked dependants the ticket was blocking whose
+# every OTHER blocker is now met (gap B). #382: gap A keys on the ISSUE STATE (a
+# success close STILL reading `closed` here landed, whatever its SHAs) — NOT on the
+# by-SHA ancestry test, which a rebase land defeats; gap B stays on the by-SHA
+# landed guard (ANCESTOR_RC=0). git/curl shimmed: merge-base --is-ancestor exits
+# ANCESTOR_RC; the issue's state is $ISSUE_STATE; the dependant set comes from
+# BLOCKS_JSON (/blocks) and each dependant's own blockers from DEPS_JSON.
+# ===========================================================================
+promote_setup() {
+  reset
+  export LABELS_JSON='[{"id":48,"name":"agent-blocked"},{"id":70,"name":"ready-for-session"},{"id":71,"name":"landing-pending"},{"id":72,"name":"ready-for-agent"}]'
+  export ISSUE_STATE=closed   # a just-landed ticket reads closed; the reopen guard overrides inline
+  PATTEMPTS="$tmp/promote-attempts.log"
+  printf 'SANDCASTLE_ATTEMPT issue=7 outcome=success commits=deadbee\n' > "$PATTEMPTS"
+  unset BLOCKS_JSON DEPS_JSON
+}
+printf '%s\n' '[]' > "$tmp/blocks-none.json"
+printf '%s\n' '[{"number":52,"state":"open","labels":[{"name":"agent-blocked"}]}]' > "$tmp/blocks-52.json"
+printf '%s\n' '[{"number":53,"state":"open","labels":[{"name":"ready-for-human"}]}]' > "$tmp/blocks-53.json"
+printf '%s\n' '[{"number":7,"state":"closed","labels":[]}]' > "$tmp/deps-met.json"
+printf '%s\n' '[{"number":7,"state":"closed","labels":[]},{"number":60,"state":"open","labels":[]}]' > "$tmp/deps-unmet.json"
+
+# gap A: a landed close that is STILL closed clears its landing-pending mark — on a
+# SHA-preserving (fast-forward) land, where the claimed commits ARE on main.
+promote_setup
+BLOCKS_JSON="$tmp/blocks-none.json" ANCESTOR_RC=0 \
+  landing_promote_landed "$PATTEMPTS" coa origin/main >/dev/null 2>&1 || true
+check "#359 gap A: a landed close clears its landing-pending mark (DELETE label 71)" \
+  'grep -qE "DELETE .*/issues/7/labels/71$" "$CALLS_LOG"'
+
+# #382 the fix: a REBASE land clears it too. The host rewrote the worker's SHAs onto
+# main, so the claimed commit reads as NOT an ancestor (ANCESTOR_RC=1) — the old
+# by-SHA gate left the mark on for ever, stalling the queue. The close still reads
+# `closed`, so gap A now clears it.
+promote_setup
+BLOCKS_JSON="$tmp/blocks-none.json" ANCESTOR_RC=1 \
+  landing_promote_landed "$PATTEMPTS" coa origin/main >/dev/null 2>&1 || true
+check "#382 gap A: a REBASE-landed close (commits not reachable by SHA) still clears landing-pending" \
+  'grep -qE "DELETE .*/issues/7/labels/71$" "$CALLS_LOG"'
+
+# gap A guard: a success close the #283 reconcile already REOPENED (reads `open`)
+# clears nothing here — the reopen path (#382 item B) owns the mark there, so the
+# two never both act on one close.
+promote_setup
+BLOCKS_JSON="$tmp/blocks-none.json" ANCESTOR_RC=0 ISSUE_STATE=open \
+  landing_promote_landed "$PATTEMPTS" coa origin/main >/dev/null 2>&1 || true
+check "#382 gap A: a success close that was reopened (reads open) clears no landing-pending" \
+  '! grep -qE "DELETE .*/issues/7/labels/71$" "$CALLS_LOG"'
+
+# gap B: an agent-blocked dependant (#52) whose only blocker is the just-landed
+# #7 (now closed and clear) is re-armed agent-blocked -> ready-for-agent.
+promote_setup
+out359="$(BLOCKS_JSON="$tmp/blocks-52.json" DEPS_JSON="$tmp/deps-met.json" ANCESTOR_RC=0 \
+  landing_promote_landed "$PATTEMPTS" coa origin/main 2>/dev/null)"
+check "#359 gap B: the agent-blocked dependant drops agent-blocked (DELETE label 48)" \
+  'grep -qE "DELETE .*/issues/52/labels/48$" "$CALLS_LOG"'
+check "#359 gap B: the dependant is re-armed ready-for-agent (POST labels [72])" \
+  'grep -q "\"labels\":\[72\]" "$BODIES_LOG"'
+check "#359 gap B: the re-arm comment names the landed dependency" \
+  'grep -q "the dependency #7 has landed" "$BODIES_LOG"'
+check "#359 gap B: landing_promote_landed echoes the re-armed dependant" \
+  'printf "%s" "$out359" | grep -q "re-armed #52"'
+
+# gap B negative: a dependant with ANOTHER still-open blocker (#60) is left blocked.
+promote_setup
+BLOCKS_JSON="$tmp/blocks-52.json" DEPS_JSON="$tmp/deps-unmet.json" ANCESTOR_RC=0 \
+  landing_promote_landed "$PATTEMPTS" coa origin/main >/dev/null 2>&1 || true
+check "#359 gap B: a dependant with another unmet blocker is left agent-blocked" \
+  '! grep -qE "DELETE .*/issues/52/labels/48$" "$CALLS_LOG"'
+
+# gap B negative: a dependant blocked for ANOTHER reason (not agent-blocked) is
+# untouched — check 2's "a ticket blocked for any other reason does not".
+promote_setup
+BLOCKS_JSON="$tmp/blocks-53.json" DEPS_JSON="$tmp/deps-met.json" ANCESTOR_RC=0 \
+  landing_promote_landed "$PATTEMPTS" coa origin/main >/dev/null 2>&1 || true
+check "#359 gap B: a dependant blocked for another reason is not re-armed" \
+  '! grep -qE "DELETE .*/issues/53/labels" "$CALLS_LOG"'
+
+# an absent attempts file -> a clean no-op, rc 0 (the promote never reds a run).
+reset; rc=0
+landing_promote_landed "$tmp/does-not-exist" coa origin/main >/dev/null 2>&1 || rc=$?
+check "#359 landing_promote_landed with no attempts file is a clean no-op (rc 0)" '[ "$rc" = 0 ]'
+unset BLOCKS_JSON DEPS_JSON
+unset LABELS_JSON
 
 echo "landing-lib: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

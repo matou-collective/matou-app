@@ -38,7 +38,20 @@ PATH="$tmpd:$PATH" MATTERMOST_URL=http://mm MATTERMOST_BOT_TOKEN=t MATTERMOST_CH
   FORGEJO_API=https://git.example.test/api/v1/repos/x/y bash "$n" "real" >/dev/null 2>&1
 [ -f "$tmpd/posted.log" ] || fail "an https forge must post"
 
+# A channel-wide mention (@channel/@all/@here) in the text never reaches
+# Mattermost live: one agent-written "@channel … parked on a HUMAN gate" page
+# in a shared channel emailed every away member (2026-09-18). The word is kept
+# readable but defused with a zero-width space; a person's @-mention (@ben,
+# @allison) still pings.
+printf '#!/usr/bin/env bash\ncat > "%s/body.json"; echo "{\\"id\\":\\"p1\\"}"\n' "$tmpd" > "$tmpd/curl"
+PATH="$tmpd:$PATH" MATTERMOST_URL=http://mm MATTERMOST_BOT_TOKEN=t MATTERMOST_CHANNEL_ID=c \
+  bash "$n" "@channel drive parked; @ALL, @here. cc @ben @allison" >/dev/null 2>&1
+sent="$(jq -r .message "$tmpd/body.json")"
+grep -qiE '@(channel|all|here)\b' <<<"$sent" && fail "a channel-wide mention must be defused before posting (got: $sent)"
+[ "$sent" = $'@​channel drive parked; @​ALL, @​here. cc @ben @allison' ] \
+  || fail "only the channel-wide words may change — @ben/@allison stay live (got: $sent)"
+
 # no message → usage error
 if bash "$n" >/dev/null 2>&1; then fail "no-arg call must fail"; fi
 
-echo "notify: 7 checks passed"
+echo "notify: 8 checks passed"

@@ -348,12 +348,17 @@ type Vote struct {
 
 // ContributionComment is a user comment on a contribution.
 type ContributionComment struct {
-	ID             string    `json:"id"`
-	ContributionID string    `json:"contribution_id"`
-	UserID         string    `json:"user_id"`
-	UserName       string    `json:"user_name"`
-	Text           string    `json:"text"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             string `json:"id"`
+	ContributionID string `json:"contribution_id"`
+	UserID         string `json:"user_id"`
+	UserName       string `json:"user_name"`
+	Text           string `json:"text"`
+	// MentionedAIDs are the AIDs of people @-mentioned in Text, resolved by the
+	// client from the mention tokens (the `@[person:AID|Name]` token already
+	// carries the canonical AID) so the server need not re-parse display names.
+	// Each is notified when the comment is posted.
+	MentionedAIDs []string  `json:"mentioned_aids,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // --- Project Comments ---
@@ -438,7 +443,7 @@ type ImplementationPlan struct {
 // (or one of its milestones/contributions) since the plan was last signed off.
 type PlanChangeEntry struct {
 	ID                string `json:"id"`
-	Kind              string `json:"kind"` // milestone_edited|milestone_added|milestone_archived|contribution_added|contribution_edited|contribution_removed
+	Kind              string `json:"kind"` // milestone_edited|milestone_added|milestone_archived|contribution_added|contribution_edited|contribution_removed|contribution_restored|contribution_moved|contribution_auto_submitted
 	MilestoneID       string `json:"milestone_id,omitempty"`
 	MilestoneTitle    string `json:"milestone_title,omitempty"`
 	ContributionID    string `json:"contribution_id,omitempty"`
@@ -578,23 +583,44 @@ type Contribution struct {
 	TimeReport             string             `json:"time_report,omitempty"`
 	ParentContributionID   string             `json:"parent_contribution,omitempty"`
 	ChildContributionIDs   []string           `json:"child_contributions,omitempty"`
-	AssignedContributorID  string             `json:"assigned_contributor,omitempty"`
-	ReviewerID             string             `json:"contribution_reviewer,omitempty"`
-	Reviewers              []string           `json:"reviewers,omitempty"`
-	EvidenceSubmitted      []string           `json:"evidence_submitted,omitempty"`
-	CompletionNotes        string             `json:"completion_notes,omitempty"`
-	ReviewOutcome          string             `json:"review_outcome,omitempty"`
-	ReviewFeedback         string             `json:"review_feedback,omitempty"`
-	ReviewedBy             string             `json:"reviewed_by,omitempty"`
-	ReviewedAt             *time.Time         `json:"reviewed_at,omitempty"`
-	QualityRating          int                `json:"quality_rating,omitempty"`
-	SignedOffBy            string             `json:"signed_off_by,omitempty"`
-	SignedOffAt            *time.Time         `json:"signed_off_at,omitempty"`
+	// SortOrder is the explicit sibling-order position within this
+	// contribution's parent group (a milestone's top-level contributions, or a
+	// parent contribution's children). It is a pointer so a nil value —
+	// contributions created before ordering existed — is distinguishable from
+	// an explicit 0 and falls back to a numeric-aware title sort. New
+	// contributions default to the end of their sibling list; a reorder assigns
+	// contiguous positions. See SortSiblings for the canonical ordering.
+	SortOrder *int `json:"sort_order,omitempty"`
+	// Reference is the derived "M.C.S" display reference (milestone.contribution.sub,
+	// e.g. "1.2.0" for a top-level contribution, "1.2.1" for its first sub). It is
+	// computed from the contribution's position within its plan at read time and
+	// stamped onto read responses — never stored (omitempty keeps it out of
+	// persisted records, and no write path sets it). See reference.go / issue #753.
+	Reference             string     `json:"reference,omitempty"`
+	AssignedContributorID string     `json:"assigned_contributor,omitempty"`
+	ReviewerID            string     `json:"contribution_reviewer,omitempty"`
+	Reviewers             []string   `json:"reviewers,omitempty"`
+	EvidenceSubmitted     []string   `json:"evidence_submitted,omitempty"`
+	CompletionNotes       string     `json:"completion_notes,omitempty"`
+	ReviewOutcome         string     `json:"review_outcome,omitempty"`
+	ReviewFeedback        string     `json:"review_feedback,omitempty"`
+	ReviewedBy            string     `json:"reviewed_by,omitempty"`
+	ReviewedAt            *time.Time `json:"reviewed_at,omitempty"`
+	QualityRating         int        `json:"quality_rating,omitempty"`
+	SignedOffBy           string     `json:"signed_off_by,omitempty"`
+	SignedOffAt           *time.Time `json:"signed_off_at,omitempty"`
 	// EvidenceEditedAt records the last time the assigned contributor edited
 	// their submitted evidence (contributor self-edit before sign-off).
 	EvidenceEditedAt *time.Time `json:"evidence_edited_at,omitempty"`
-	RewardedBy       string     `json:"rewarded_by,omitempty"`
-	RewardedAt       *time.Time `json:"rewarded_at,omitempty"`
+	// EvidenceDraftSavedAt records the last time the assigned contributor saved
+	// evidence as a draft on an assigned contribution, before submitting it for
+	// review (issue #722). Non-nil means unsubmitted draft evidence exists; it
+	// is cleared when the evidence is submitted for review. Saving a draft does
+	// NOT transition the contribution out of `assigned`, so the contribution is
+	// not reviewable while only a draft exists.
+	EvidenceDraftSavedAt *time.Time `json:"evidence_draft_saved_at,omitempty"`
+	RewardedBy           string     `json:"rewarded_by,omitempty"`
+	RewardedAt           *time.Time `json:"rewarded_at,omitempty"`
 
 	// KERI-anchored proof envelopes (issue #20), one per proof-bearing
 	// transition so a later reward can never destroy the sign-off proof —
@@ -602,6 +628,14 @@ type Contribution struct {
 	// verification is deferred to issue #19.
 	SignOffProof *Proof `json:"sign_off_proof,omitempty"`
 	RewardProof  *Proof `json:"reward_proof,omitempty"`
+
+	// Lead close-out of a parent without a budget (cost $0) (#844). Set only by
+	// CloseParentContribution; the parent's status becomes rewarded without a
+	// separate reward, so CloseReason and CloseProof record why and who.
+	ClosedBy    string     `json:"closed_by,omitempty"`
+	ClosedAt    *time.Time `json:"closed_at,omitempty"`
+	CloseReason string     `json:"close_reason,omitempty"`
+	CloseProof  *Proof     `json:"close_proof,omitempty"`
 
 	// Sharing & offering
 	IsShared        bool       `json:"is_shared,omitempty"`
@@ -631,6 +665,17 @@ type Contribution struct {
 	AttachmentFiles []FileRef `json:"attachment_files,omitempty"`
 
 	CommentCount int `json:"comment_count,omitempty"`
+
+	// ArchivedFrom records the status the contribution had when it was
+	// archived, so RestoreContribution can return it to the same state (#846).
+	// Empty on records archived before this field existed (restore then falls
+	// back to a default) and on contributions that are not archived.
+	ArchivedFrom ContributionStatus `json:"archived_from,omitempty"`
+	// ArchivedVia is set on descendants archived by a parent's cascade and holds
+	// the id of the contribution whose archive caused it. Restoring that
+	// contribution restores exactly these descendants; independently archived
+	// children carry no tag and stay archived.
+	ArchivedVia string `json:"archived_via,omitempty"`
 }
 
 // ContributionDiff records a single field change for change tracking.

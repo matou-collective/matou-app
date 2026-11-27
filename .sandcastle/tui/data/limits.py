@@ -8,6 +8,7 @@ sources them from that lib) — never re-declared here, where they could drift
 from the lib that writes them.
 """
 
+import glob
 import os
 import time
 
@@ -24,8 +25,17 @@ def _fresh(path, ttl):
 
 
 def limit_parked(marker, ttl=DEFAULT_TTL):
-    """True iff the host is known-parked on a Claude subscription limit."""
-    return _fresh(marker, ttl)
+    """True iff the host is known-parked on a Claude subscription limit.
+
+    The limit marker is keyed by the account fingerprint since #200
+    (`<marker>-<fp>`), so a host may have one window open per account. The host
+    is parked iff the bare base marker OR any fingerprinted sibling is fresh —
+    the bare path still counts so a fingerprint-less host (pre-#200, or no token)
+    reads exactly as before."""
+    if not marker:
+        return False
+    candidates = [marker] + glob.glob(glob.escape(marker) + "-*")
+    return any(_fresh(p, ttl) for p in candidates)
 
 
 def active_account(marker):

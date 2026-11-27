@@ -25,6 +25,13 @@ eq() { [ "$1" = "$2" ] || fail "$3: expected [$2], got [$1]"; pass=$((pass+1)); 
 [ -n "${SWARM_REPORT_MODEL:-}" ] || fail "swarm.config must set SWARM_REPORT_MODEL"
 pass=$((pass+4))
 
+# --- the reviewer tier (#197): SWARM_REVIEW_MODEL defaults to the heal tier,
+#     keeping SWARM_HEAL_MODEL the single source, and an override wins ---
+eq "${SWARM_REVIEW_MODEL:-}" "$SWARM_HEAL_MODEL" "SWARM_REVIEW_MODEL defaults to the heal tier"
+rev_override="$(unset __SWARM_MODEL_LIB SWARM_MODEL SWARM_MODEL_MAP SWARM_HEAL_MODEL SWARM_REPORT_MODEL
+  export SWARM_REVIEW_MODEL=claude-haiku-4-5; . "$sc/model-lib.sh"; printf %s "$SWARM_REVIEW_MODEL")"
+eq "$rev_override" "claude-haiku-4-5" "an explicit SWARM_REVIEW_MODEL overrides the heal-tier default"
+
 # --- swarm_resolve_model: the default, the label form, the bare suffix ---
 eq "$(swarm_resolve_model "")"            "$SWARM_MODEL"        "empty selector -> fleet default"
 eq "$(swarm_resolve_model "model-haiku")" "claude-haiku-4-5"    "model-haiku label -> haiku id"

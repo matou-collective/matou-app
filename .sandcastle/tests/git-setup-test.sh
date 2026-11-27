@@ -34,6 +34,7 @@ git clone -q "$origin" "$workdir"
 mkdir -p "$workdir/.sandcastle"
 cp "$here/../git-setup.sh" "$workdir/.sandcastle/git-setup.sh"
 cp "$here/../verdict-lib.sh" "$workdir/.sandcastle/verdict-lib.sh"
+cp "$here/../git-cred-lib.sh" "$workdir/.sandcastle/git-cred-lib.sh"
 
 verdict="$work/verdict.txt"
 run_git_setup() { # run_git_setup <remote-url> [workflow]
@@ -47,6 +48,32 @@ run_git_setup() { # run_git_setup <remote-url> [workflow]
 printf 'stage=stale from a previous incident\nexit=1\n--- error lines ---\nold\n' > "$verdict"
 if ! run_git_setup "$origin" >/dev/null 2>&1; then fail "a healthy fetch must exit 0"; fi
 [ -f "$verdict" ] && fail "a clean git-setup run must leave no verdict (verdict_write's contract)"
+
+# --- 1b) the remote is credential-free and the helper seam authenticates (#195)
+# The org-wide FORGEJO_TOKEN must never persist in the shared .git/config every
+# worker bind-mounts; git-setup leaves origin credential-free and wires a
+# token-free credential helper, which `git credential fill` exercises offline.
+origin_url="$(git -C "$workdir" config --get remote.origin.url)"
+case "$origin_url" in *@*) fail "origin URL must carry no credential, got: $origin_url" ;; esac
+grep -q '@git\.' "$workdir/.git/config" && fail ".git/config must carry no @git. credential after setup (#195)"
+[ -n "$(git -C "$workdir" config --get-all credential.helper | tail -1)" ] \
+  || fail "git-setup must persist a credential helper — the fetch/push auth seam (#195)"
+tokf="$work/seamtok"; printf 'seam-tok-55' > "$tokf"
+seam="$(printf 'protocol=https\nhost=git.matou.nz\n\n' | \
+  SWARM_SANDBOX_TOKEN_FILE="$work/no-sandbox-secret" SWARM_TOKEN_FILE="$tokf" \
+  git -C "$workdir" credential fill 2>/dev/null)"
+printf '%s' "$seam" | grep -qx 'username=swarm'        || fail "the helper seam must fill username=swarm, got: $seam"
+printf '%s' "$seam" | grep -qx 'password=seam-tok-55'  || fail "fetch/push must authenticate via the helper, token read at call time, got: $seam"
+
+# --- 1c) a pre-seeded credentialed origin is scrubbed to credential-free ------
+# The one-off host-workdir cleanup the fix calls for is automatic: a workdir
+# still carrying a leaked token-in-URL origin is reset credential-free on the
+# next git-setup run.
+rm -f "$verdict"
+git -C "$workdir" remote set-url origin "https://swarm:leaked-token@git.matou.nz/x/y.git"
+if ! run_git_setup "$origin" >/dev/null 2>&1; then fail "git-setup must still succeed over a leaked-token origin"; fi
+scrubbed="$(git -C "$workdir" config --get remote.origin.url)"
+case "$scrubbed" in *leaked-token*|*@*) fail "git-setup must scrub the leaked credential from origin, got: $scrubbed" ;; esac
 
 # --- 2) a nonexistent remote (repo-not-found class) ----------------------------
 rm -f "$verdict"
@@ -154,4 +181,4 @@ sig_transport="$(compute_signature swarm "$(seam_verdict_signal "$verdict")")"
 [ "$sig_transport" != "$sig_missing" ] || fail "a transport outage must not share the repo-not-found signature (#1411)"
 [ "$sig_transport" != "$sig_nobranch" ] || fail "a transport outage must not share the branch-not-found signature (#1411)"
 
-echo "git-setup: 7 scenarios passed"
+echo "git-setup: 7 scenarios passed (+ credential-free remote & helper seam, #195)"

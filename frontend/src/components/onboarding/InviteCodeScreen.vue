@@ -108,6 +108,6 @@ const handleSubmit = async () => {
 }
 
 .info-box {
-  background-color: rgba(232, 244, 248, 0.5);
+  background-color: color-mix(in srgb, var(--matou-secondary) 50%, transparent);
 }
 </style>

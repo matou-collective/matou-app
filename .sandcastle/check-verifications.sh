@@ -16,8 +16,20 @@ if [ -z "${MATTERMOST_URL:-}" ] || [ -z "${MATTERMOST_BOT_TOKEN:-}" ] || [ -z "$
   exit 0
 fi
 
-fapi() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
-mapi() { curl -sf -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" "$@"; }
+# `-S` alongside `-s` is load-bearing, not cosmetic: every call here is inside a
+# command substitution, so a bare `curl -sf` that hits a 4xx/5xx prints NOTHING
+# and `set -e` kills the script with exit 22 and an empty log. run-verify.sh then
+# writes `stage=check-verifications / exit=22 / --- error lines --- (empty)` and
+# the healer cannot tell which endpoint failed, or whether it was Forgejo or
+# Mattermost. That exact undiagnosable verdict has now landed twice (run 18577 on
+# 2026-09-14, run 24282 on 2026-09-22 — see #380's recurrence log). `-S` makes
+# curl emit `curl: (22) The requested URL returned error: <code>` on stderr;
+# run-verify.sh captures stderr into the verdict errlog and verdict-lib.sh's grep
+# matches on "error", so the next occurrence carries the HTTP status. Output-only
+# change: `-S` alters nothing but what curl prints when it already failed, and no
+# token is ever in a URL here (both are headers), so nothing secret is exposed.
+fapi() { curl -sfS -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
+mapi() { curl -sfS -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" "$@"; }
 
 post() { # post <message> [root_id] — root_id makes it a thread reply (verbatim from ask-human.sh)
   jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message "$1" --arg root_id "${2:-}" \

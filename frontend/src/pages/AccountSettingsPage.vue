@@ -494,17 +494,33 @@
         </button>
       </section>
 
+      <!-- Section: Sign out of the control panel everywhere — the steward's
+           take-back (#665, idss #1935, ADR 0282 d.4). Beside "Sign-in sites you
+           trust"; stewards only (a member has no control panel to sign out of). -->
+      <SignOutEverywhereSection v-if="isSteward" />
+
       <!-- Section 7: Support (mobile only) — the sidebar's "Report an issue"
-           button is hidden on mobile, so surface the same dialog here. -->
+           and "Suggest an improvement" buttons are hidden on mobile, so
+           surface the same two doors here. -->
       <section v-if="isMobile" class="settings-card">
         <div class="card-header">
           <h3 class="card-title"><Bug :size="18" /> Support</h3>
         </div>
-        <button type="button" class="report-issue-btn" @click="showReportDialog = true">
-          <Bug :size="16" />
-          <span>Report an issue</span>
-        </button>
+        <div class="report-issue-actions">
+          <button type="button" class="report-issue-btn" @click="openReport('bug')">
+            <Bug :size="16" />
+            <span>Report an issue</span>
+          </button>
+          <button type="button" class="report-issue-btn" @click="openReport('improvement')">
+            <Lightbulb :size="16" />
+            <span>Suggest an improvement</span>
+          </button>
+        </div>
       </section>
+
+      <!-- Which build am I on? The one place a member can read the version
+           back to support without catching the splash screen. -->
+      <p class="app-version" data-test="app-version">{{ appVersionLine }}</p>
 
       <!-- Unsaved changes bar -->
       <Transition name="bar">
@@ -522,7 +538,11 @@
       </Transition>
     </div>
 
-    <ReportIssueDialog v-model="showReportDialog" :reporter-name="sharedForm.displayName || 'Member'" />
+    <ReportIssueDialog
+      v-model="showReportDialog"
+      :type="reportType"
+      :reporter-name="sharedForm.displayName || 'Member'"
+    />
 
     <!-- Link another device: the same onboarding screen, shown as a maximized
          dialog. Desktop (and the browser/e2e) shows the QR and approves; a
@@ -597,6 +617,7 @@ import {
   X,
   Loader2,
   Bug,
+  Lightbulb,
   Bell,
   MonitorSmartphone,
   Smartphone,
@@ -615,15 +636,25 @@ import { getFileUrl, uploadFile, clearBackendIdentity } from 'src/lib/api/client
 import { useIsMobile } from 'src/composables/useIsMobile';
 import { applyPushEnabled } from 'src/composables/usePush';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
+import type { IssueType } from 'src/lib/issueReport';
+import SignOutEverywhereSection from 'src/components/settings/SignOutEverywhereSection.vue';
 import TypedForm from 'src/components/profiles/TypedForm.vue';
 import LinkDeviceQrScreen from 'src/components/onboarding/LinkDeviceQrScreen.vue';
 import LinkDeviceScanScreen from 'src/components/onboarding/LinkDeviceScanScreen.vue';
 import { isCapacitor } from 'src/lib/platform';
+import { describeAppVersion } from 'src/lib/appVersion';
 // Kit builds must not hard-code this community's brand name (#452) — the
 // Devices copy names the app, so it reads it from the kit.
 import { KIT } from 'src/generated/kit';
 
 const router = useRouter();
+
+// The version line at the bottom of the page. Resolved once; on a phone this
+// asks the native shell for the build number, elsewhere it is the package version.
+const appVersionLine = ref('');
+void describeAppVersion().then((line) => {
+  appVersionLine.value = line;
+});
 const profilesStore = useProfilesStore();
 const typesStore = useTypesStore();
 const identityStore = useIdentityStore();
@@ -650,6 +681,12 @@ function onPushEnabledChange(event: Event) {
   void applyPushEnabled(enabled);
 }
 const showReportDialog = ref(false);
+const reportType = ref<IssueType>('bug');
+
+function openReport(type: IssueType) {
+  reportType.value = type;
+  showReportDialog.value = true;
+}
 
 // --- Devices: link another device + sign out (#474) ---
 const showLinkDialog = ref(false);
@@ -801,6 +838,11 @@ function removeSocialLink(type: string) {
 }
 
 const aidPrefix = computed(() => identityStore.aidPrefix);
+
+// Stewards can take back their control-panel access on every computer they've
+// unlocked (#665). Members with no steward role have no control panel to sign
+// out of, so the row is theirs alone.
+const isSteward = computed(() => identityStore.isSteward);
 
 // --- Local form state ---
 
@@ -1275,7 +1317,7 @@ onMounted(async () => {
 }
 
 .settings-header {
-  background: linear-gradient(135deg, #1a4f5e, #2a7f8f);
+  background: var(--matou-brand-gradient);
   color: white;
   padding: 1.5rem 2rem;
   display: flex;
@@ -1327,6 +1369,15 @@ onMounted(async () => {
   padding-bottom: 5rem;
 }
 
+/* Version line — quiet, last, below everything the unsaved bar can cover */
+.app-version {
+  margin: 0.5rem 0 4.5rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--matou-muted-foreground, #6b7280);
+  user-select: text;
+}
+
 .unsaved-bar {
   position: fixed;
   bottom: 0;
@@ -1359,7 +1410,7 @@ onMounted(async () => {
   font-size: 0.875rem;
   font-weight: 500;
   border-radius: 0.5rem;
-  border: 1px solid var(--matou-border, #d1e7ea);
+  border: 1px solid var(--matou-border);
   background: var(--matou-card, white);
   color: var(--matou-muted-foreground, #6b7280);
   cursor: pointer;
@@ -1367,7 +1418,7 @@ onMounted(async () => {
 }
 
 .btn-discard:hover:not(:disabled) {
-  background: #f3f4f6;
+  background: var(--matou-surface-alt);
   color: var(--matou-foreground, #1f2937);
 }
 
@@ -1382,14 +1433,14 @@ onMounted(async () => {
   font-weight: 500;
   border-radius: 0.5rem;
   border: none;
-  background: var(--matou-primary, #1a4f5e);
+  background: var(--matou-primary);
   color: white;
   cursor: pointer;
   transition: background 0.15s ease, opacity 0.15s ease;
 }
 
 .btn-save:hover:not(:disabled) {
-  background: #164552;
+  background: color-mix(in srgb, var(--matou-primary) 85%, black);
 }
 
 .btn-save:disabled {
@@ -1463,7 +1514,7 @@ onMounted(async () => {
   width: 130px;
   height: 130px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #1a4f5e, #2a7f8f);
+  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1479,7 +1530,7 @@ onMounted(async () => {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: #1a4f5e;
+  background: var(--matou-primary);
   color: white;
   display: flex;
   align-items: center;
@@ -1490,7 +1541,7 @@ onMounted(async () => {
 }
 
 .avatar-camera:hover:not(:disabled) {
-  background: #2a7f8f;
+  background: color-mix(in srgb, var(--matou-primary) 85%, black);
 }
 
 .avatar-camera:disabled {
@@ -1597,7 +1648,7 @@ onMounted(async () => {
 }
 
 .switch input:checked + .switch-slider {
-  background-color: var(--matou-primary, #10b981);
+  background-color: var(--matou-primary);
 }
 
 .switch input:checked + .switch-slider::before {
@@ -1616,8 +1667,8 @@ onMounted(async () => {
 
 /* Read-only field display */
 .field-box {
-  background: var(--matou-field-tint-bg, #f0f9fa);
-  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
+  background: var(--matou-field-tint-bg);
+  border: 1px solid var(--matou-field-tint-border);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
@@ -1628,8 +1679,8 @@ onMounted(async () => {
 
 /* Editable field input — looks like field-box but interactive */
 .field-input {
-  background: var(--matou-field-tint-bg, #f0f9fa);
-  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
+  background: var(--matou-field-tint-bg);
+  border: 1px solid var(--matou-field-tint-border);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
@@ -1642,12 +1693,12 @@ onMounted(async () => {
 }
 
 .field-input:hover {
-  border-color: var(--matou-field-tint-hover-border, #a8d4da);
+  border-color: var(--matou-field-tint-hover-border);
 }
 
 .field-input:focus {
-  border-color: var(--matou-field-tint-focus-border, #1a4f5e);
-  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow, rgba(26, 79, 94, 0.1));
+  border-color: var(--matou-field-tint-focus-border);
+  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow);
 }
 
 .field-input::placeholder {
@@ -1669,17 +1720,17 @@ textarea.field-input {
 .field-error {
   display: block;
   font-size: 0.7rem;
-  color: #dc2626;
+  color: var(--matou-destructive);
   margin-top: 0.25rem;
 }
 
 .field-input-error {
-  border-color: #dc2626 !important;
+  border-color: var(--matou-destructive) !important;
 }
 
 .field-input-error:focus {
-  border-color: #dc2626 !important;
-  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.1) !important;
+  border-color: var(--matou-destructive) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--matou-destructive) 10%, transparent) !important;
 }
 
 /* Participation interests — same look as registration list */
@@ -1698,7 +1749,7 @@ textarea.field-input {
   line-height: 1;
   white-space: nowrap;
   border-radius: 9999px;
-  border: 1px solid var(--matou-border, #d1e7ea);
+  border: 1px solid var(--matou-border);
   background: var(--matou-card, white);
   color: var(--matou-muted-foreground, #6b7280);
   cursor: pointer;
@@ -1706,14 +1757,14 @@ textarea.field-input {
 }
 
 .interest-chip:hover {
-  border-color: var(--matou-primary, #1a4f5e);
-  color: var(--matou-primary, #1a4f5e);
+  border-color: var(--matou-primary);
+  color: var(--matou-primary);
 }
 
 .interest-chip--selected {
-  background-color: var(--matou-primary, #1a4f5e);
+  background-color: var(--matou-primary);
   color: white;
-  border-color: var(--matou-primary, #1a4f5e);
+  border-color: var(--matou-primary);
   opacity: 0.9;
 }
 
@@ -1734,8 +1785,8 @@ textarea.field-input {
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
-  background: var(--matou-field-tint-bg, #f0f9fa);
-  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
+  background: var(--matou-field-tint-bg);
+  border: 1px solid var(--matou-field-tint-border);
   border-radius: 0.5rem;
   font-size: 0.875rem;
 }
@@ -1754,7 +1805,7 @@ textarea.field-input {
 
 .social-link-url {
   flex: 1;
-  color: var(--matou-primary, #1a4f5e);
+  color: var(--matou-primary);
   text-decoration: none;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1780,8 +1831,8 @@ textarea.field-input {
 }
 
 .social-link-remove:hover {
-  background: rgba(220, 38, 38, 0.1);
-  color: #dc2626;
+  background: color-mix(in srgb, var(--matou-destructive) 10%, transparent);
+  color: var(--matou-destructive);
 }
 
 .social-link-add {
@@ -1794,7 +1845,7 @@ textarea.field-input {
   flex: 0 0 160px;
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
-  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
+  border: 1px solid var(--matou-field-tint-border);
   border-radius: 0.5rem;
   background: var(--matou-card, white);
   color: var(--matou-foreground, #1f2937);
@@ -1804,12 +1855,12 @@ textarea.field-input {
 }
 
 .social-link-select:hover:not(:disabled) {
-  border-color: var(--matou-field-tint-hover-border, #a8d4da);
+  border-color: var(--matou-field-tint-hover-border);
 }
 
 .social-link-select:focus {
-  border-color: var(--matou-field-tint-focus-border, #1a4f5e);
-  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow, rgba(26, 79, 94, 0.1));
+  border-color: var(--matou-field-tint-focus-border);
+  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow);
 }
 
 .social-link-select:disabled {
@@ -1821,7 +1872,7 @@ textarea.field-input {
   flex: 1;
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
-  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
+  border: 1px solid var(--matou-field-tint-border);
   border-radius: 0.5rem;
   background: var(--matou-card, white);
   color: var(--matou-foreground, #1f2937);
@@ -1830,12 +1881,12 @@ textarea.field-input {
 }
 
 .social-link-input:hover:not(:disabled) {
-  border-color: var(--matou-field-tint-hover-border, #a8d4da);
+  border-color: var(--matou-field-tint-hover-border);
 }
 
 .social-link-input:focus {
-  border-color: var(--matou-field-tint-focus-border, #1a4f5e);
-  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow, rgba(26, 79, 94, 0.1));
+  border-color: var(--matou-field-tint-focus-border);
+  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow);
 }
 
 .social-link-input:disabled {
@@ -1844,12 +1895,12 @@ textarea.field-input {
 }
 
 .social-link-input.field-input-error {
-  border-color: #dc2626;
+  border-color: var(--matou-destructive);
 }
 
 .social-link-input.field-input-error:focus {
-  border-color: #dc2626;
-  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.1);
+  border-color: var(--matou-destructive);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--matou-destructive) 10%, transparent);
 }
 
 .social-link-add-btn {
@@ -1859,14 +1910,14 @@ textarea.field-input {
   font-weight: 500;
   border-radius: 0.5rem;
   border: none;
-  background: var(--matou-primary, #1a4f5e);
+  background: var(--matou-primary);
   color: white;
   cursor: pointer;
   transition: background 0.15s ease;
 }
 
 .social-link-add-btn:hover:not(:disabled) {
-  background: #164552;
+  background: color-mix(in srgb, var(--matou-primary) 85%, black);
 }
 
 .social-link-add-btn:disabled {
@@ -1905,7 +1956,7 @@ textarea.field-input {
   background: none;
   border: none;
   cursor: pointer;
-  color: #1a4f5e;
+  color: var(--matou-primary);
   padding: 0.25rem;
   border-radius: 0.25rem;
   display: flex;
@@ -1916,7 +1967,7 @@ textarea.field-input {
 }
 
 .copy-btn:hover {
-  background: rgba(26, 79, 94, 0.1);
+  background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
 }
 
 /* Chips (read-only sections) */
@@ -1929,8 +1980,8 @@ textarea.field-input {
 .chip {
   display: inline-block;
   padding: 0.25rem 0.75rem;
-  background: #e0f2f1;
-  color: #1a4f5e;
+  background: color-mix(in srgb, var(--matou-primary) 12%, transparent);
+  color: var(--matou-primary);
   border-radius: 999px;
   font-size: 0.8rem;
   font-weight: 500;
@@ -1940,14 +1991,20 @@ textarea.field-input {
 .role-badge {
   display: inline-block;
   padding: 0.25rem 0.75rem;
-  background: linear-gradient(135deg, #1a4f5e, #2a7f8f);
+  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
   color: white;
   border-radius: 999px;
   font-size: 0.8rem;
   font-weight: 600;
 }
 
-/* Report an issue (mobile support card) */
+/* Report an issue / Suggest an improvement (mobile support card) */
+.report-issue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 .report-issue-btn {
   display: inline-flex;
   align-items: center;
@@ -1956,7 +2013,7 @@ textarea.field-input {
   font-size: 0.875rem;
   font-weight: 500;
   border-radius: 0.5rem;
-  border: 1px solid var(--matou-border, #d1e7ea);
+  border: 1px solid var(--matou-border);
   background: var(--matou-card, white);
   color: var(--matou-foreground, #1f2937);
   cursor: pointer;
@@ -1964,8 +2021,8 @@ textarea.field-input {
 }
 
 .report-issue-btn:hover {
-  background: #f0f9fa;
-  border-color: #a8d4da;
+  background: var(--matou-field-tint-bg);
+  border-color: var(--matou-field-tint-hover-border);
 }
 
 /* Devices card (#474) */
@@ -1991,7 +2048,7 @@ textarea.field-input {
   font-size: 0.875rem;
   font-weight: 500;
   border-radius: 0.5rem;
-  border: 1px solid var(--matou-border, #d1e7ea);
+  border: 1px solid var(--matou-border);
   background: var(--matou-card, white);
   color: var(--matou-foreground, #1f2937);
   cursor: pointer;
@@ -1999,8 +2056,8 @@ textarea.field-input {
 }
 
 .device-action-btn:hover {
-  background: #f0f9fa;
-  border-color: #a8d4da;
+  background: var(--matou-field-tint-bg);
+  border-color: var(--matou-field-tint-hover-border);
 }
 
 .device-signout-btn {
@@ -2011,16 +2068,16 @@ textarea.field-input {
   font-size: 0.875rem;
   font-weight: 500;
   border-radius: 0.5rem;
-  border: 1px solid rgba(239, 68, 68, 0.4);
+  border: 1px solid color-mix(in srgb, var(--matou-destructive) 40%, transparent);
   background: transparent;
-  color: #ef4444;
+  color: var(--matou-destructive);
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .device-signout-btn:hover {
-  background: rgba(239, 68, 68, 0.08);
-  border-color: #ef4444;
+  background: color-mix(in srgb, var(--matou-destructive) 8%, transparent);
+  border-color: var(--matou-destructive);
 }
 
 /* Maximized dialog host for the link-device onboarding screen. */
@@ -2051,17 +2108,17 @@ textarea.field-input {
 }
 
 .signout-body .signout-error {
-  color: #ef4444;
+  color: var(--matou-destructive);
 }
 
 /* Save feedback */
 .save-error {
-  color: #ef4444;
+  color: var(--matou-destructive);
   font-size: 0.875rem;
   margin: 0 0 1rem;
   padding: 0.75rem 1rem;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  background: color-mix(in srgb, var(--matou-destructive) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--matou-destructive) 30%, transparent);
   border-radius: 0.5rem;
 }
 

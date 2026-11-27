@@ -14,6 +14,15 @@
 # returns 1; the caller (try_heal) files the blocker itself with that reason as
 # its "healer refused: <rule>" diagnosis (ticket-on-refusal).
 
+# The healer's dedicated checkout clones and pushes credential-free (#195):
+# git_cred_strip_url normalises any token-bearing origin URL, git_cred_export /
+# git_cred_persist inject the token-free helper so `git push origin` authenticates
+# with no token on disk or argv. (Supersedes the old rehearsal_heal_authed_url,
+# which embedded `swarm:$FORGEJO_TOKEN@` in the URL.)
+__rehearsal_heal_lib_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=git-cred-lib.sh
+. "$__rehearsal_heal_lib_here/git-cred-lib.sh"
+
 # HEAL_RAIL_REASON / HEAL_RAIL_SWARMABLE — set by heal_rails on every refusal so
 # the caller's ticket-on-refusal can name the rule that fired and route the
 # label. SWARMABLE=true means a swarm worker can act without a human ruling (a
@@ -135,6 +144,45 @@ _heal_touches_product_surface() {
   return "$hit"
 }
 
+# _heal_touches_vendored_path <co> <a> <b> — 0 (REFUSE) if the diff a..b edits a
+# factory-vendored file (a FACTORY_MANIFEST path, as .sandcastle/<p>; ADR 0180)
+# that this heal cannot clear. The heal clone (heal.sh's HEAL_CLONE) wires no
+# core.hooksPath, so ADR 0287's pre-push drift gate never fires here — this rail
+# is the ONLY thing between a hand-edited vendored file and `main` (idss #2177,
+# the heal twin of the worker-side #1963/#1964). A vendored edit clears ONLY as a
+# genuine re-vendor: it ALSO bumps .sandcastle/FACTORY_REF in the SAME commit AND
+# check-harness-drift.sh returns a CLEAN verdict (exit 0) against the new pin. A
+# vendored edit with no FACTORY_REF bump returns 0 OFFLINE (the cheap pre-check,
+# no network — the common case); a bump whose drift check is NON-clean — CONFIRMED
+# drift, a TRANSPORT exit 3, or any other non-zero — also returns 0: a guard that
+# could not reach the code it guards is not a clean result (GOTCHAS #30, ADR
+# 0287's posture). No manifest path touched, or a clean re-vendor, returns 1
+# (ALLOW); a checkout with no FACTORY_MANIFEST (a consumer that vendors nothing)
+# returns 1 — nothing to enforce.
+_heal_touches_vendored_path() {
+  local co="$1" a="$2" b="$3" mf changed p touched=1
+  mf="$co/.sandcastle/FACTORY_MANIFEST"
+  [ -f "$mf" ] || return 1
+  changed="$(git -C "$co" diff --name-only "$a..$b" 2>/dev/null)" || return 1
+  [ -n "$changed" ] || return 1
+  # Any changed file a FACTORY_MANIFEST path (as .sandcastle/<p>)? Cheap, no
+  # network — an ordinary heal touches none and returns here.
+  while IFS= read -r p; do
+    case "$p" in ''|'#'*) continue ;; esac
+    if printf '%s\n' "$changed" | grep -qxF ".sandcastle/$p"; then touched=0; break; fi
+  done <"$mf"
+  [ "$touched" -eq 0 ] || return 1
+  # A vendored file is in this commit. It clears ONLY as a re-vendor: FACTORY_REF
+  # bumped in the same commit AND a CLEAN drift verdict. No bump -> refuse offline.
+  printf '%s\n' "$changed" | grep -qxF ".sandcastle/FACTORY_REF" || return 0
+  local drift="$co/.sandcastle/check-harness-drift.sh"
+  [ -f "$drift" ] || return 0
+  if ( cd "$co" && bash "$drift" >/dev/null 2>&1 ); then
+    return 1   # clean re-vendor — allow
+  fi
+  return 0      # confirmed drift, or the check faulted (GOTCHAS #30) — refuse
+}
+
 # heal_rails <co> <pre_head> — accept HEAD as a healed commit, or reset to
 # <pre_head>, name the rule in HEAL_RAIL_REASON, and fail. Rules (all reset +
 # fail): exactly 1 commit; ≤3 files; ≤400 changed NON-TEST lines (#1144, raised
@@ -166,6 +214,20 @@ heal_rails() {
       | grep -qE '^\.sandcastle/rehearsal-|^\.forgejo/workflows/'; then
     HEAL_RAIL_REASON="self-modification"; HEAL_RAIL_SWARMABLE=false
     echo "healer: self-modification attempt — reverting"
+    git -C "$co" reset --hard "$pre" >/dev/null
+    return 1
+  fi
+  # Vendored-path rail (#2177): never land a drifted factory-vendored file (ADR
+  # 0180). The heal clone wires no core.hooksPath, so ADR 0287's pre-push drift
+  # gate never runs here — a hand-edited vendored file would ride straight onto
+  # main and red the seam drift stage (the heal twin of #1963/#1964, witnessed by
+  # #2177's baa7f598). A manifest-path edit is allowed ONLY as a genuine re-vendor
+  # (FACTORY_REF bumped + a CLEAN drift verdict); anything else resets. A heal
+  # cannot author a factory-owned file: land the fix in Matou/dev-factory and file
+  # a re-vendor ticket.
+  if _heal_touches_vendored_path "$co" "$pre" "$head"; then
+    HEAL_RAIL_REASON="vendored-path edit"; HEAL_RAIL_SWARMABLE=false
+    echo "healer: fix edits a factory-vendored file (ADR 0180) without a verified re-vendor — land it in dev-factory and file a re-vendor ticket; reverting"
     git -C "$co" reset --hard "$pre" >/dev/null
     return 1
   fi
@@ -224,23 +286,6 @@ heal_rails() {
 # check needs a ruling).
 fast_lane_rails() { HEAL_ALLOW_PRODUCT_SURFACE=1 heal_rails "$@"; }
 
-# rehearsal_heal_authed_url <url> — inject the same non-interactive
-# `swarm:$FORGEJO_TOKEN` credential git-setup.sh's worker checkouts already
-# use for git.matou.nz (#676: the healer's dedicated checkout clones/pushes
-# with a bare `https://git.matou.nz/...` origin — no username, no credential
-# helper, no GIT_ASKPASS — so a headless `git push` blocks on a username
-# prompt and dies; that stranded the already-computed, already-validated fix
-# e920f9e7 until it was landed by hand in #675). Only rewrites a plain
-# git.matou.nz https URL with no userinfo yet; a local path (the test
-# fixtures' bare origins) or an already-credentialed URL pass through
-# unchanged, so this is safe to call unconditionally on every heal.
-rehearsal_heal_authed_url() {
-  case "$1" in
-    https://git.matou.nz/*) printf 'https://swarm:%s@%s' "${FORGEJO_TOKEN:-}" "${1#https://}" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
-
 # heal_push <co> <pre_head> <run_dir> — land the healer's single commit on
 # origin/main even when main advanced under us (a concurrent operator or swarm
 # push): fetch + rebase onto origin/main, re-run the rails against the replayed
@@ -290,8 +335,16 @@ heal_push() {
 # scrub_commit_message <co> — amend HEAD's message: Forgejo auto-close keywords
 # become "advances #N" (the hazard has fired twice: even DESCRIBING a close
 # closes), and the "rehearsal healer: " prefix is enforced.
+#
+# The healer works in a throwaway clone (heal.sh's HEAL_CLONE) that does NOT wire
+# core.hooksPath, so the prepare-commit-msg hook never fires on this amend —
+# stamp the Factory-Account trailer (#223) here instead, by the same
+# interpret-trailers incantation the hook uses, so the healer's commit carries
+# the account attribution every other swarm_git_identity caller's does.
+# Conditional on a non-empty fingerprint (claude_select_token exported it before
+# the heal ran): a token-less run leaves the message byte-identical to pre-#223.
 scrub_commit_message() {
-  local co="$1" msg
+  local co="$1" msg fp
   msg="$(git -C "$co" log -1 --pretty=%B)"
   if grep -qiE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*#[0-9]+' <<<"$msg"; then
     msg="$(sed -E 's/\b([Cc]lose[sd]?|[Ff]ix(e[sd])?|[Rr]esolve[sd]?)[[:space:]]*#/advances #/g' <<<"$msg")"
@@ -299,6 +352,19 @@ scrub_commit_message() {
   case "$msg" in
     "rehearsal healer: "*) ;;
     *) msg="rehearsal healer: $msg" ;;
+  esac
+  # The hook stamps the trailer with `git interpret-trailers`, but scrub's
+  # message ALWAYS carries the "rehearsal healer: " prefix — and a `word: value`
+  # subject line is parsed by interpret-trailers AS a trailer, so it would append
+  # the fingerprint into that same paragraph with no separating blank line and
+  # then fail to recognise it on the next amend, duplicating it. So stamp it by
+  # hand here: a grep guard for idempotency and an explicit blank line so the
+  # trailer is its own final paragraph. Same end result, robust to the prefix.
+  fp="${CLAUDE_ACCOUNT_FP:-}"
+  case "$fp" in ''|*[!0-9a-f]*) ;; *)
+    grep -qi '^Factory-Account:' <<<"$msg" || msg="$msg
+
+Factory-Account: $fp" ;;
   esac
   git -C "$co" commit --amend -qm "$msg"
 }

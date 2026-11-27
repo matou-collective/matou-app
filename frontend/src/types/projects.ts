@@ -73,7 +73,9 @@ export type PlanChangeKind =
   | 'milestone_archived'
   | 'contribution_added'
   | 'contribution_edited'
-  | 'contribution_removed';
+  | 'contribution_removed'
+  | 'contribution_restored'
+  | 'contribution_moved';
 
 export interface PlanChangeEntry {
   id: string;
@@ -119,6 +121,15 @@ export interface Contribution {
   // Hierarchy
   parent_contribution?: string;
   child_contributions?: string[];
+  // Explicit sibling order within the milestone (top-level) or parent (sub).
+  // Undefined for contributions created before ordering existed — those fall
+  // back to a numeric-aware title sort. See src/lib/contributions/ordering.ts.
+  sort_order?: number;
+  // Derived "M.C.S" display reference (milestone.contribution.sub, e.g. "1.2.0"
+  // for a top-level contribution, "1.2.1" for its first sub). Computed by the
+  // backend from the contribution's position at read time; never part of the
+  // stored title. See issue #753.
+  reference?: string;
   // Assignment
   assigned_contributor?: string;
   assigned_contributor_id?: string;
@@ -145,6 +156,9 @@ export interface Contribution {
   attachment_files?: AttachedFile[];
   // Last time the assigned contributor edited their submission (pre sign-off).
   evidence_edited_at?: string;
+  // Set while unsubmitted draft evidence exists on an assigned contribution
+  // (issue #722). Cleared once the evidence is submitted for review.
+  evidence_draft_saved_at?: string;
   // Review
   review_outcome?: 'approved' | 'incomplete' | 'declined';
   review_feedback?: string;
@@ -157,6 +171,10 @@ export interface Contribution {
   // Rewarded
   rewarded_by?: string;
   rewarded_at?: string;
+  // Lead close-out of a parent without a budget (#844)
+  closed_by?: string;
+  closed_at?: string;
+  close_reason?: string;
   // Comments
   comment_count?: number;
 }

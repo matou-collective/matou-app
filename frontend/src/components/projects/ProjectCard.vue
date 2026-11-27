@@ -230,8 +230,8 @@ function formatStatus(status: string): string {
   font-weight: 500;
   padding: 3px 10px;
   border-radius: 12px;
-  background: rgba(74, 157, 156, 0.12);
-  color: var(--matou-accent, #4a9d9c);
+  background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
+  color: var(--matou-accent);
   white-space: nowrap;
 }
 
@@ -243,7 +243,7 @@ function formatStatus(status: string): string {
   height: 20px;
   padding: 0 6px;
   border-radius: 10px;
-  background: var(--matou-destructive, #dc2626);
+  background: var(--matou-destructive);
   color: white;
   font-size: 0.7rem;
   font-weight: 600;

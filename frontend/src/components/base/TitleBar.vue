@@ -1,5 +1,8 @@
 <template>
   <div v-if="showTitleBar" class="titlebar">
+    <!-- Leading spacer equal to the controls width so the centred drag region
+         spans the full bar, landing the title on the window's true centre. -->
+    <div class="titlebar-spacer"></div>
     <div class="titlebar-drag">
       <span class="titlebar-title">{{ KIT.brand.name }}</span>
     </div>
@@ -75,6 +78,9 @@ onUnmounted(() => {
 
 <style scoped>
 .titlebar {
+  /* Width of the three 46px window controls; the leading spacer matches it so
+     the title centres across the full bar rather than the left portion only. */
+  --titlebar-controls-width: 138px;
   position: fixed;
   top: 0;
   left: 0;
@@ -94,8 +100,16 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.titlebar-spacer {
+  width: var(--titlebar-controls-width);
+  flex-shrink: 0;
+  height: 100%;
+  -webkit-app-region: drag;
+}
+
 .titlebar-drag {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -104,11 +118,16 @@ onUnmounted(() => {
 }
 
 .titlebar-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 8px;
 }
 
 .titlebar-controls {
   display: flex;
   height: 100%;
+  flex-shrink: 0;
   -webkit-app-region: no-drag;
 }
 

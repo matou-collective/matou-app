@@ -9,6 +9,10 @@ import {
   setupBackendRouting,
   loginWithMnemonic,
   loadAccounts,
+  registerUser,
+  approvePendingMember,
+  uniqueSuffix,
+  TIMEOUT,
   type TestAccounts,
 } from './utils/test-helpers';
 
@@ -32,6 +36,10 @@ import {
  *  3. The admin renames themselves on the PHONE → the desktop shows the new name.
  *  4. member1 posts in a channel → the admin sees it on the desktop AND the phone.
  *  5. The admin replies on the DESKTOP → the reply shows up on the phone.
+ *  6. Steward two-device (#476 step 5, spec §3.5): someone applies; the admin —
+ *     online on BOTH devices — approves from the PHONE. The phone issues and
+ *     grants exactly one membership credential, the desktop issues none, the
+ *     applicant admits once, and the desktop shows the applicant as handled.
  *
  * Needs: the live test network, the admin backend on 9080, an attached device
  * or the `matou` AVD, and a TEST-mode APK — see utils/android-device.ts.
@@ -42,6 +50,8 @@ import {
 const CHAT_HASH = '#/dashboard/chat';
 const SETTINGS_HASH = '#/dashboard/settings';
 const SYNC_BUDGET_MS = 240_000;
+// src/composables/useAdminActions.ts — not imported: that module drags in the app.
+const MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
 
 test.describe.serial('Linked-device sign-in on Android', () => {
   let accounts: TestAccounts;
@@ -50,6 +60,7 @@ test.describe.serial('Linked-device sign-in on Android', () => {
   let desktop: Page;
   let memberContext: BrowserContext;
   let member: Page;
+  let applicantContext: BrowserContext;
   let adminAid = ''; // as the DESKTOP backend reports it; test-accounts.json may not carry it
   const backends = new BackendManager();
 
@@ -182,6 +193,38 @@ test.describe.serial('Linked-device sign-in on Android', () => {
     });
   }
 
+  /** The KERIA writes that make up ONE membership approval, as sent by one page:
+   *  the membership credential's issuance and its IPEX grant (steward side) and
+   *  the admit answering that grant (applicant side). Two devices share one
+   *  agent, so "who signed it" is only visible per page. Filtered to the
+   *  membership schema because meeting the approval requirements issues an
+   *  endorsement and an attendance credential of its own. */
+  type ApprovalWrites = { issued: number; grants: string[]; admitted: string[] };
+  function watchApprovalWrites(page: Page): ApprovalWrites {
+    const seen: ApprovalWrites = { issued: 0, grants: [], admitted: [] };
+    page.on('request', (req) => {
+      if (req.method() !== 'POST') return;
+      const path = new URL(req.url()).pathname;
+      let body: { acdc?: { s?: string }; exn?: { d?: string; p?: string; e?: { acdc?: { s?: string } } } };
+      try {
+        body = req.postDataJSON() ?? {};
+      } catch {
+        return;
+      }
+      if (/\/identifiers\/[^/]+\/credentials$/.test(path)) {
+        if (body.acdc?.s === MEMBERSHIP_SCHEMA_SAID) seen.issued += 1;
+      } else if (/\/ipex\/grant$/.test(path)) {
+        if (body.exn?.e?.acdc?.s === MEMBERSHIP_SCHEMA_SAID) seen.grants.push(body.exn.d ?? '');
+      } else if (/\/ipex\/admit$/.test(path)) {
+        seen.admitted.push(body.exn?.p ?? '');
+      }
+    });
+    return seen;
+  }
+
+  const memberCard = (page: Page, name: string) =>
+    page.locator('.members-card .profile-card').filter({ hasText: name });
+
   const nameInput = (page: Page) => page.locator('input[placeholder="Your display name"]');
 
   // --- lifecycle -------------------------------------------------------------
@@ -212,6 +255,7 @@ test.describe.serial('Linked-device sign-in on Android', () => {
     // org and kills an emulator the harness booted — also when beforeAll timed
     // out inside startAndroidApp and `phone` was never assigned.
     try {
+      await applicantContext?.close().catch(() => undefined);
       await memberContext?.close().catch(() => undefined);
       await adminContext?.close().catch(() => undefined);
       await backends.stopAll();
@@ -398,5 +442,69 @@ test.describe.serial('Linked-device sign-in on Android', () => {
 
     // The conversation closes the loop: member1 gets the reply too.
     await expectMessage(member, channelName, adminReply, 'member1 ← desktop reply');
+  });
+
+  // --- 6 ---------------------------------------------------------------------
+
+  test('a registration approved on the phone is issued once and shows as handled on the desktop', async ({
+    browser,
+  }) => {
+    test.setTimeout(1_500_000);
+
+    const applicantName = `Applicant_${uniqueSuffix()}`;
+    const { retry } = test.info();
+    const applicantBackend = await backends.start(
+      retry > 0 ? `lda-applicant-r${retry}` : 'lda-applicant',
+    );
+    applicantContext = await browser.newContext();
+    await setupTestConfig(applicantContext);
+    await setupBackendRouting(applicantContext, applicantBackend.port);
+    const applicant = await applicantContext.newPage();
+    setupPageLogging(applicant, 'Applicant');
+
+    // Both of the steward's devices are online and watching from before the
+    // application arrives.
+    const desktopWrites = watchApprovalWrites(desktop);
+    const phoneWrites = watchApprovalWrites(phone.page);
+    const applicantWrites = watchApprovalWrites(applicant);
+    await desktop.goto('/#/dashboard');
+    await goHash(phone.page, '#/dashboard');
+
+    await registerUser(applicant, applicantName);
+
+    // The same pending applicant reaches BOTH devices.
+    await expect(memberCard(desktop, applicantName)).toHaveClass(/border-pending/, {
+      timeout: TIMEOUT.registrationSubmit,
+    });
+    await expect(memberCard(phone.page, applicantName)).toHaveClass(/border-pending/, {
+      timeout: SYNC_BUDGET_MS,
+    });
+    await shot(desktop, '6-desktop-sees-applicant');
+    await shot(phone.page, '6-phone-sees-applicant');
+
+    // The steward approves from the phone; the desktop is left alone.
+    await approvePendingMember(phone.page, applicantName);
+    await shot(phone.page, '6-phone-approved');
+
+    // The applicant is let in…
+    await expect(applicant.locator('.welcome-overlay')).toBeVisible({ timeout: SYNC_BUDGET_MS });
+    await shot(applicant, '6-applicant-welcomed');
+
+    // …and the desktop shows the registration as handled without being touched.
+    await expect(memberCard(desktop, applicantName)).toHaveClass(/border-approved/, {
+      timeout: SYNC_BUDGET_MS,
+    });
+    await expect(memberCard(desktop, applicantName)).toHaveCount(1);
+    await shot(desktop, '6-desktop-handled');
+
+    // Exactly one approval happened, and the phone made it.
+    expect(phoneWrites.issued, 'the phone issues the membership credential once').toBe(1);
+    expect(phoneWrites.grants, 'the phone grants it once').toHaveLength(1);
+    expect(desktopWrites.issued, 'the idle desktop issues nothing').toBe(0);
+    expect(desktopWrites.grants, 'the idle desktop grants nothing').toHaveLength(0);
+    expect(
+      applicantWrites.admitted.filter((grant) => grant === phoneWrites.grants[0]),
+      'the applicant admits that grant once',
+    ).toHaveLength(1);
   });
 });

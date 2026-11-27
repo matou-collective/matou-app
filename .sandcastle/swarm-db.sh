@@ -9,6 +9,7 @@
 #   swarm-db.sh issue <N> [--repo <slug>|all]   history of issue N (attempts, events, spend)
 #   swarm-db.sh open-processes [--repo <slug>]   believed-alive rows — the #435 wedge/hang surface
 #   swarm-db.sh spend-weekly   [--repo <slug>]   token/request spend bucketed by ISO week
+#   swarm-db.sh spend-by --group repo,account,week[,host,model] [--usd] [--repo <slug>]   grouped spend (#202)
 #   swarm-db.sh red-by-stage   [--repo <slug>]   red runs grouped by the verdict/stage that killed them
 #   swarm-db.sh queue-wait     [--repo <slug>]   ready→claimed queue-wait percentiles bucketed by day (#99)
 #   swarm-db.sh limit-lost                       lost capacity to Claude limits, per account, by ISO week
@@ -72,6 +73,25 @@ case "$cmd" in
     fi
     exec python3 "$here/swarm-db.py" --db "$SWARM_DB" query "$cmd"
     ;;
+  spend-by)
+    # Grouped spend (#202): --group dimensions + an optional --usd dollar join,
+    # plus the shared optional --repo filter. Parsed here so the reader stays the
+    # one documented surface; unknown flags are refused by swarm-db.py.
+    group=""; usd=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --repo) repo="${2:-}"; shift 2 || { echo "swarm-db.sh: --repo needs a value" >&2; exit 2; } ;;
+        --group) group="${2:-}"; shift 2 || { echo "swarm-db.sh: --group needs a value" >&2; exit 2; } ;;
+        --usd) usd=1; shift ;;
+        *) echo "swarm-db.sh: unexpected argument '$1'" >&2; exit 2 ;;
+      esac
+    done
+    set -- query spend-by
+    [ -n "$repo" ] && set -- "$@" --repo "$repo"
+    [ -n "$group" ] && set -- "$@" --group "$group"
+    [ -n "$usd" ] && set -- "$@" --usd
+    exec python3 "$here/swarm-db.py" --db "$SWARM_DB" "$@"
+    ;;
   limit-lost)
     # Host-global by nature: a subscription window is one host-wide thing, so
     # this read takes no repo filter (it aggregates every account's park events).
@@ -83,7 +103,7 @@ case "$cmd" in
     ;;
   *)
     echo "swarm-db.sh: unknown query '$cmd'" >&2
-    echo "try: issue <N> [--repo <slug>|all] | open-processes | spend-weekly | red-by-stage | queue-wait | limit-lost" >&2
+    echo "try: issue <N> [--repo <slug>|all] | open-processes | spend-weekly | spend-by | red-by-stage | queue-wait | limit-lost" >&2
     exit 2
     ;;
 esac

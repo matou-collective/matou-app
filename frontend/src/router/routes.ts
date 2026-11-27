@@ -95,16 +95,27 @@ const routes: RouteRecordRaw[] = [
             },
           ]
         : []),
-      {
-        path: 'contributions',
-        name: 'contributions',
-        component: () => import('pages/Contributions/ContributionsPage.vue'),
-      },
-      {
-        path: 'contributions/:id',
-        name: 'contribution-detail',
-        component: () => import('pages/Contributions/ContributionDetailPage.vue'),
-      },
+      // Contributions rides on projects (#620): a contribution belongs to a
+      // project's implementation plan, so with `projects` off the module is
+      // absent and a deep link or notification to it redirects to the
+      // dashboard rather than opening an orphaned page.
+      ...(__KIT_PROJECTS__
+        ? [
+            {
+              path: 'contributions',
+              name: 'contributions',
+              component: () => import('pages/Contributions/ContributionsPage.vue'),
+            },
+            {
+              path: 'contributions/:id',
+              name: 'contribution-detail',
+              component: () => import('pages/Contributions/ContributionDetailPage.vue'),
+            },
+          ]
+        : [
+            { path: 'contributions', redirect: { name: 'dashboard' } },
+            { path: 'contributions/:id', redirect: { name: 'dashboard' } },
+          ]),
     ],
   },
   {

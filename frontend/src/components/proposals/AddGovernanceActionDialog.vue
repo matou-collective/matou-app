@@ -567,7 +567,7 @@ function handleAdd() {
 
   &.active {
     border-color: var(--matou-primary);
-    background: rgba(30, 95, 116, 0.06);
+    background: color-mix(in srgb, var(--matou-primary) 6%, transparent);
     color: var(--matou-primary);
   }
 
@@ -598,8 +598,8 @@ function handleAdd() {
 
 // Date/Time/Location card
 .datetime-card {
-  background: rgba(30, 95, 116, 0.04);
-  border: 1px solid rgba(30, 95, 116, 0.12);
+  background: color-mix(in srgb, var(--matou-primary) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--matou-primary) 12%, transparent);
   border-radius: 10px;
   padding: 16px;
   margin-bottom: 16px;
@@ -660,7 +660,7 @@ function handleAdd() {
 
   &.active {
     border-color: var(--matou-primary);
-    background: rgba(30, 95, 116, 0.06);
+    background: color-mix(in srgb, var(--matou-primary) 6%, transparent);
     color: var(--matou-primary);
   }
 }

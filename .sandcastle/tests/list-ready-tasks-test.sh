@@ -22,7 +22,33 @@ mkdir -p "$tmp/bin"
 # can leak a value into this suite's ambient env, so the "unset" cases run under
 # `env -u REHEARSAL_DRIVE_ISSUE` and the "set" cases pin it inline.
 export PATH="$tmp/bin:$PATH" FORGEJO_TOKEN=t
+# #375: the lister now sources claim-lib.sh for its live-claim filter. Keep its
+# retry sleeps at 0 (the ACTIONS_HTTP=000 fail-open case would otherwise back off
+# with real sleeps) and silence its latency log so the suite never writes to $HOME.
+export CLAIM_ALIVE_RETRIES=0 CLAIM_ALIVE_RETRY_SLEEP=0 CLAIM_LATENCY_LOG=
 unset REHEARSAL_DRIVE_ISSUE 2>/dev/null || true
+# #330: pin the in-sandbox fleet-pick SIGNAL to an ABSENT path. The lister reads
+# this run's claimed ticket from ${SWARM_FLEET_PICK_SIGNAL:-/run/host-signals/fleet-pick}
+# and, when present, narrows every listing to that single issue (idss#2145 fast
+# path). That file exists in every worker sandbox but not on the CI host, so an
+# unpinned run reads the live pick in-sandbox and narrows to a ticket these
+# fixtures do not carry (green on CI, red in-sandbox). The fleet-pick cases below
+# override this inline with their own pick file.
+export SWARM_FLEET_PICK_SIGNAL="$tmp/no-such-fleet-pick"
+# #327: likewise pin the in-sandbox fleet-pick-TASK signal to an ABSENT path.
+# When present it carries the host's already-verified pick object and the lister
+# emits it with zero forge reads — a live file in a worker sandbox would make the
+# fixtures below (which drive the forge-read paths) short-circuit. Case 6d
+# overrides this inline with its own task file.
+export SWARM_FLEET_PICK_TASK_SIGNAL="$tmp/no-such-fleet-pick-task"
+# #186: pin a test-controlled PUSH policy as the suite default. The push/host-side
+# scenarios below used `env -u SWARM_POLICY_FILE` to mean "no policy file → default
+# push" — but an unset seam sources the HOST repo's real swarm-policy.sh, so a
+# vendored run from a LANDING=pr consumer read every ticket's landing as `pr` and
+# RED'd the push-parity assertions (L1: `landing=push`). An explicit LANDING=push
+# file is byte-identical to the absent-file default; the pr cases pin their own.
+printf 'LANDING=push\n' > "$tmp/push-policy.sh"
+export SWARM_POLICY_FILE="$tmp/push-policy.sh"
 
 # curl shim: answers the ready-for-agent issue-list query from a fixture, and
 # every dependency query as "no open blockers". A page fixture holds < 50
@@ -59,9 +85,32 @@ case "$url" in
     n="${url#*/issues/}"; n="${n%%/*}"
     body='[]'; [ -n "${DEPS_DIR:-}" ] && [ -f "$DEPS_DIR/$n.json" ] && body="$(cat "$DEPS_DIR/$n.json")"
     emit "$body" "${DEPS_HTTP:-200}"; exit ;;
+  */actions/tasks*)
+    # #375: the alive-runs snapshot the lister's live-claim filter reads once per
+    # tick. Default an EMPTY run list (no swarm claim is live) so the pre-#375
+    # fixtures surface unchanged; ACTIONS_FIXTURE overrides it, ACTIONS_HTTP=000
+    # faults the poll (the fail-OPEN case).
+    emit "$(cat "${ACTIONS_FIXTURE:-/dev/null}" 2>/dev/null || true; [ -z "${ACTIONS_FIXTURE:-}" ] && printf '{"workflow_runs":[]}')" "${ACTIONS_HTTP:-200}"; exit ;;
+  */comments*)
+    # #375: a candidate's claim comments. Default none; COMMENTS_DIR/<n>.json holds
+    # the swarm-claim comment(s) a live run posted. Matched BEFORE the single-issue
+    # GET below, which the comments URL would otherwise match.
+    n="${url#*/issues/}"; n="${n%%/*}"
+    body='[]'; [ -n "${COMMENTS_DIR:-}" ] && [ -f "$COMMENTS_DIR/$n.json" ] && body="$(cat "$COMMENTS_DIR/$n.json")"
+    emit "$body" "${COMMENTS_HTTP:-200}"; exit ;;
   *pulls?state=open*) sleep "${LEG_SLEEP:-0}"; emit "$(cat "${PULLS_FIXTURE:-/dev/null}" 2>/dev/null || echo '[]')" "${PULLS_HTTP:-200}"; exit ;;
   *labels=standing-drive*) sleep "${LEG_SLEEP:-0}"; b='[]'; [ -n "${DRIVES_FIXTURE:-}" ] && b="$(cat "$DRIVES_FIXTURE")"; emit "$b" "${DRIVES_HTTP:-200}"; exit ;;
   *labels=ready-for-agent*) sleep "${LEG_SLEEP:-0}"; emit "$(cat "${ISSUE_FIXTURE:?}")" "${READY_HTTP:-200}"; exit ;;
+  */issues/[0-9]*)
+    # #2145: single-issue GET (the fleet-pick fast path). Serve the matching
+    # object out of the page fixture, stamped state:"open" (the list endpoint
+    # returns only open issues, so fixtures omit the field); a number absent from
+    # the fixture is a gone pick -> 404, which the lister reads as "not ready".
+    sleep "${ISSUE_SLEEP:-0}"
+    n="${url##*/issues/}"; n="${n%%[/?]*}"
+    obj="$(jq -c --argjson n "$n" 'map(select(.number == $n)) | .[0] | select(. != null) | . + {state:"open"}' "${ISSUE_FIXTURE:-/dev/null}" 2>/dev/null || true)"
+    if [ -n "$obj" ]; then emit "$obj" "${READY_HTTP:-200}"; else emit '{"message":"Not Found"}' "${ISSUE_HTTP:-404}"; fi
+    exit ;;
 esac
 emit '[]' 200
 SH
@@ -200,10 +249,105 @@ JSON
 out4="$(bash "$here/../list-ready-tasks.sh")" || fail "priority run exited non-zero"
 [ "$(jq -r '[.[].number] | join(",")' <<<"$out4")" = "701,703,700,702" ] \
   || fail "priority issues must sort first, tracker order kept within groups (got $(jq -c '[.[].number]' <<<"$out4"))"
-jq -e 'all(.[]; keys == ["body","model","number","title","url"])' <<<"$out4" >/dev/null \
-  || fail "emitted shape changed — expected {body,model,number,title,url} (the priority flag must not leak; .model must survive)"
+jq -e 'all(.[]; keys == ["blocker","body","created_at","landing","landing_label","model","number","priority","title","url"])' <<<"$out4" >/dev/null \
+  || fail "emitted shape changed — expected {body,landing,landing_label,model,number,title,url} (.priority/.blocker/.created_at are additive since #301; .model must survive)"
 jq -e 'all(.[]; .model == null)' <<<"$out4" >/dev/null \
   || fail "unlabelled tickets must surface .model=null (default model)"
+pass=$((pass+1))
+
+# 6b: within each group the OLDEST ticket (created_at) comes first — the
+#     tracker answers newest-first, which made a fresh ticket jump every older
+#     one in its group; a filing date is the queue's line. Tickets without a
+#     created_at (older fixtures) keep tracker order (case 6 above). The helper
+#     is emitted (additive, #301) so the fleet queue can order across repos.
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 800, "title": "ordinary newest", "body": "b", "html_url": "u/800", "created_at": "2026-10-20T10:00:00Z", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 801, "title": "priority newer", "body": "b", "html_url": "u/801", "created_at": "2026-10-19T10:00:00Z", "labels": [{"name":"ready-for-agent"},{"name":"priority"}]},
+  {"number": 802, "title": "ordinary oldest", "body": "b", "html_url": "u/802", "created_at": "2026-10-01T10:00:00Z", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 803, "title": "priority oldest", "body": "b", "html_url": "u/803", "created_at": "2026-10-05T10:00:00Z", "labels": [{"name":"ready-for-agent"},{"name":"priority"}]}
+]
+JSON
+out4b="$(bash "$here/../list-ready-tasks.sh")" || fail "oldest-first run exited non-zero"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out4b")" = "803,801,802,800" ] \
+  || fail "within a group the oldest ticket must come first: priority 803,801 then 802,800 (got $(jq -c '[.[].number]' <<<"$out4b"))"
+jq -e 'all(.[]; keys == ["blocker","body","created_at","landing","landing_label","model","number","priority","title","url"])' <<<"$out4b" >/dev/null \
+  || fail "emitted shape changed — created_at is additive since #301 (expected {blocker,body,created_at,landing,landing_label,model,number,priority,title,url})"
+pass=$((pass+1))
+
+# 6c (#301): the FLEET PICK signal. A one-ticket run's lister answers exactly
+#     the pick when it is still ready, [] (plus a stderr line) when it is gone,
+#     and the full order when no signal is mounted. The fields the fleet merge
+#     reads survive on the pick.
+jq -e '.[0] | (.priority == true) and (.blocker == false) and (.created_at == "2026-10-05T10:00:00Z")' <<<"$out4b" >/dev/null \
+  || fail "the emitted ticket must carry priority/blocker/created_at for the fleet merge (#301)"
+printf '802\n' > "$tmp/fleet-pick"
+out4c="$(env CURL_LOG="$tmp/4c.curl" SWARM_FLEET_PICK_SIGNAL="$tmp/fleet-pick" bash "$here/../list-ready-tasks.sh")" || fail "fleet-pick run exited non-zero"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out4c")" = "802" ] \
+  || fail "with a fleet-pick signal naming 802 the lister must answer exactly #802 (got $(jq -c '[.[].number]' <<<"$out4c"))"
+# #2145: the fast path fetches ONLY the picked issue, never the expensive
+# ready-for-agent page (nor the standing-drive listing) — the whole reason it
+# fits the 30s budget on a slow forge.
+grep -qE 'issues/802( |$)' "$tmp/4c.curl" \
+  || fail "the fleet-pick fast path must GET /issues/802 directly (#2145)"
+if grep -q "labels=ready-for-agent" "$tmp/4c.curl"; then
+  fail "the fleet-pick fast path must NOT fetch the ready-for-agent page (#2145)"
+fi
+if grep -q "labels=standing-drive" "$tmp/4c.curl"; then
+  fail "the fleet-pick fast path must NOT fetch the standing-drive listing (#2145)"
+fi
+# #2145: a fast-path pick still carries the fields the fleet merge reads.
+jq -e '.[0] | has("blocker") and has("created_at") and has("landing") and has("model")' <<<"$out4c" >/dev/null \
+  || fail "the fast-path pick must keep the additive {blocker,created_at,landing,model} fields (#2145)"
+printf '999\n' > "$tmp/fleet-pick"
+out4d="$(LIST_READY_RETRIES=1 SWARM_FLEET_PICK_SIGNAL="$tmp/fleet-pick" bash "$here/../list-ready-tasks.sh" 2>"$tmp/pick.err")" || fail "gone-pick run exited non-zero"
+[ "$(jq 'length' <<<"$out4d")" = "0" ] || fail "a fleet pick that is no longer ready must answer [] (got $(jq -c '[.[].number]' <<<"$out4d"))"
+grep -q "fleet pick #999 is no longer ready" "$tmp/pick.err" || fail "a gone fleet pick must be named on stderr"
+rm -f "$tmp/fleet-pick"
+pass=$((pass+1))
+
+# 6d (#327): the fleet-pick-TASK signal — the host's already-verified pick
+#     object. When it is present the lister emits it with ZERO forge reads (even
+#     the #2145 two-read fast path overran CLAIM_LISTER_MAX_TIME on a slow forge).
+printf '[{"number":802,"title":"the pick","body":"b","url":"u/802","created_at":"2026-10-05T10:00:00Z","priority":true,"model":null,"landing_label":null,"landing":"push","blocker":false}]\n' \
+  > "$tmp/fleet-pick-task"
+out4e="$(env CURL_LOG="$tmp/4e.curl" SWARM_FLEET_PICK_TASK_SIGNAL="$tmp/fleet-pick-task" bash "$here/../list-ready-tasks.sh")" \
+  || fail "fleet-pick-task run exited non-zero"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out4e")" = "802" ] \
+  || fail "with a fleet-pick-task signal the lister must emit exactly that object (got $(jq -c '[.[].number]' <<<"$out4e"))"
+# the whole point: no forge read AT ALL on this path.
+[ ! -s "$tmp/4e.curl" ] \
+  || fail "the fleet-pick-task fast path must make ZERO forge reads (#327); saw: $(cat "$tmp/4e.curl")"
+jq -e '.[0] | has("blocker") and has("created_at") and has("landing") and has("model")' <<<"$out4e" >/dev/null \
+  || fail "the task-signal pick must keep the additive {blocker,created_at,landing,model} fields (#327)"
+# a garbled/empty signal falls through to a forge read, not a silent [].
+printf 'not json\n' > "$tmp/fleet-pick-task"
+out4f="$(env CURL_LOG="$tmp/4f.curl" SWARM_FLEET_PICK_TASK_SIGNAL="$tmp/fleet-pick-task" bash "$here/../list-ready-tasks.sh" 2>"$tmp/4f.err")" \
+  || fail "a garbled task signal must fall through, not exit non-zero"
+[ -s "$tmp/4f.curl" ] \
+  || fail "a garbled task signal must fall through to a forge read (#327)"
+grep -q "fleet-pick-task signal is present but unreadable" "$tmp/4f.err" \
+  || fail "a garbled task signal must be named on stderr (#327)"
+rm -f "$tmp/fleet-pick-task"
+pass=$((pass+1))
+
+# 6g (#381): the NO-PICK task signal — a host with no fleet view mirrors its FULL
+#     verified ready-set (MANY tickets, no fleet-pick NUMBER file) as
+#     fleet-pick-task. The lister must emit the whole set with ZERO forge reads,
+#     exactly as it does for the one-element pick: the 12s CLAIM_LISTER_MAX_TIME
+#     bound is only safe because the host mirrors its verdict, and the no-pick
+#     full-page re-fetch RED'd the claim leg with rc 124 on a slow forge.
+printf '[{"number":811,"title":"first","body":"b","url":"u/811","created_at":"2026-10-05T10:00:00Z","priority":false,"model":null,"landing_label":null,"landing":"push","blocker":false},{"number":822,"title":"second","body":"b","url":"u/822","created_at":"2026-10-05T11:00:00Z","priority":false,"model":null,"landing_label":null,"landing":"push","blocker":false}]\n' \
+  > "$tmp/fleet-pick-task"
+# the fleet-pick NUMBER signal stays ABSENT — no single pick to name (the #330/#327
+# default already points it at a non-existent path).
+out4g="$(env CURL_LOG="$tmp/4g.curl" SWARM_FLEET_PICK_TASK_SIGNAL="$tmp/fleet-pick-task" bash "$here/../list-ready-tasks.sh")" \
+  || fail "no-pick fleet-pick-task run exited non-zero (#381)"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out4g")" = "811,822" ] \
+  || fail "a no-pick task signal must emit the WHOLE verified ready-set (got $(jq -c '[.[].number]' <<<"$out4g")) (#381)"
+[ ! -s "$tmp/4g.curl" ] \
+  || fail "the no-pick task signal must make ZERO forge reads (#381); saw: $(cat "$tmp/4g.curl")"
+rm -f "$tmp/fleet-pick-task"
 pass=$((pass+1))
 
 # 7: a ticket's model-<name> label surfaces as its `.model` suffix — the field
@@ -245,7 +389,7 @@ cat > "$ISSUE_FIXTURE" <<'JSON'
 ]
 JSON
 # push mode (no policy file): both surface, no /pulls call is even made.
-out7push="$(env -u SWARM_POLICY_FILE bash "$here/../list-ready-tasks.sh")" \
+out7push="$(bash "$here/../list-ready-tasks.sh")" \
   || fail "push-mode pr-filter run exited non-zero"
 jq -e '.[] | select(.number == 731)' <<<"$out7push" >/dev/null \
   || fail "push mode must NOT drop #731 (the pr filter is pr-mode only — nil-diff)"
@@ -286,8 +430,8 @@ JSON
 out8="$(bash "$here/../list-ready-tasks.sh")" || fail "drive-blocker ordering run exited non-zero"
 [ "$(jq -r '[.[].number] | join(",")' <<<"$out8")" = "900,400,300" ] \
   || fail "the drive blocker (#900) must sort first, then priority (#400), then the rest (#300) (got $(jq -c '[.[].number]' <<<"$out8"))"
-jq -e 'all(.[]; keys == ["body","model","number","title","url"])' <<<"$out8" >/dev/null \
-  || fail "emitted shape changed — the blocker helper flag must not leak (expected {body,model,number,title,url})"
+jq -e 'all(.[]; keys == ["blocker","body","created_at","landing","landing_label","model","number","priority","title","url"])' <<<"$out8" >/dev/null \
+  || fail "emitted shape changed — the blocker flag is additive since #301 (expected {blocker,body,created_at,landing,landing_label,model,number,priority,title,url})"
 pass=$((pass+1))
 
 # 10b: with NO standing drive (the common case), ordering is byte-identical to
@@ -408,6 +552,31 @@ outn="$(env -u REHEARSAL_DRIVE_ISSUE SWARM_DRIVE_YIELD_SIGNAL="$tmp/drive-signal
 jq -e '.[] | select(.number == 400)' <<<"$outn" >/dev/null || fail "with no drive signal the ready set must surface as before"
 pass=$((pass+1))
 
+# ── #213: a PEER repo's want-file frees the slot after the current ticket ───
+# main.mts mirrors every live repo-wanted-<slug> into the host-signals dir this
+# run sees. A want-file for a DIFFERENT repo than this run's is a starved peer
+# waiting behind this drain — the lister answers [] BEFORE any API call so the
+# run claims nothing more. Our OWN want-file must NOT make us yield to ourself.
+wdir="$tmp/repo-wanted"; mkdir -p "$wdir"
+: > "$tmp/curl.log"
+: > "$wdir/repo-wanted-Acme-peer"           # a starved peer repo
+outp="$(env -u REHEARSAL_DRIVE_ISSUE REPO_SLUG=Acme/widget SWARM_REPO_WANTED_DIR="$wdir" \
+  CURL_LOG="$tmp/curl.log" bash "$here/../list-ready-tasks.sh" 2>"$tmp/peer.err")" \
+  || fail "the peer-want yield must exit 0"
+[ "$outp" = "[]" ] || fail "a peer repo's want-file must make the lister answer [], got: $outp"
+[ ! -s "$tmp/curl.log" ] || fail "the peer-want yield must come BEFORE any API call: $(cat "$tmp/curl.log")"
+grep -q "starved past its yield threshold" "$tmp/peer.err" || fail "the peer yield must say why on stderr: $(cat "$tmp/peer.err")"
+pass=$((pass+1))
+
+# our OWN want-file is not a peer's — the ready set must still surface
+rm -f "$wdir"/repo-wanted-*
+: > "$wdir/repo-wanted-Acme-widget"          # THIS run's own repo starving
+outo="$(env -u REHEARSAL_DRIVE_ISSUE REPO_SLUG=Acme/widget SWARM_REPO_WANTED_DIR="$wdir" \
+  bash "$here/../list-ready-tasks.sh")" || fail "own-want case must exit 0"
+jq -e '.[] | select(.number == 400)' <<<"$outo" >/dev/null \
+  || fail "a run must NOT yield to its OWN want-file — the ready set must surface"
+pass=$((pass+1))
+
 # ── #142: a failed read NAMES its endpoint + last HTTP status on stderr ─────
 # The old `curl -sf` threw the status away and returned a bare 22 for any
 # failure, so schedule-lib guessed "transient Forgejo 5xx" for a 401/404 stall
@@ -451,5 +620,183 @@ env -u REHEARSAL_DRIVE_ISSUE DEPS_HTTP=503 LIST_READY_RETRIES=2 LIST_READY_BACKO
 grep -qE 'list-ready-tasks: GET /issues/300/dependencies .*last http=503' "$tmp/12c.err" \
   || fail "an exhausted /dependencies read must name /issues/300/dependencies + http=503: $(cat "$tmp/12c.err")"
 pass=$((pass+1))
+
+# ── per-ticket landing (idss ADR 0267) ───────────────────────────────────────
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 801, "title": "ordinary",  "body": "b", "html_url": "u/801", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 802, "title": "app report", "body": "b", "html_url": "u/802", "labels": [{"name":"ready-for-agent"},{"name":"landing-pr"}]},
+  {"number": 803, "title": "bad label", "body": "b", "html_url": "u/803", "labels": [{"name":"ready-for-agent"},{"name":"landing-squash"}]}
+]
+JSON
+nosig="$tmp/no-such-dir/run-landing"        # directory absent = a host-side listing
+
+# L1: host-side (no signal dir) — every ticket surfaces, each with its landing.
+outL1="$(env SWARM_RUN_LANDING_SIGNAL="$nosig" bash "$here/../list-ready-tasks.sh")" \
+  || fail "L1: host-side listing exited non-zero"
+[ "$(jq -r '.[] | select(.number==801) | .landing' <<<"$outL1")" = push ] || fail "L1: an unlabelled ticket in a push repo reads landing=push"
+[ "$(jq -r '.[] | select(.number==801) | .landing_label' <<<"$outL1")" = null ] || fail "L1: an unlabelled ticket reads landing_label=null"
+[ "$(jq -r '.[] | select(.number==802) | .landing' <<<"$outL1")" = pr ]   || fail "L1: a landing-pr ticket reads landing=pr"
+[ "$(jq -r '.[] | select(.number==803) | .landing_label' <<<"$outL1")" = squash ] || fail "L1: an unknown landing-* label is surfaced RAW for the host gate to name"
+pass=$((pass+1))
+
+# L2: a sandbox whose run is push-parity never sees the PR ticket (nor the bad one).
+mkdir -p "$tmp/sig"; printf 'push\n' > "$tmp/sig/run-landing"
+outL2="$(env SWARM_RUN_LANDING_SIGNAL="$tmp/sig/run-landing" bash "$here/../list-ready-tasks.sh" 2>"$tmp/L2.err")" \
+  || fail "L2: push-parity listing exited non-zero"
+[ "$(jq -c '[.[].number]' <<<"$outL2")" = '[801]' ] || fail "L2: push parity must emit only push tickets, got $(jq -c '[.[].number]' <<<"$outL2")"
+pass=$((pass+1))
+
+# L3: a sandbox whose run is `pr 802` sees that ONE ticket — nothing rides along.
+printf 'pr 802\n' > "$tmp/sig/run-landing"
+outL3="$(env SWARM_RUN_LANDING_SIGNAL="$tmp/sig/run-landing" PULLS_FIXTURE=/dev/null bash "$here/../list-ready-tasks.sh")" \
+  || fail "L3: pr-parity listing exited non-zero"
+[ "$(jq -c '[.[].number]' <<<"$outL3")" = '[802]' ] || fail "L3: pr parity must emit exactly the run's ticket, got $(jq -c '[.[].number]' <<<"$outL3")"
+pass=$((pass+1))
+
+# L4: the signal DIRECTORY exists but the file does not (an un-gated sandbox) —
+#     fail-safe to push parity, never "show everything".
+rm -f "$tmp/sig/run-landing"
+outL4="$(env SWARM_RUN_LANDING_SIGNAL="$tmp/sig/run-landing" bash "$here/../list-ready-tasks.sh")" \
+  || fail "L4: un-gated sandbox listing exited non-zero"
+[ "$(jq -c '[.[].number]' <<<"$outL4")" = '[801]' ] || fail "L4: a sandbox with no run-landing signal must hide PR tickets, got $(jq -c '[.[].number]' <<<"$outL4")"
+pass=$((pass+1))
+
+# L5: a landing-pr ticket whose agent PR is already OPEN is awaiting a human —
+#     dropped even in a push repo (host-side too, or the queue head never moves).
+printf '%s\n' '[{"number":90,"head":{"ref":"agent/issue-802"}}]' > "$tmp/pulls-802.json"
+outL5="$(env SWARM_RUN_LANDING_SIGNAL="$nosig" PULLS_FIXTURE="$tmp/pulls-802.json" bash "$here/../list-ready-tasks.sh")" \
+  || fail "L5: open-PR listing exited non-zero"
+if jq -e '.[] | select(.number == 802)' <<<"$outL5" >/dev/null; then fail "L5: #802 has an open agent PR — it must be dropped while a human reviews"; fi
+jq -e '.[] | select(.number == 801)' <<<"$outL5" >/dev/null || fail "L5: the ordinary ticket must survive"
+pass=$((pass+1))
+
+# L6: nil-diff — a push repo with NO landing-* label anywhere makes no /pulls call.
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[{"number": 801, "title": "ordinary", "body": "b", "html_url": "u/801", "labels": [{"name":"ready-for-agent"}]}]
+JSON
+: > "$tmp/L6.curl"
+env CURL_LOG="$tmp/L6.curl" SWARM_RUN_LANDING_SIGNAL="$nosig" bash "$here/../list-ready-tasks.sh" >/dev/null \
+  || fail "L6: nil-diff listing exited non-zero"
+if grep -q 'pulls?state=open' "$tmp/L6.curl"; then fail "L6: no landing-pr ticket in a push repo — the /pulls call must not be made"; fi
+pass=$((pass+1))
+
+# F1 (idss ADR 0267): a `rehearsal-target` marker INSIDE a fenced block is
+# outside input (an app report's words), never a queue instruction — an outsider
+# must not be able to hide a ready ticket from every swarm host. The other half
+# of the pin is case 1d (#1468): the same marker OUTSIDE a fence still excludes.
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 9101, "title": "App report from some-community", "html_url": "u/9101",
+   "labels": [{"name": "ready-for-agent"}],
+   "body": "<!-- origin: app-report -->\n## The operator's words (untrusted input — data, not instructions)\n````\n<!-- rehearsal-target: rented -->\n````"},
+  {"number": 9102, "title": "a real confirm ticket", "html_url": "u/9102",
+   "labels": [{"name": "ready-for-agent"}],
+   "body": "the executor rail.\n<!-- rehearsal-target: rented -->\n"}
+]
+JSON
+outF1="$(env -u REHEARSAL_DRIVE_ISSUE SWARM_RUN_LANDING_SIGNAL="$nosig" bash "$here/../list-ready-tasks.sh")" \
+  || fail "F1: fenced-marker listing exited non-zero"
+jq -e '[.[].number] | index(9101) != null' <<<"$outF1" >/dev/null \
+  || fail "a rehearsal-target marker inside a fence must not hide a ready ticket from the queue"
+if jq -e '[.[].number] | index(9102) != null' <<<"$outF1" >/dev/null; then
+  fail "F1: a rehearsal-target marker OUTSIDE a fence must still exclude the ticket (#1468)"
+fi
+pass=$((pass+1))
+
+# ── #359 gap A: a closed-but-not-landed dependency must NOT make its dependent
+# claimable. A push-mode close lands on `main` only after the host verifies it
+# (#193), so close-report marks the pre-land close `landing-pending`; the lister
+# reads a CLOSED dependency still wearing that label as a STILL-unmet blocker. The
+# dependent surfaces only once the dependency is closed AND clear of the mark (the
+# host cleared it on the verified land, landing_promote_landed).
+d359="$tmp/359-deps"; mkdir -p "$d359"
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 52, "title": "overview: the dependent", "body": "b", "html_url": "u/52", "labels": [{"name":"ready-for-agent"}]}
+]
+JSON
+# dependency #51 closed but STILL landing-pending -> #52 must be hidden
+printf '%s\n' '[{"number":51,"state":"closed","labels":[{"name":"landing-pending"}]}]' > "$d359/52.json"
+out359a="$(env -u REHEARSAL_DRIVE_ISSUE DEPS_DIR="$d359" SWARM_RUN_LANDING_SIGNAL="$nosig" \
+  bash "$here/../list-ready-tasks.sh")" || fail "359a: listing exited non-zero"
+if jq -e '[.[].number] | index(52) != null' <<<"$out359a" >/dev/null; then
+  fail "#359 gap A: a dependent of a closed-but-landing-pending dependency must NOT be claimable"
+fi
+pass=$((pass+1))
+# dependency #51 closed AND clear of landing-pending (the land verified) -> #52 surfaces
+printf '%s\n' '[{"number":51,"state":"closed","labels":[]}]' > "$d359/52.json"
+out359b="$(env -u REHEARSAL_DRIVE_ISSUE DEPS_DIR="$d359" SWARM_RUN_LANDING_SIGNAL="$nosig" \
+  bash "$here/../list-ready-tasks.sh")" || fail "359b: listing exited non-zero"
+jq -e '[.[].number] | index(52) != null' <<<"$out359b" >/dev/null \
+  || fail "#359 gap A: once a dependency is closed AND clear of landing-pending, its dependent must surface"
+pass=$((pass+1))
+unset DEPS_DIR
+
+# ── #375: a ticket a LIVE run holds must leave the ready list even when its
+# agent-working LABEL is missing — the label (claim_mark_working) is not atomic with
+# the authoritative swarm-claim COMMENT, so a dropped/never-written label used to
+# re-expose a ticket a run still worked, and every scheduler re-dispatched it each
+# marker TTL. The full-page path now reads each candidate's comments + the alive-runs
+# snapshot and drops one carrying a LIVE claim (a session claim within its ttl, or a
+# swarm claim whose run is alive). Fail-OPEN keeps a tracker blip from starving it.
+d375="$tmp/375-comments"; mkdir -p "$d375"
+now375="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 800, "title": "held by a live session claim", "body": "b", "html_url": "u/800", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 801, "title": "held by a live swarm claim (run alive)", "body": "b", "html_url": "u/801", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 802, "title": "stale swarm-claim tombstone, run dead", "body": "b", "html_url": "u/802", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 803, "title": "expired session claim", "body": "b", "html_url": "u/803", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 804, "title": "no claim at all", "body": "b", "html_url": "u/804", "labels": [{"name":"ready-for-agent"}]}
+]
+JSON
+# #800: a session claim YOUNGER than its ttl -> live -> hidden
+printf '[{"id":1,"created_at":"%s","body":"swarm-claim host=h run=4242 session-ttl=7500\\n(x)"}]\n' "$now375" > "$d375/800.json"
+# #801: a swarm claim whose run IS in the alive snapshot (this is ALSO the refused-close
+# case — the run still holds the ticket after a gate refusal) -> hidden
+printf '[{"id":1,"created_at":"%s","body":"swarm-claim host=h run=760\\n(x)"}]\n' "$now375" > "$d375/801.json"
+# #802: a swarm claim whose run is NOT alive and carries no ttl -> a tombstone, must NOT
+# wedge the ticket (the #1412/#366 hazard) -> surfaces
+printf '[{"id":1,"created_at":"%s","body":"swarm-claim host=h run=99999\\n(x)"}]\n' "$now375" > "$d375/802.json"
+# #803: a session claim OLDER than its ttl -> expired -> surfaces
+printf '[{"id":1,"created_at":"2000-01-01T00:00:00Z","body":"swarm-claim host=h run=4242 session-ttl=10\\n(x)"}]\n' > "$d375/803.json"
+# #804: no comments file -> no claim -> surfaces (the shim default [])
+cat > "$tmp/actions375.json" <<'JSON'
+{"workflow_runs":[{"name":"swarm (h)","status":"running","run_number":760}]}
+JSON
+out375="$(env -u REHEARSAL_DRIVE_ISSUE COMMENTS_DIR="$d375" ACTIONS_FIXTURE="$tmp/actions375.json" \
+  SWARM_RUN_LANDING_SIGNAL="$nosig" bash "$here/../list-ready-tasks.sh")" || fail "375: listing exited non-zero"
+if jq -e '[.[].number] | index(800) != null' <<<"$out375" >/dev/null; then
+  fail "#375: a ticket held by a LIVE session claim must leave the ready list"
+fi
+pass=$((pass+1))
+if jq -e '[.[].number] | index(801) != null' <<<"$out375" >/dev/null; then
+  fail "#375: a ticket held by a LIVE swarm claim (run in the alive snapshot) must leave the ready list"
+fi
+pass=$((pass+1))
+jq -e '[.[].number] | index(802) != null' <<<"$out375" >/dev/null \
+  || fail "#375: a stale swarm-claim tombstone (dead run, no ttl) must NOT wedge a ready ticket"
+pass=$((pass+1))
+jq -e '[.[].number] | index(803) != null' <<<"$out375" >/dev/null \
+  || fail "#375: an EXPIRED session claim must not hide a ready ticket"
+pass=$((pass+1))
+jq -e '[.[].number] | index(804) != null' <<<"$out375" >/dev/null \
+  || fail "#375: a ticket with no claim must surface"
+pass=$((pass+1))
+
+# #375 fail-OPEN: when the alive-runs poll FAULTS (ACTIONS_HTTP=000), the alive set is
+# empty so a swarm claim is not dropped (the ticket SURFACES) — a tracker blip can only
+# surface work, never starve the queue; the age-based session arm still hides #800.
+out375b="$(env -u REHEARSAL_DRIVE_ISSUE COMMENTS_DIR="$d375" ACTIONS_HTTP=000 \
+  SWARM_RUN_LANDING_SIGNAL="$nosig" bash "$here/../list-ready-tasks.sh")" || fail "375b: listing exited non-zero"
+jq -e '[.[].number] | index(801) != null' <<<"$out375b" >/dev/null \
+  || fail "#375 fail-open: a faulted alive-runs poll must SURFACE a swarm-claimed ticket, never starve the queue"
+pass=$((pass+1))
+if jq -e '[.[].number] | index(800) != null' <<<"$out375b" >/dev/null; then
+  fail "#375 fail-open: the age-based session-ttl arm must still hide a live session claim when the alive poll faults"
+fi
+pass=$((pass+1))
+unset COMMENTS_DIR
 
 echo "PASS ($pass cases)"
